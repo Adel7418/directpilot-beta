@@ -11,21 +11,20 @@ from app.models import (
     ApplyActionResult,
     ApprovalResult,
     AuditCheck,
-    AuditEvent,
     AuditLog,
     BudgetSimulationRequest,
     BudgetSimulationResult,
-    Campaign,
     CampaignAuditResult,
     CampaignDraft,
+    CampaignDraftList,
     CampaignDraftRequest,
     CampaignList,
-    Recommendation,
     RecommendationList,
     ReportSummary,
     UtmGenerateRequest,
     UtmGenerateResult,
 )
+from app.store import store
 
 app = FastAPI(
     title="DirectPilot Beta API",
@@ -92,6 +91,17 @@ def demo_home() -> HTMLResponse:
             <li>Все кампании, отчёты и рекомендации построены на mock-данных.</li>
             <li>Любое применение изменений требует явного approve и поддерживает dry-run.</li>
           </ul>
+          <h3>API demo endpoints</h3>
+          <ul>
+            <li><a href="/docs">OpenAPI docs</a></li>
+            <li><a href="/campaigns">GET /campaigns</a></li>
+            <li><a href="/campaign-drafts">GET /campaign-drafts</a></li>
+            <li><a href="/audit/campaigns">GET /audit/campaigns</a></li>
+            <li><a href="/recommendations">GET /recommendations</a></li>
+            <li><a href="/audit-log">GET /audit-log</a></li>
+            <li><a href="/integrations/yandex/direct/status">GET /integrations/yandex/direct/status</a></li>
+          </ul>
+          <p class="safe">No live writes: DirectPilot Beta работает только с in-memory mock state.</p>
         </section>
         """,
     )
@@ -273,18 +283,7 @@ def audit_campaigns() -> CampaignAuditResult:
 
 @app.get("/campaigns", response_model=CampaignList)
 def list_campaigns() -> CampaignList:
-    return CampaignList(
-        items=[
-            Campaign(
-                id="cmp_mock_local_services",
-                name="Mock: локальные услуги",
-                business_type="local_services",
-                status="draft_readonly",
-                spend=1250.0,
-                clicks=42,
-            )
-        ]
-    )
+    return CampaignList(items=list(store.campaigns.values()))
 
 
 @app.get("/reports/summary", response_model=ReportSummary)
@@ -302,34 +301,42 @@ def report_summary() -> ReportSummary:
 
 @app.post("/campaign-drafts", response_model=CampaignDraft)
 def create_campaign_draft(payload: CampaignDraftRequest) -> CampaignDraft:
-    return CampaignDraft(
-        id="draft_mock_001",
-        groups=[f"{payload.business_type}: базовая группа"],
-        keywords=[f"{payload.business_type} {payload.region}", f"заказать {payload.business_type}"],
-    )
+    return store.create_draft(payload)
+
+
+@app.get("/campaign-drafts", response_model=CampaignDraftList)
+def list_campaign_drafts() -> CampaignDraftList:
+    return CampaignDraftList(items=list(store.drafts.values()))
+
+
+@app.get("/campaign-drafts/{draft_id}", response_model=CampaignDraft)
+def get_campaign_draft(draft_id: str) -> CampaignDraft:
+    try:
+        return store.drafts[draft_id]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Campaign draft not found") from exc
 
 
 @app.get("/recommendations", response_model=RecommendationList)
 def list_recommendations() -> RecommendationList:
-    return RecommendationList(
-        items=[
-            Recommendation(
-                id="rec_mock_pause_keyword",
-                action_id="act_mock_pause_keyword",
-                reason="Ключ потратил бюджет в mock-отчёте и не имеет конверсий.",
-                risk_level="low",
-            )
-        ]
-    )
+    return RecommendationList(items=list(store.recommendations.values()))
 
 
 @app.post("/recommendations/{recommendation_id}/approve", response_model=ApprovalResult)
 def approve_recommendation(recommendation_id: str) -> ApprovalResult:
+    if recommendation_id not in store.recommendations:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    store.recommendations[recommendation_id].status = "approved"
+    store.append_audit("recommendation_approved", recommendation_id)
     return ApprovalResult(recommendation_id=recommendation_id, status="approved")
 
 
 @app.post("/recommendations/{recommendation_id}/reject", response_model=ApprovalResult)
 def reject_recommendation(recommendation_id: str) -> ApprovalResult:
+    if recommendation_id not in store.recommendations:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    store.recommendations[recommendation_id].status = "rejected"
+    store.append_audit("recommendation_rejected", recommendation_id)
     return ApprovalResult(recommendation_id=recommendation_id, status="rejected")
 
 
@@ -337,24 +344,26 @@ def reject_recommendation(recommendation_id: str) -> ApprovalResult:
 def apply_action(action_id: str, payload: ApplyActionRequest) -> ApplyActionResult:
     if not payload.approved:
         raise HTTPException(status_code=409, detail="Action requires explicit approval before apply")
-    return ApplyActionResult(
+    if payload.idempotency_key in store.apply_results_by_key:
+        return store.apply_results_by_key[payload.idempotency_key]
+    recommendation = next((r for r in store.recommendations.values() if r.action_id == action_id), None)
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="Action not found")
+    if recommendation.status != "approved":
+        raise HTTPException(status_code=409, detail="Recommendation must be approved before apply")
+    event = store.append_audit("action_applied", action_id, dry_run=payload.dry_run)
+    recommendation.status = "applied"
+    result = ApplyActionResult(
         action_id=action_id,
         dry_run=payload.dry_run,
         applied=not payload.dry_run,
-        risk_level="low",
-        audit_id="audit_mock_001",
+        risk_level=recommendation.risk_level,
+        audit_id=event.id,
     )
+    store.apply_results_by_key[payload.idempotency_key] = result
+    return result
 
 
 @app.get("/audit-log", response_model=AuditLog)
 def audit_log() -> AuditLog:
-    return AuditLog(
-        items=[
-            AuditEvent(
-                id="audit_mock_001",
-                actor="system",
-                action="mock_healthcheck",
-                entity="directpilot-beta",
-            )
-        ]
-    )
+    return AuditLog(items=store.audit_events)

@@ -45,11 +45,16 @@ class CampaignDraft(BaseModel):
     requires_approval: bool = True
 
 
+class CampaignDraftList(BaseModel):
+    items: list[CampaignDraft]
+
+
 class Recommendation(BaseModel):
     id: str
     action_id: str
     reason: str
     risk_level: Literal["low", "medium", "high"]
+    status: Literal["pending", "approved", "rejected", "applied"] = "pending"
     requires_approval: bool = True
 
 
