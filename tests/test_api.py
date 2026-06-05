@@ -27,6 +27,7 @@ def test_openapi_exposes_agent_facing_endpoints():
     assert "/recommendations/{recommendation_id}/reject" in paths
     assert "/actions/{action_id}/apply" in paths
     assert "/audit-log" in paths
+    assert "/integrations/yandex/direct/status" in paths
 
 
 def test_mock_campaigns_are_read_only_and_small_business_oriented():

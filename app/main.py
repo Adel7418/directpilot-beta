@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 
 from app.config import get_settings
+from app.services import check_yandex_direct
 from app.models import (
     ApplyActionRequest,
     ApplyActionResult,
@@ -31,6 +32,12 @@ def health() -> dict:
         "mode": settings.directpilot_mode,
         "yandex": settings.safe_status(),
     }
+
+
+@app.get("/integrations/yandex/direct/status")
+def yandex_direct_status() -> dict:
+    settings = get_settings()
+    return check_yandex_direct(settings)
 
 
 @app.get("/campaigns", response_model=CampaignList)

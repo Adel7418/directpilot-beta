@@ -16,6 +16,9 @@ Local credentials were copied from the user's Obsidian note into `.env` with `ch
 
 - Yandex OAuth token check: PASS via `https://login.yandex.ru/info?format=json`.
 - Yandex Direct API `clients.get`: BLOCKED by Yandex with error code `58` / `Незавершенная регистрация` — the app access request must be completed in the Direct interface and approved before Direct API calls will work.
+- Current local mode: `sandbox`; DirectPilot targets `https://api-sandbox.direct.yandex.com/json/v5` for Direct API checks.
+
+See: `docs/yandex-access-status.md`.
 
 ## Quick start
 
