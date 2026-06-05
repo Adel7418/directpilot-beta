@@ -20,6 +20,10 @@ Local credentials were copied from the user's Obsidian note into `.env` with `ch
 
 See: `docs/yandex-access-status.md`.
 
+## References
+
+- `docs/references/elama-vs-promopult.md` — comparison of eLama and PromoPult: what to borrow for DirectPilot Beta and what to avoid in MVP.
+
 ## Quick start
 
 ```bash

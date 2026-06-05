@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, HttpUrl
 
 
 class Campaign(BaseModel):
@@ -86,3 +86,39 @@ class AuditEvent(BaseModel):
 
 class AuditLog(BaseModel):
     items: list[AuditEvent]
+
+
+class UtmGenerateRequest(BaseModel):
+    landing_url: HttpUrl
+    campaign: str = Field(..., min_length=1)
+    content: str = Field(default="{ad_id}", min_length=1)
+    term: str = Field(default="{keyword}", min_length=1)
+
+
+class UtmGenerateResult(BaseModel):
+    url: str
+    requires_approval: bool = False
+
+
+class BudgetSimulationRequest(BaseModel):
+    daily_budget: float = Field(..., gt=0)
+    avg_cpc: float = Field(..., gt=0)
+    conversion_rate: float = Field(..., ge=0, le=100)
+
+
+class BudgetSimulationResult(BaseModel):
+    dry_run: bool = True
+    estimated_clicks: int
+    estimated_conversions: float
+    estimated_spend: float
+
+
+class AuditCheck(BaseModel):
+    code: str
+    severity: Literal["low", "medium", "high"]
+    title: str
+    recommendation: str
+
+
+class CampaignAuditResult(BaseModel):
+    items: list[AuditCheck]
