@@ -7,25 +7,53 @@ from fastapi.responses import HTMLResponse
 from app.config import get_settings
 from app.services import check_yandex_direct
 from app.models import (
+    AdCreate,
+    AdGroupCreate,
+    AdGroupUpdate,
+    AdUpdate,
     ApplyActionRequest,
     ApplyActionResult,
     ApprovalResult,
     AuditCheck,
     AuditLog,
+    BidUpdate,
     BudgetSimulationRequest,
     BudgetSimulationResult,
+    BudgetUpdate,
     CampaignAuditResult,
+    Campaign,
     CampaignDraft,
+    CampaignDraftBaseUpdate,
+    CampaignDraftKeywordsAdd,
+    CampaignDraftKeywordsRemove,
     CampaignDraftKeywordsUpdate,
     CampaignDraftList,
     CampaignDraftRequest,
     CampaignList,
+    GenerateStructureRequest,
+    GenerateStructureResult,
+    NegativeKeywordsReplace,
+    PreviewPayload,
     RecommendationList,
     ReportSummary,
     UtmGenerateRequest,
     UtmGenerateResult,
+    ValidationResult,
+    YandexAd,
+    YandexAdGroup,
+    YandexAdGroupList,
+    YandexAdList,
+    YandexCampaign,
+    YandexCampaignList,
+    YandexControlRequest,
+    YandexControlResult,
+    YandexKeyword,
+    YandexKeywordList,
+    YandexSearchQueriesReport,
+    YandexSearchQuery,
 )
 from app.store import store
+from app.yandex_facade import mock_yandex
 
 app = FastAPI(
     title="DirectPilot Beta API",
@@ -161,7 +189,7 @@ def demo_report() -> HTMLResponse:
 def demo_recommendations() -> HTMLResponse:
     recs = list_recommendations().items
     items = "".join(
-        f"<li><strong>{escape(r.id)}</strong>: {escape(r.reason)} Риск: {escape(r.risk_level)}. <button disabled>approve</button> <button disabled>reject</button></li>"
+        f'<li><strong>{escape(r.id)}</strong>: {escape(r.reason)} Риск: {escape(r.risk_level)}. <button disabled>approve</button> <button disabled>reject</button></li>'
         for r in recs
     )
     return demo_layout(
@@ -300,6 +328,11 @@ def report_summary() -> ReportSummary:
     )
 
 
+# ---------------------------------------------------------------------------
+# Campaign draft constructor
+# ---------------------------------------------------------------------------
+
+
 @app.post("/campaign-drafts", response_model=CampaignDraft)
 def create_campaign_draft(payload: CampaignDraftRequest) -> CampaignDraft:
     return store.create_draft(payload)
@@ -318,14 +351,164 @@ def get_campaign_draft(draft_id: str) -> CampaignDraft:
         raise HTTPException(status_code=404, detail="Campaign draft not found") from exc
 
 
+@app.patch("/campaign-drafts/{draft_id}", response_model=CampaignDraft)
+def patch_campaign_draft(draft_id: str, payload: CampaignDraftBaseUpdate) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.update_draft_base(draft_id, payload.model_dump(exclude_unset=True))
+
+
 @app.patch("/campaign-drafts/{draft_id}/keywords", response_model=CampaignDraft)
 def update_campaign_draft_keywords(
     draft_id: str, payload: CampaignDraftKeywordsUpdate
 ) -> CampaignDraft:
     try:
-        return store.update_draft_keywords(draft_id, payload.keywords)
+        return store.replace_keywords(draft_id, payload.keywords)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Campaign draft not found") from exc
+
+
+@app.post("/campaign-drafts/{draft_id}/keywords", response_model=CampaignDraft)
+def add_campaign_draft_keywords(
+    draft_id: str, payload: CampaignDraftKeywordsAdd
+) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.append_keywords(draft_id, payload.keywords)
+
+
+@app.delete("/campaign-drafts/{draft_id}/keywords", response_model=CampaignDraft)
+def delete_campaign_draft_keywords(
+    draft_id: str, payload: CampaignDraftKeywordsRemove
+) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.remove_keywords(draft_id, payload.keywords)
+
+
+@app.patch(
+    "/campaign-drafts/{draft_id}/negative-keywords", response_model=CampaignDraft
+)
+def patch_negative_keywords(
+    draft_id: str, payload: NegativeKeywordsReplace
+) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.replace_negative_keywords(draft_id, payload)
+
+
+@app.post("/campaign-drafts/{draft_id}/ad-groups", response_model=CampaignDraft)
+def create_ad_group(draft_id: str, payload: AdGroupCreate) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.create_ad_group(draft_id, payload)
+
+
+@app.patch(
+    "/campaign-drafts/{draft_id}/ad-groups/{group_id}", response_model=CampaignDraft
+)
+def update_ad_group(
+    draft_id: str, group_id: str, payload: AdGroupUpdate
+) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    try:
+        return store.update_ad_group(draft_id, group_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ad group not found") from exc
+
+
+@app.delete(
+    "/campaign-drafts/{draft_id}/ad-groups/{group_id}", response_model=CampaignDraft
+)
+def delete_ad_group(draft_id: str, group_id: str) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    try:
+        return store.delete_ad_group(draft_id, group_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ad group not found") from exc
+
+
+@app.post("/campaign-drafts/{draft_id}/ads", response_model=CampaignDraft)
+def create_ad(draft_id: str, payload: AdCreate) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    try:
+        return store.create_ad(draft_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ad group not found") from exc
+
+
+@app.patch("/campaign-drafts/{draft_id}/ads/{ad_id}", response_model=CampaignDraft)
+def update_ad(draft_id: str, ad_id: str, payload: AdUpdate) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    try:
+        return store.update_ad(draft_id, ad_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ad not found") from exc
+
+
+@app.delete("/campaign-drafts/{draft_id}/ads/{ad_id}", response_model=CampaignDraft)
+def delete_ad(draft_id: str, ad_id: str) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    try:
+        return store.delete_ad(draft_id, ad_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Ad not found") from exc
+
+
+@app.post(
+    "/campaign-drafts/{draft_id}/generate-structure",
+    response_model=GenerateStructureResult,
+)
+def generate_structure(
+    draft_id: str, payload: GenerateStructureRequest
+) -> GenerateStructureResult:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    draft = store.generate_structure(draft_id, payload)
+    return GenerateStructureResult(
+        ad_groups=draft.ad_groups,
+        keywords=draft.keywords,
+        negative_keywords=draft.negative_keywords,
+        ads=draft.ads,
+    )
+
+
+@app.post("/campaign-drafts/{draft_id}/validate", response_model=ValidationResult)
+def validate_draft(draft_id: str) -> ValidationResult:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.validate_draft(draft_id)
+
+
+@app.get("/campaign-drafts/{draft_id}/preview", response_model=PreviewPayload)
+def preview_draft(draft_id: str) -> PreviewPayload:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.preview_draft(draft_id)
+
+
+@app.patch("/campaign-drafts/{draft_id}/budget", response_model=CampaignDraft)
+def patch_draft_budget(draft_id: str, payload: BudgetUpdate) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.update_budget(draft_id, payload)
+
+
+@app.patch("/campaign-drafts/{draft_id}/bids", response_model=CampaignDraft)
+def patch_draft_bids(draft_id: str, payload: BidUpdate) -> CampaignDraft:
+    if draft_id not in store.drafts:
+        raise HTTPException(status_code=404, detail="Campaign draft not found")
+    return store.update_bids(draft_id, payload)
+
+
+# ---------------------------------------------------------------------------
+# Recommendations / approval / apply
+# ---------------------------------------------------------------------------
 
 
 @app.get("/recommendations", response_model=RecommendationList)
@@ -378,3 +561,90 @@ def apply_action(action_id: str, payload: ApplyActionRequest) -> ApplyActionResu
 @app.get("/audit-log", response_model=AuditLog)
 def audit_log() -> AuditLog:
     return AuditLog(items=store.audit_events)
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct read-only facade
+# ---------------------------------------------------------------------------
+
+
+@app.get("/yandex/campaigns", response_model=YandexCampaignList)
+def yandex_campaigns() -> YandexCampaignList:
+    return YandexCampaignList(
+        items=[YandexCampaign(**campaign) for campaign in mock_yandex.list_campaigns()],
+        source="mock",
+        read_only=True,
+    )
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/ad-groups",
+    response_model=YandexAdGroupList,
+)
+def yandex_ad_groups(campaign_id: str) -> YandexAdGroupList:
+    items = [YandexAdGroup(**g) for g in mock_yandex.list_ad_groups(campaign_id)]
+    return YandexAdGroupList(items=items, source="mock", read_only=True)
+
+
+@app.get("/yandex/campaigns/{campaign_id}/ads", response_model=YandexAdList)
+def yandex_ads(campaign_id: str) -> YandexAdList:
+    items = [YandexAd(**a) for a in mock_yandex.list_ads(campaign_id)]
+    return YandexAdList(items=items, source="mock", read_only=True)
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/keywords",
+    response_model=YandexKeywordList,
+)
+def yandex_keywords(campaign_id: str) -> YandexKeywordList:
+    items = mock_yandex.list_keywords(campaign_id)
+    return YandexKeywordList(
+        items=[YandexKeyword(**kw) for kw in items],
+        source="mock",
+        read_only=True,
+    )
+
+
+@app.get("/yandex/reports/summary", response_model=ReportSummary)
+def yandex_reports_summary() -> ReportSummary:
+    data = mock_yandex.report_summary()
+    return ReportSummary(**data, source="mock")
+
+
+@app.get(
+    "/yandex/reports/search-queries",
+    response_model=YandexSearchQueriesReport,
+)
+def yandex_search_queries() -> YandexSearchQueriesReport:
+    items = [YandexSearchQuery(**q) for q in mock_yandex.search_queries()]
+    return YandexSearchQueriesReport(
+        period="last_7_days",
+        items=items,
+        source="mock",
+        read_only=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct control facade (pause / resume)
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/pause",
+    response_model=YandexControlResult,
+)
+def yandex_pause(campaign_id: str, payload: YandexControlRequest) -> YandexControlResult:
+    if not payload.approved:
+        raise HTTPException(status_code=409, detail="Action requires explicit approval")
+    return store.yandex_control(campaign_id, "pause", payload)
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/resume",
+    response_model=YandexControlResult,
+)
+def yandex_resume(campaign_id: str, payload: YandexControlRequest) -> YandexControlResult:
+    if not payload.approved:
+        raise HTTPException(status_code=409, detail="Action requires explicit approval")
+    return store.yandex_control(campaign_id, "resume", payload)

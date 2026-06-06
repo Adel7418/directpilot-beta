@@ -20,6 +20,11 @@ Local credentials were copied from the user's Obsidian note into `.env` with `ch
 
 See: `docs/yandex-access-status.md`.
 
+## Documentation
+
+- `docs/API_SIMPLE.md` — human-readable API guide in Russian: campaign drafts, keywords, negative keywords, ad groups, ads, validation, preview, budget/bids, Yandex read-only facade, pause/resume.
+- `docs/implementation_scope.md` — selected implementation scope and safety boundary.
+
 ## References
 
 - `docs/references/elama-vs-promopult.md` — comparison of eLama and PromoPult: what to borrow for DirectPilot Beta and what to avoid in MVP.
