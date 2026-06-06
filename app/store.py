@@ -87,4 +87,11 @@ class MockStore:
         return draft
 
 
+    def update_draft_keywords(self, draft_id: str, keywords: list[str]) -> CampaignDraft:
+        draft = self.drafts[draft_id]
+        draft.keywords = list(keywords)
+        self.append_audit("campaign_draft_keywords_updated", draft_id)
+        return draft
+
+
 store = MockStore()

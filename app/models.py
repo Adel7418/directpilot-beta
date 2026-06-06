@@ -45,6 +45,10 @@ class CampaignDraft(BaseModel):
     requires_approval: bool = True
 
 
+class CampaignDraftKeywordsUpdate(BaseModel):
+    keywords: list[str] = Field(..., min_length=1)
+
+
 class CampaignDraftList(BaseModel):
     items: list[CampaignDraft]
 

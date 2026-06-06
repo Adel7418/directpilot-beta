@@ -16,6 +16,7 @@ from app.models import (
     BudgetSimulationResult,
     CampaignAuditResult,
     CampaignDraft,
+    CampaignDraftKeywordsUpdate,
     CampaignDraftList,
     CampaignDraftRequest,
     CampaignList,
@@ -313,6 +314,16 @@ def list_campaign_drafts() -> CampaignDraftList:
 def get_campaign_draft(draft_id: str) -> CampaignDraft:
     try:
         return store.drafts[draft_id]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Campaign draft not found") from exc
+
+
+@app.patch("/campaign-drafts/{draft_id}/keywords", response_model=CampaignDraft)
+def update_campaign_draft_keywords(
+    draft_id: str, payload: CampaignDraftKeywordsUpdate
+) -> CampaignDraft:
+    try:
+        return store.update_draft_keywords(draft_id, payload.keywords)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Campaign draft not found") from exc
 
