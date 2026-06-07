@@ -1,41 +1,110 @@
-# Yandex access status
+# Yandex Direct API access status — DirectPilot Beta
 
-Last checked: 2026-06-05
+## Current status
 
-## Credentials
+Access to Yandex Direct API is approved and verified for real production read-only data.
 
-Local credentials are stored only in `.env` with `chmod 600`; `.env` is ignored by git.
-
-## Checks
-
-Command:
-
-```bash
-uv run python scripts/verify_yandex_token.py
+```text
+DIRECTPILOT_MODE=live_readonly
+Direct API base URL: https://api.direct.yandex.com/json/v5
+Login: [REDACTED]
+ClientId: [REDACTED]
 ```
 
-Local API smoke:
+## Verified production read-only calls
 
-```bash
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8010
-# /health -> 200, mode=sandbox
-# /integrations/yandex/direct/status -> 200 with structured Yandex error 58 until app registration is completed
-# /openapi.json -> 200, 10 paths
+Last local verification:
+
+```text
+GET /health -> mode=live_readonly
+GET /integrations/yandex/direct/status -> ok, Login=[REDACTED], ClientId=[REDACTED]
+GET /yandex/campaigns -> source=yandex, count=1
+GET /yandex/campaigns/[REDACTED]/ad-groups -> source=yandex, count=1
+GET /yandex/campaigns/[REDACTED]/ads -> source=yandex, count=1
+GET /yandex/campaigns/[REDACTED]/keywords -> source=yandex, count=32
 ```
 
-Result:
+Representative production campaign:
 
-- Yandex OAuth identity check: PASS (`login_info_status 200`).
-- DirectPilot mode: `sandbox`.
-- Direct API base URL: `https://api-sandbox.direct.yandex.com/json/v5`.
-- Sandbox `clients.get`: BLOCKED by Yandex error `58` / `Незавершенная регистрация`.
+```text
+CampaignId: [REDACTED]
+Status: ACCEPTED
+Type: TEXT_CAMPAIGN
+AdGroup count: 1
+Ads count: 1
+Keywords count: 32
+```
 
-Yandex response says the application access request must be completed in the Direct interface and approved before Direct API calls are allowed.
+## Implemented Yandex Direct methods
 
-## Interpretation
+Read-only production data:
 
-The OAuth token is valid, and DirectPilot now targets the sandbox endpoint. However, Direct API access is still not usable from code until Yandex completes/accepts the application registration for Direct API access.
+```text
+clients.get
+campaigns.get
+adgroups.get
+ads.get
+keywords.get
+bids.get
+changes.check
+changes.get
+dictionaries.get
+bidmodifiers.get
+negativekeywordsharedsets.get
+retargetinglists.get
+audiencetargets.get
+keywordsresearch.hasSearchVolume
+keywordsresearch.deduplicate
+keywordsresearch.createNewWordstatReport
+keywordsresearch.getWordstatReport
+keywordsresearch.deleteWordstatReport
+reports: CAMPAIGN_PERFORMANCE_REPORT
+reports: ADGROUP_PERFORMANCE_REPORT
+reports: AD_PERFORMANCE_REPORT
+reports: CRITERIA_PERFORMANCE_REPORT
+reports: SEARCH_QUERY_PERFORMANCE_REPORT
+sitelinks.get
+vcards.get
+adimages.get
+creatives.get
+feeds.get
+businesses.get
+agencyclients.get
+```
 
-## Next action
+Limited write adapter implemented but not enabled in current mode:
 
-Use the current DirectPilot Beta app/OpenAPI baseline as the demonstrable application for the Yandex Direct API access request. After approval, rerun the verification command and then enable read-only sandbox sync.
+```text
+campaigns.suspend
+campaigns.resume
+```
+
+Real write calls require:
+
+```text
+DIRECTPILOT_MODE=live_write
+approved=true
+dry_run=false
+idempotency_key=<unique key>
+```
+
+## Safety boundary
+
+- The current operating mode is `live_readonly`.
+- Real OAuth token is configured locally but never written to docs, logs, API responses, screenshots, or wiki.
+- `live_readonly` can read production Direct data and cannot apply live writes.
+- `dry_run=true` returns a provider-shaped response with `applied=false` and performs no write network call.
+
+## Verification commands
+
+```bash
+uv run pytest -q
+uv run ruff check app/config.py app/main.py app/store.py app/yandex_direct.py tests/test_api.py tests/test_yandex_direct_client.py tests/test_yandex_facade.py tests/test_live_control.py tests/test_yandex_read_endpoints.py tests/test_yandex_read_live_modes.py
+```
+
+Current result:
+
+```text
+117 passed, 1 warning
+All checks passed
+```

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from itertools import count
-from typing import Iterable, Literal
+from typing import Any, Iterable, Literal
 
+from app.config import Settings
 from app.models import (
     Ad,
     AdCreate,
@@ -27,6 +28,7 @@ from app.models import (
     YandexControlRequest,
     YandexControlResult,
 )
+from app.yandex_direct import YandexDirectClient, YandexDirectError
 
 
 def _normalize_phrase(value: str) -> str:
@@ -584,6 +586,9 @@ class MockStore:
         campaign_id: str,
         action: Literal["pause", "resume"],
         payload: YandexControlRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
     ) -> YandexControlResult:
         if not payload.approved:
             raise ValueError("Action requires explicit approval")
@@ -591,31 +596,140 @@ class MockStore:
         if cache_key in self.yandex_actions_by_key:
             return self.yandex_actions_by_key[cache_key]
         new_status = "paused" if action == "pause" else "active"
-        audit = self.append_audit(
-            f"yandex_{action}_requested",
-            campaign_id,
-            dry_run=payload.dry_run,
-            details={
-                "approved": payload.approved,
-                "idempotency_key": payload.idempotency_key,
-                "reason": payload.reason,
-                "new_status": new_status,
-            },
-        )
-        result = YandexControlResult(
-            campaign_id=campaign_id,
-            action=action,
-            dry_run=payload.dry_run,
-            applied=not payload.dry_run,
-            source="mock",
-            audit_id=audit.id,
-            new_status=new_status,
-        )
-        # mutate mock state only if not dry run
-        if not payload.dry_run:
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode in ("sandbox", "live_write")
+
+        # ------------------------------------------------------------------
+        # Dry-run paths: never perform a network write.
+        # ------------------------------------------------------------------
+        if not is_live:
+            # Mock mode: pure in-memory mirror.
+            audit = self.append_audit(
+                f"yandex_{action}_requested",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "new_status": new_status,
+                    "source": "mock",
+                },
+            )
+            result = YandexControlResult(
+                campaign_id=campaign_id,
+                action=action,
+                dry_run=payload.dry_run,
+                applied=not payload.dry_run,
+                source="mock",
+                audit_id=audit.id,
+                new_status=new_status,
+            )
+            if not payload.dry_run:
+                self.yandex_campaign_status[campaign_id] = new_status
+            self.yandex_actions_by_key[cache_key] = result
+            return result
+
+        # ------------------------------------------------------------------
+        # Live modes (sandbox / live_readonly).
+        # ------------------------------------------------------------------
+        if payload.dry_run:
+            # No network call; mark source=yandex, applied=False.
+            audit = self.append_audit(
+                f"yandex_{action}_requested",
+                campaign_id,
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "new_status": new_status,
+                    "source": "yandex",
+                    "mode": mode,
+                },
+            )
+            result = YandexControlResult(
+                campaign_id=campaign_id,
+                action=action,
+                dry_run=True,
+                applied=False,
+                source="yandex",
+                audit_id=audit.id,
+                new_status=new_status,
+            )
+            self.yandex_actions_by_key[cache_key] = result
+            return result
+
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; use live_write"
+            )
+
+        # Real write path: caller must provide a client with a token.
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live pause/resume writes"
+            )
+
+        try:
+            yandex_result: dict[str, Any]
+            if action == "pause":
+                yandex_result = client.suspend_campaign(campaign_id)
+            else:
+                yandex_result = client.resume_campaign(campaign_id)
+            if not yandex_result.get("ok"):
+                # Surface as a typed error so endpoints return 502.
+                err = yandex_result.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected {action}: error_code="
+                    f"{err.get('error_code')!r}"
+                )
+            # Success: mirror to local mock state for parity with mock mode.
             self.yandex_campaign_status[campaign_id] = new_status
-        self.yandex_actions_by_key[cache_key] = result
-        return result
+            audit = self.append_audit(
+                f"yandex_{action}_requested",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "new_status": new_status,
+                    "source": "yandex",
+                    "mode": mode,
+                    "yandex_result": yandex_result.get("result"),
+                    "yandex_units": yandex_result.get("units"),
+                },
+            )
+            result = YandexControlResult(
+                campaign_id=campaign_id,
+                action=action,
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                audit_id=audit.id,
+                new_status=new_status,
+            )
+            self.yandex_actions_by_key[cache_key] = result
+            return result
+        except YandexDirectError as exc:
+            # Record the failure for audit; never include the token.
+            self.append_audit(
+                f"yandex_{action}_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
 
 
 store = MockStore()

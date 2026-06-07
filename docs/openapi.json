@@ -1,0 +1,3988 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "DirectPilot Beta API",
+    "description": "Standalone API-first beta app for safe Yandex Direct automation.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/integrations/yandex/direct/status": {
+      "get": {
+        "summary": "Yandex Direct Status",
+        "operationId": "yandex_direct_status_integrations_yandex_direct_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Yandex Direct Status Integrations Yandex Direct Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/utm/generate": {
+      "post": {
+        "summary": "Generate Utm",
+        "operationId": "generate_utm_utm_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UtmGenerateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UtmGenerateResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/simulations/budget": {
+      "post": {
+        "summary": "Simulate Budget",
+        "operationId": "simulate_budget_simulations_budget_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetSimulationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetSimulationResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit/campaigns": {
+      "get": {
+        "summary": "Audit Campaigns",
+        "operationId": "audit_campaigns_audit_campaigns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignAuditResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaigns": {
+      "get": {
+        "summary": "List Campaigns",
+        "operationId": "list_campaigns_campaigns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reports/summary": {
+      "get": {
+        "summary": "Report Summary",
+        "operationId": "report_summary_reports_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts": {
+      "get": {
+        "summary": "List Campaign Drafts",
+        "operationId": "list_campaign_drafts_campaign_drafts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraftList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Create Campaign Draft",
+        "operationId": "create_campaign_draft_campaign_drafts_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}": {
+      "get": {
+        "summary": "Get Campaign Draft",
+        "operationId": "get_campaign_draft_campaign_drafts__draft_id__get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Patch Campaign Draft",
+        "operationId": "patch_campaign_draft_campaign_drafts__draft_id__patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignDraftBaseUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/keywords": {
+      "patch": {
+        "summary": "Update Campaign Draft Keywords",
+        "operationId": "update_campaign_draft_keywords_campaign_drafts__draft_id__keywords_patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignDraftKeywordsUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Add Campaign Draft Keywords",
+        "operationId": "add_campaign_draft_keywords_campaign_drafts__draft_id__keywords_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignDraftKeywordsAdd"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Campaign Draft Keywords",
+        "operationId": "delete_campaign_draft_keywords_campaign_drafts__draft_id__keywords_delete",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignDraftKeywordsRemove"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/negative-keywords": {
+      "patch": {
+        "summary": "Patch Negative Keywords",
+        "operationId": "patch_negative_keywords_campaign_drafts__draft_id__negative_keywords_patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NegativeKeywordsReplace"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/ad-groups": {
+      "post": {
+        "summary": "Create Ad Group",
+        "operationId": "create_ad_group_campaign_drafts__draft_id__ad_groups_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdGroupCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/ad-groups/{group_id}": {
+      "patch": {
+        "summary": "Update Ad Group",
+        "operationId": "update_ad_group_campaign_drafts__draft_id__ad_groups__group_id__patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdGroupUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Ad Group",
+        "operationId": "delete_ad_group_campaign_drafts__draft_id__ad_groups__group_id__delete",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          },
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Group Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/ads": {
+      "post": {
+        "summary": "Create Ad",
+        "operationId": "create_ad_campaign_drafts__draft_id__ads_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/ads/{ad_id}": {
+      "patch": {
+        "summary": "Update Ad",
+        "operationId": "update_ad_campaign_drafts__draft_id__ads__ad_id__patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          },
+          {
+            "name": "ad_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ad Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Delete Ad",
+        "operationId": "delete_ad_campaign_drafts__draft_id__ads__ad_id__delete",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          },
+          {
+            "name": "ad_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ad Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/generate-structure": {
+      "post": {
+        "summary": "Generate Structure",
+        "operationId": "generate_structure_campaign_drafts__draft_id__generate_structure_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerateStructureRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerateStructureResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/validate": {
+      "post": {
+        "summary": "Validate Draft",
+        "operationId": "validate_draft_campaign_drafts__draft_id__validate_post",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/preview": {
+      "get": {
+        "summary": "Preview Draft",
+        "operationId": "preview_draft_campaign_drafts__draft_id__preview_get",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewPayload"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/budget": {
+      "patch": {
+        "summary": "Patch Draft Budget",
+        "operationId": "patch_draft_budget_campaign_drafts__draft_id__budget_patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BudgetUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/campaign-drafts/{draft_id}/bids": {
+      "patch": {
+        "summary": "Patch Draft Bids",
+        "operationId": "patch_draft_bids_campaign_drafts__draft_id__bids_patch",
+        "parameters": [
+          {
+            "name": "draft_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BidUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDraft"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/recommendations": {
+      "get": {
+        "summary": "List Recommendations",
+        "operationId": "list_recommendations_recommendations_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecommendationList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/recommendations/{recommendation_id}/approve": {
+      "post": {
+        "summary": "Approve Recommendation",
+        "operationId": "approve_recommendation_recommendations__recommendation_id__approve_post",
+        "parameters": [
+          {
+            "name": "recommendation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Recommendation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/recommendations/{recommendation_id}/reject": {
+      "post": {
+        "summary": "Reject Recommendation",
+        "operationId": "reject_recommendation_recommendations__recommendation_id__reject_post",
+        "parameters": [
+          {
+            "name": "recommendation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Recommendation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/actions/{action_id}/apply": {
+      "post": {
+        "summary": "Apply Action",
+        "operationId": "apply_action_actions__action_id__apply_post",
+        "parameters": [
+          {
+            "name": "action_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Action Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyActionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApplyActionResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/audit-log": {
+      "get": {
+        "summary": "Audit Log",
+        "operationId": "audit_log_audit_log_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLog"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns": {
+      "get": {
+        "summary": "Yandex Campaigns",
+        "operationId": "yandex_campaigns_yandex_campaigns_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexCampaignList"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/ad-groups": {
+      "get": {
+        "summary": "Yandex Ad Groups",
+        "operationId": "yandex_ad_groups_yandex_campaigns__campaign_id__ad_groups_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAdGroupList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/ads": {
+      "get": {
+        "summary": "Yandex Ads",
+        "operationId": "yandex_ads_yandex_campaigns__campaign_id__ads_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAdList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/keywords": {
+      "get": {
+        "summary": "Yandex Keywords",
+        "operationId": "yandex_keywords_yandex_campaigns__campaign_id__keywords_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexKeywordList"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/bids": {
+      "get": {
+        "summary": "Yandex Bids",
+        "operationId": "yandex_bids_yandex_campaigns__campaign_id__bids_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/changes/check": {
+      "get": {
+        "summary": "Yandex Changes Check",
+        "operationId": "yandex_changes_check_yandex_changes_check_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/changes": {
+      "get": {
+        "summary": "Yandex Changes Get",
+        "operationId": "yandex_changes_get_yandex_changes_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/dictionaries": {
+      "get": {
+        "summary": "Yandex Dictionaries",
+        "operationId": "yandex_dictionaries_yandex_dictionaries_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/bid-modifiers": {
+      "get": {
+        "summary": "Yandex Bid Modifiers",
+        "operationId": "yandex_bid_modifiers_yandex_campaigns__campaign_id__bid_modifiers_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/negative-keywords": {
+      "get": {
+        "summary": "Yandex Negative Keywords",
+        "operationId": "yandex_negative_keywords_yandex_campaigns__campaign_id__negative_keywords_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Ids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/retargeting-lists": {
+      "get": {
+        "summary": "Yandex Retargeting Lists",
+        "operationId": "yandex_retargeting_lists_yandex_retargeting_lists_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/audience-targets": {
+      "get": {
+        "summary": "Yandex Audience Targets",
+        "operationId": "yandex_audience_targets_yandex_campaigns__campaign_id__audience_targets_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/sitelinks": {
+      "get": {
+        "summary": "Yandex Sitelinks",
+        "operationId": "yandex_sitelinks_yandex_sitelinks_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/vcards": {
+      "get": {
+        "summary": "Yandex Vcards",
+        "operationId": "yandex_vcards_yandex_vcards_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/ad-images": {
+      "get": {
+        "summary": "Yandex Ad Images",
+        "operationId": "yandex_ad_images_yandex_ad_images_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/creatives": {
+      "get": {
+        "summary": "Yandex Creatives",
+        "operationId": "yandex_creatives_yandex_creatives_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/feeds": {
+      "get": {
+        "summary": "Yandex Feeds",
+        "operationId": "yandex_feeds_yandex_feeds_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/businesses": {
+      "get": {
+        "summary": "Yandex Businesses",
+        "operationId": "yandex_businesses_yandex_businesses_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/agency-clients": {
+      "get": {
+        "summary": "Yandex Agency Clients",
+        "operationId": "yandex_agency_clients_yandex_agency_clients_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/keywords-research/has-search-volume": {
+      "get": {
+        "summary": "Yandex Keywords Has Search Volume",
+        "operationId": "yandex_keywords_has_search_volume_yandex_keywords_research_has_search_volume_get",
+        "parameters": [
+          {
+            "name": "keywords",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Keywords"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/keywords-research/deduplicate": {
+      "get": {
+        "summary": "Yandex Keywords Deduplicate",
+        "operationId": "yandex_keywords_deduplicate_yandex_keywords_research_deduplicate_get",
+        "parameters": [
+          {
+            "name": "keywords",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Keywords"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/keywords-research/wordstat/create": {
+      "get": {
+        "summary": "Yandex Wordstat Create",
+        "operationId": "yandex_wordstat_create_yandex_keywords_research_wordstat_create_get",
+        "parameters": [
+          {
+            "name": "phrases",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Phrases"
+            }
+          },
+          {
+            "name": "geo_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "213",
+              "title": "Geo Ids"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/keywords-research/wordstat/{report_id}": {
+      "get": {
+        "summary": "Yandex Wordstat Get",
+        "operationId": "yandex_wordstat_get_yandex_keywords_research_wordstat__report_id__get",
+        "parameters": [
+          {
+            "name": "report_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Report Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Yandex Wordstat Delete",
+        "operationId": "yandex_wordstat_delete_yandex_keywords_research_wordstat__report_id__delete",
+        "parameters": [
+          {
+            "name": "report_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Report Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/reports/live/{report_type}": {
+      "get": {
+        "summary": "Yandex Report",
+        "operationId": "yandex_report_yandex_reports_live__report_type__get",
+        "parameters": [
+          {
+            "name": "report_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Report Type"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/reports/search-queries-live": {
+      "get": {
+        "summary": "Yandex Search Queries Live",
+        "operationId": "yandex_search_queries_live_yandex_reports_search_queries_live_get",
+        "parameters": [
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/reports/summary": {
+      "get": {
+        "summary": "Yandex Reports Summary",
+        "operationId": "yandex_reports_summary_yandex_reports_summary_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/reports/search-queries": {
+      "get": {
+        "summary": "Yandex Search Queries",
+        "operationId": "yandex_search_queries_yandex_reports_search_queries_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexSearchQueriesReport"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/pause": {
+      "post": {
+        "summary": "Yandex Pause",
+        "operationId": "yandex_pause_yandex_campaigns__campaign_id__pause_post",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexControlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexControlResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/resume": {
+      "post": {
+        "summary": "Yandex Resume",
+        "operationId": "yandex_resume_yandex_campaigns__campaign_id__resume_post",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexControlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexControlResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Ad": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "landing_url": {
+            "type": "string",
+            "title": "Landing Url"
+          },
+          "display_link_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Link Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ad_group_id",
+          "title",
+          "text",
+          "landing_url"
+        ],
+        "title": "Ad"
+      },
+      "AdCreate": {
+        "properties": {
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Title"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Text"
+          },
+          "landing_url": {
+            "type": "string",
+            "title": "Landing Url"
+          },
+          "display_link_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Link Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ad_group_id",
+          "title",
+          "text",
+          "landing_url"
+        ],
+        "title": "AdCreate"
+      },
+      "AdGroup": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "AdGroup"
+      },
+      "AdGroupCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Name"
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "AdGroupCreate"
+      },
+      "AdGroupUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "keywords": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "title": "AdGroupUpdate"
+      },
+      "AdUpdate": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "landing_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Landing Url"
+          },
+          "display_link_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Link Path"
+          }
+        },
+        "type": "object",
+        "title": "AdUpdate"
+      },
+      "ApplyActionRequest": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 6,
+            "title": "Idempotency Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "ApplyActionRequest"
+      },
+      "ApplyActionResult": {
+        "properties": {
+          "action_id": {
+            "type": "string",
+            "title": "Action Id"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Risk Level"
+          },
+          "audit_id": {
+            "type": "string",
+            "title": "Audit Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action_id",
+          "dry_run",
+          "applied",
+          "risk_level",
+          "audit_id"
+        ],
+        "title": "ApplyActionResult"
+      },
+      "ApprovalResult": {
+        "properties": {
+          "recommendation_id": {
+            "type": "string",
+            "title": "Recommendation Id"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "rejected"
+            ],
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "recommendation_id",
+          "status"
+        ],
+        "title": "ApprovalResult"
+      },
+      "AuditCheck": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Severity"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "recommendation": {
+            "type": "string",
+            "title": "Recommendation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "title",
+          "recommendation"
+        ],
+        "title": "AuditCheck"
+      },
+      "AuditEvent": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "details": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Details"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "actor",
+          "action",
+          "entity"
+        ],
+        "title": "AuditEvent"
+      },
+      "AuditLog": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditEvent"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "AuditLog"
+      },
+      "BidSettings": {
+        "properties": {
+          "max_cpc": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cpc"
+          },
+          "keyword_bids": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Keyword Bids"
+          }
+        },
+        "type": "object",
+        "title": "BidSettings"
+      },
+      "BidUpdate": {
+        "properties": {
+          "max_cpc": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Cpc"
+          },
+          "keyword_bids": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Bids"
+          }
+        },
+        "type": "object",
+        "title": "BidUpdate"
+      },
+      "BudgetSettings": {
+        "properties": {
+          "daily_budget": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Budget"
+          },
+          "monthly_budget": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Budget"
+          },
+          "strategy": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "max_clicks",
+              "max_conversions",
+              "weekly_budget"
+            ],
+            "title": "Strategy",
+            "default": "manual"
+          }
+        },
+        "type": "object",
+        "title": "BudgetSettings"
+      },
+      "BudgetSimulationRequest": {
+        "properties": {
+          "daily_budget": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Daily Budget"
+          },
+          "avg_cpc": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Avg Cpc"
+          },
+          "conversion_rate": {
+            "type": "number",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Conversion Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "daily_budget",
+          "avg_cpc",
+          "conversion_rate"
+        ],
+        "title": "BudgetSimulationRequest"
+      },
+      "BudgetSimulationResult": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "estimated_clicks": {
+            "type": "integer",
+            "title": "Estimated Clicks"
+          },
+          "estimated_conversions": {
+            "type": "number",
+            "title": "Estimated Conversions"
+          },
+          "estimated_spend": {
+            "type": "number",
+            "title": "Estimated Spend"
+          }
+        },
+        "type": "object",
+        "required": [
+          "estimated_clicks",
+          "estimated_conversions",
+          "estimated_spend"
+        ],
+        "title": "BudgetSimulationResult"
+      },
+      "BudgetUpdate": {
+        "properties": {
+          "daily_budget": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Budget"
+          },
+          "monthly_budget": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Budget"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "manual",
+                  "max_clicks",
+                  "max_conversions",
+                  "weekly_budget"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          }
+        },
+        "type": "object",
+        "title": "BudgetUpdate"
+      },
+      "Campaign": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "business_type": {
+            "type": "string",
+            "title": "Business Type"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "spend": {
+            "type": "number",
+            "title": "Spend",
+            "default": 0.0
+          },
+          "clicks": {
+            "type": "integer",
+            "title": "Clicks",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "business_type",
+          "status"
+        ],
+        "title": "Campaign"
+      },
+      "CampaignAuditResult": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditCheck"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "CampaignAuditResult"
+      },
+      "CampaignDraft": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "const": "draft",
+            "title": "Status",
+            "default": "draft"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "business_type": {
+            "type": "string",
+            "title": "Business Type"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "monthly_budget": {
+            "type": "number",
+            "title": "Monthly Budget"
+          },
+          "landing_url": {
+            "type": "string",
+            "title": "Landing Url"
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Keywords"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Negative Keywords"
+          },
+          "ad_groups": {
+            "items": {
+              "$ref": "#/components/schemas/AdGroup"
+            },
+            "type": "array",
+            "title": "Ad Groups"
+          },
+          "ads": {
+            "items": {
+              "$ref": "#/components/schemas/Ad"
+            },
+            "type": "array",
+            "title": "Ads"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/BudgetSettings"
+          },
+          "bids": {
+            "$ref": "#/components/schemas/BidSettings"
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Risk Level",
+            "default": "medium"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "business_type",
+          "region",
+          "monthly_budget",
+          "landing_url"
+        ],
+        "title": "CampaignDraft"
+      },
+      "CampaignDraftBaseUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "business_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Type"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "monthly_budget": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Monthly Budget"
+          },
+          "landing_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Landing Url"
+          }
+        },
+        "type": "object",
+        "title": "CampaignDraftBaseUpdate"
+      },
+      "CampaignDraftKeywordsAdd": {
+        "properties": {
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keywords"
+        ],
+        "title": "CampaignDraftKeywordsAdd"
+      },
+      "CampaignDraftKeywordsRemove": {
+        "properties": {
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keywords"
+        ],
+        "title": "CampaignDraftKeywordsRemove"
+      },
+      "CampaignDraftKeywordsUpdate": {
+        "properties": {
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keywords"
+        ],
+        "title": "CampaignDraftKeywordsUpdate"
+      },
+      "CampaignDraftList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignDraft"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "CampaignDraftList"
+      },
+      "CampaignDraftRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "business_type": {
+            "type": "string",
+            "minLength": 2,
+            "title": "Business Type"
+          },
+          "region": {
+            "type": "string",
+            "minLength": 2,
+            "title": "Region"
+          },
+          "monthly_budget": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Monthly Budget"
+          },
+          "landing_url": {
+            "type": "string",
+            "title": "Landing Url"
+          }
+        },
+        "type": "object",
+        "required": [
+          "business_type",
+          "region",
+          "monthly_budget",
+          "landing_url"
+        ],
+        "title": "CampaignDraftRequest"
+      },
+      "CampaignList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Campaign"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "CampaignList"
+      },
+      "GenerateStructureRequest": {
+        "properties": {
+          "topic": {
+            "type": "string",
+            "minLength": 2,
+            "title": "Topic"
+          },
+          "region": {
+            "type": "string",
+            "minLength": 2,
+            "title": "Region"
+          },
+          "group_count": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Group Count",
+            "default": 3
+          },
+          "keywords_per_group": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Keywords Per Group",
+            "default": 5
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic",
+          "region"
+        ],
+        "title": "GenerateStructureRequest"
+      },
+      "GenerateStructureResult": {
+        "properties": {
+          "ad_groups": {
+            "items": {
+              "$ref": "#/components/schemas/AdGroup"
+            },
+            "type": "array",
+            "title": "Ad Groups"
+          },
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Keywords"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Negative Keywords"
+          },
+          "ads": {
+            "items": {
+              "$ref": "#/components/schemas/Ad"
+            },
+            "type": "array",
+            "title": "Ads"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ad_groups",
+          "keywords",
+          "negative_keywords",
+          "ads"
+        ],
+        "title": "GenerateStructureResult"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "NegativeKeywordsReplace": {
+        "properties": {
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Negative Keywords"
+          }
+        },
+        "type": "object",
+        "required": [
+          "negative_keywords"
+        ],
+        "title": "NegativeKeywordsReplace"
+      },
+      "PreviewPayload": {
+        "properties": {
+          "draft_id": {
+            "type": "string",
+            "title": "Draft Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "business_type": {
+            "type": "string",
+            "title": "Business Type"
+          },
+          "region": {
+            "type": "string",
+            "title": "Region"
+          },
+          "landing_url": {
+            "type": "string",
+            "title": "Landing Url"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/BudgetSettings"
+          },
+          "bids": {
+            "$ref": "#/components/schemas/BidSettings"
+          },
+          "ad_groups": {
+            "items": {
+              "$ref": "#/components/schemas/AdGroup"
+            },
+            "type": "array",
+            "title": "Ad Groups"
+          },
+          "ads": {
+            "items": {
+              "$ref": "#/components/schemas/Ad"
+            },
+            "type": "array",
+            "title": "Ads"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Negative Keywords"
+          },
+          "yandex_payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Yandex Payload"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "draft_id",
+          "name",
+          "business_type",
+          "region",
+          "landing_url",
+          "budget",
+          "bids",
+          "ad_groups",
+          "ads",
+          "negative_keywords",
+          "yandex_payload"
+        ],
+        "title": "PreviewPayload"
+      },
+      "Recommendation": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "action_id": {
+            "type": "string",
+            "title": "Action Id"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ],
+            "title": "Risk Level"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "rejected",
+              "applied"
+            ],
+            "title": "Status",
+            "default": "pending"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "action_id",
+          "reason",
+          "risk_level"
+        ],
+        "title": "Recommendation"
+      },
+      "RecommendationList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Recommendation"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "RecommendationList"
+      },
+      "ReportSummary": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "title": "Period",
+            "default": "last_7_days"
+          },
+          "spend": {
+            "type": "number",
+            "title": "Spend"
+          },
+          "clicks": {
+            "type": "integer",
+            "title": "Clicks"
+          },
+          "impressions": {
+            "type": "integer",
+            "title": "Impressions"
+          },
+          "ctr": {
+            "type": "number",
+            "title": "Ctr"
+          },
+          "cpc": {
+            "type": "number",
+            "title": "Cpc"
+          },
+          "conversions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversions"
+          },
+          "cpa": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpa"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "spend",
+          "clicks",
+          "impressions",
+          "ctr",
+          "cpc"
+        ],
+        "title": "ReportSummary"
+      },
+      "UtmGenerateRequest": {
+        "properties": {
+          "landing_url": {
+            "type": "string",
+            "maxLength": 2083,
+            "minLength": 1,
+            "format": "uri",
+            "title": "Landing Url"
+          },
+          "campaign": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Campaign"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Content",
+            "default": "{ad_id}"
+          },
+          "term": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Term",
+            "default": "{keyword}"
+          }
+        },
+        "type": "object",
+        "required": [
+          "landing_url",
+          "campaign"
+        ],
+        "title": "UtmGenerateRequest"
+      },
+      "UtmGenerateResult": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "requires_approval": {
+            "type": "boolean",
+            "title": "Requires Approval",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "UtmGenerateResult"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "ValidationIssue": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "info"
+            ],
+            "title": "Severity"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "severity",
+          "message"
+        ],
+        "title": "ValidationIssue"
+      },
+      "ValidationResult": {
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "title": "Valid"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            },
+            "type": "array",
+            "title": "Issues"
+          }
+        },
+        "type": "object",
+        "required": [
+          "valid",
+          "issues"
+        ],
+        "title": "ValidationResult"
+      },
+      "YandexAd": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ad_group_id",
+          "campaign_id",
+          "title",
+          "status"
+        ],
+        "title": "YandexAd"
+      },
+      "YandexAdGroup": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "campaign_id",
+          "name",
+          "status"
+        ],
+        "title": "YandexAdGroup"
+      },
+      "YandexAdGroupList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexAdGroup"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "YandexAdGroupList"
+      },
+      "YandexAdList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexAd"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "YandexAdList"
+      },
+      "YandexCampaign": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "daily_budget": {
+            "type": "number",
+            "title": "Daily Budget"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "type",
+          "daily_budget"
+        ],
+        "title": "YandexCampaign"
+      },
+      "YandexCampaignList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexCampaign"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "YandexCampaignList"
+      },
+      "YandexControlRequest": {
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 6,
+            "title": "Idempotency Key"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "YandexControlRequest"
+      },
+      "YandexControlResult": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "pause",
+              "resume"
+            ],
+            "title": "Action"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "audit_id": {
+            "type": "string",
+            "title": "Audit Id"
+          },
+          "new_status": {
+            "type": "string",
+            "title": "New Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "action",
+          "dry_run",
+          "applied",
+          "audit_id",
+          "new_status"
+        ],
+        "title": "YandexControlResult"
+      },
+      "YandexKeyword": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id"
+          },
+          "phrase": {
+            "type": "string",
+            "title": "Phrase"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ad_group_id",
+          "phrase",
+          "status"
+        ],
+        "title": "YandexKeyword"
+      },
+      "YandexKeywordList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexKeyword"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "YandexKeywordList"
+      },
+      "YandexRawResult": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "title": "Service"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "data": {
+            "title": "Data"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "yandex"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "service",
+          "method",
+          "data"
+        ],
+        "title": "YandexRawResult"
+      },
+      "YandexSearchQueriesReport": {
+        "properties": {
+          "period": {
+            "type": "string",
+            "title": "Period"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexSearchQuery"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "period",
+          "items"
+        ],
+        "title": "YandexSearchQueriesReport"
+      },
+      "YandexSearchQuery": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "impressions": {
+            "type": "integer",
+            "title": "Impressions"
+          },
+          "clicks": {
+            "type": "integer",
+            "title": "Clicks"
+          },
+          "ctr": {
+            "type": "number",
+            "title": "Ctr"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "impressions",
+          "clicks",
+          "ctr"
+        ],
+        "title": "YandexSearchQuery"
+      }
+    }
+  }
+}

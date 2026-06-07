@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn the current mock/API-first MVP into a practical campaign constructor that agents can operate through stable REST endpoints.
+Operate DirectPilot Beta as a practical API-first campaign-control layer that reads real Yandex Direct data through stable REST endpoints and keeps live writes behind explicit controls.
 
 ## Included now
 
@@ -26,7 +26,7 @@ Turn the current mock/API-first MVP into a practical campaign constructor that a
 
 ### Yandex Direct read-only facade
 
-Safe endpoints that expose current/mock external data shape without live writes:
+Safe endpoints that expose real production Yandex Direct data in `live_readonly` without live writes:
 
 - `GET /yandex/campaigns`
 - `GET /yandex/campaigns/{campaign_id}/ad-groups`
@@ -37,7 +37,7 @@ Safe endpoints that expose current/mock external data shape without live writes:
 
 ### Limited live-control facade
 
-Only pause/resume-style actions are allowed in this scope. They must remain safe in mock/sandbox mode and must require approval/idempotency/audit gates before any real integration is later connected.
+Only pause/resume-style actions are allowed in this scope. They support dry-run in `live_readonly`; real Direct writes require `live_write`, approval, idempotency and audit gates.
 
 - `POST /yandex/campaigns/{campaign_id}/pause`
 - `POST /yandex/campaigns/{campaign_id}/resume`
@@ -51,9 +51,15 @@ Only pause/resume-style actions are allowed in this scope. They must remain safe
 
 ## Safety rules
 
-- Default mode is mock/sandbox.
+- Current production-data mode is `live_readonly`.
+- `mock` and `sandbox` remain available only for development/testing.
 - No secret values in responses, docs, tests, or logs.
 - Write-like operations record audit events.
 - Dangerous operations expose `dry_run`, `approved`, `idempotency_key`, `risk_level` or equivalent where applicable.
 - Documentation must be simple enough for future agents to choose the correct endpoint without guessing.
 - Some MVP `DELETE` endpoints accept JSON bodies for agent ergonomics; revisit this before putting the app behind gateways/proxies that may strip DELETE bodies.
+
+
+## Расширенный Direct API слой
+
+Добавлен read-only/API-first слой для полного практического покрытия Яндекс Директа: reports, bids, changes, dictionaries, bid modifiers, negativekeywordsharedsets, retargeting/audience targets, keyword research/Wordstat, sitelinks, vcards, images, creatives, feeds, businesses и agency clients. Live-write граница не изменилась: production-записи возможны только через `live_write`, approval, `dry_run=false` и idempotency key.

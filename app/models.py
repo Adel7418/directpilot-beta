@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -363,6 +363,14 @@ class YandexSearchQueriesReport(BaseModel):
     period: str
     items: list[YandexSearchQuery]
     source: Literal["mock", "yandex"] = "mock"
+    read_only: bool = True
+
+
+class YandexRawResult(BaseModel):
+    service: str
+    method: str
+    data: Any
+    source: Literal["mock", "yandex"] = "yandex"
     read_only: bool = True
 
 

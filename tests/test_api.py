@@ -11,7 +11,7 @@ def test_health_endpoint_returns_mode_and_safe_yandex_status():
     assert response.status_code == 200
     body = response.json()
     assert body["service"] == "directpilot-beta"
-    assert body["mode"] in {"mock", "sandbox", "live_readonly"}
+    assert body["mode"] in {"mock", "sandbox", "live_readonly", "live_write"}
     assert "token" not in str(body).lower()
 
 

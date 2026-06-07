@@ -28,6 +28,7 @@ def test_clients_get_sends_bearer_token_and_redacts_response_errors():
     assert captured["url"] == "https://api-sandbox.direct.yandex.com/json/v5/clients"
     assert captured["authorization"] == "Bearer secret-token"
     assert '"method":"get"' in captured["body"]
+    assert "SelectionCriteria" not in captured["body"]
     assert result["ok"] is False
     assert result["error"]["error_code"] == 58
     assert "secret-token" not in str(result)

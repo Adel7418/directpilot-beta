@@ -1,10 +1,13 @@
+from __future__ import annotations
+
 from html import escape
+from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.services import check_yandex_direct
 from app.models import (
     AdCreate,
@@ -21,7 +24,6 @@ from app.models import (
     BudgetSimulationResult,
     BudgetUpdate,
     CampaignAuditResult,
-    Campaign,
     CampaignDraft,
     CampaignDraftBaseUpdate,
     CampaignDraftKeywordsAdd,
@@ -49,11 +51,28 @@ from app.models import (
     YandexControlResult,
     YandexKeyword,
     YandexKeywordList,
+    YandexRawResult,
     YandexSearchQueriesReport,
     YandexSearchQuery,
 )
 from app.store import store
+from app.yandex_direct import YandexDirectClient, YandexDirectError
 from app.yandex_facade import mock_yandex
+
+
+def get_yandex_client(
+    settings: Settings = Depends(get_settings),
+) -> YandexDirectClient | None:
+    """Build a YandexDirectClient for credentialed Yandex modes.
+
+    Mock mode stays no-network. sandbox/live_readonly/live_write can all read
+    real Direct data; write permission is enforced later by store.yandex_control.
+    Missing-token errors are raised inside YandexDirectClient._call(), so dry_run
+    paths remain safe while credentialed calls return redacted 502 errors.
+    """
+    if settings.directpilot_mode not in ("sandbox", "live_readonly", "live_write"):
+        return None
+    return YandexDirectClient(settings=settings)
 
 app = FastAPI(
     title="DirectPilot Beta API",
@@ -68,8 +87,8 @@ def demo_layout(title: str, content: str) -> HTMLResponse:
         for href, label in [
             ("/", "Главная"),
             ("/demo/yandex-status", "Статус Яндекса"),
-            ("/demo/campaigns", "Mock campaigns"),
-            ("/demo/report", "Mock report"),
+            ("/demo/campaigns", "Yandex campaigns"),
+            ("/demo/report", "Report"),
             ("/demo/recommendations", "Recommendations"),
             ("/demo/tools", "Tools"),
             ("/demo/security-approval", "Security/approval flow"),
@@ -96,9 +115,9 @@ def demo_layout(title: str, content: str) -> HTMLResponse:
 </head>
 <body>
   <header>
-    <span class="badge">MVP demo</span>
+    <span class="badge">Live read-only</span>
     <h1>DirectPilot Beta</h1>
-    <p>Демонстрационный интерфейс без записи в Яндекс: только mock-данные и read-only сценарии для заявки на Yandex Direct API.</p>
+    <p>Интерфейс DirectPilot Beta для чтения реальных данных Яндекс Директа без live-записей.</p>
     <nav>{nav}</nav>
   </header>
   <main>{content}</main>
@@ -113,12 +132,12 @@ def demo_home() -> HTMLResponse:
         "Главная",
         """
         <section class="card">
-          <h2>DirectPilot Beta — демо-стенд для заявки на Yandex Direct API</h2>
-          <p>Показывает ценность продукта до одобрения доступа: аудит кампаний, отчёты, рекомендации и контроль согласования.</p>
+          <h2>DirectPilot Beta — API-first слой для Яндекс Директа</h2>
+          <p>Показывает real-data read-only сценарий: доступ к кампаниям, группам, объявлениям и ключевым фразам через внешний REST API.</p>
           <ul>
-            <li>Интеграция с Direct API пока представлена безопасным статусом.</li>
-            <li>Все кампании, отчёты и рекомендации построены на mock-данных.</li>
-            <li>Любое применение изменений требует явного approve и поддерживает dry-run.</li>
+            <li>Direct API используется в режиме <code>live_readonly</code> для production-данных.</li>
+            <li>Live write-вызовы заблокированы до отдельного режима <code>live_write</code>.</li>
+            <li>Любое применение изменений требует явного approve, idempotency key и поддерживает dry-run.</li>
           </ul>
           <h3>API demo endpoints</h3>
           <ul>
@@ -130,7 +149,7 @@ def demo_home() -> HTMLResponse:
             <li><a href="/audit-log">GET /audit-log</a></li>
             <li><a href="/integrations/yandex/direct/status">GET /integrations/yandex/direct/status</a></li>
           </ul>
-          <p class="safe">No live writes: DirectPilot Beta работает только с in-memory mock state.</p>
+          <p class="safe">Real data, no live writes: DirectPilot Beta читает production-данные и не меняет настройки Директа в live_readonly.</p>
         </section>
         """,
     )
@@ -144,9 +163,9 @@ def demo_yandex_status() -> HTMLResponse:
         f"""
         <section class="card">
           <h2>Статус доступа к Yandex Direct API</h2>
-          <p class="safe">Direct API пока не используется в live-режиме.</p>
+          <p class="safe">Direct API используется для real-data read-only доступа.</p>
           <p>Текущий режим приложения: <strong>{escape(settings.directpilot_mode)}</strong>.</p>
-          <p>Демо не показывает секреты, не читает локальные конфигурационные файлы и не выполняет live-записи.</p>
+          <p>Интерфейс не показывает секреты и не выполняет live-записи.</p>
         </section>
         """,
     )
@@ -154,17 +173,20 @@ def demo_yandex_status() -> HTMLResponse:
 
 @app.get("/demo/campaigns", response_class=HTMLResponse, include_in_schema=False)
 def demo_campaigns() -> HTMLResponse:
-    campaigns = list_campaigns().items
+    settings = get_settings()
+    client = get_yandex_client(settings)
+    campaigns = yandex_campaigns(settings=settings, client=client).items
     rows = "".join(
-        f"<tr><td>{escape(c.name)}</td><td>{escape(c.business_type)}</td><td>{escape(c.status)}</td><td>{c.spend:.0f} ₽</td><td>{c.clicks}</td></tr>"
+        f"<tr><td>{escape(c.name)}</td><td>{escape(c.type)}</td><td>{escape(c.status)}</td><td>{c.daily_budget:.0f} ₽</td></tr>"
         for c in campaigns
     )
     return demo_layout(
-        "Mock campaigns",
+        "Yandex campaigns",
         f"""
         <section class="card">
-          <h2>Mock campaigns</h2>
-          <table><thead><tr><th>Кампания</th><th>Тип бизнеса</th><th>Статус</th><th>Расход</th><th>Клики</th></tr></thead><tbody>{rows}</tbody></table>
+          <h2>Yandex campaigns</h2>
+          <p>Источник: production API Директа, режим read-only.</p>
+          <table><thead><tr><th>Кампания</th><th>Тип</th><th>Статус</th><th>Дневной бюджет</th></tr></thead><tbody>{rows}</tbody></table>
         </section>
         """,
     )
@@ -565,11 +587,165 @@ def audit_log() -> AuditLog:
 
 # ---------------------------------------------------------------------------
 # Yandex Direct read-only facade
+#
+# Mock mode returns deterministic in-memory data (no network).
+# Sandbox / live_readonly / live_write hit the real Direct API v5
+# (campaigns.get / adgroups.get / ads.get / keywords.get). These are all
+# read-only — the live modes never trigger a write call from this facade.
 # ---------------------------------------------------------------------------
 
 
+def _yandex_error_to_502(exc: YandexDirectError) -> HTTPException:
+    """Translate a YandexDirectError into an HTTP 502 with no token in detail."""
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        },
+    )
+
+
+# --- mapping helpers --------------------------------------------------------
+#
+# These helpers are intentionally permissive: Direct API v5 may omit
+# fields (status on a fresh ad group, daily_budget on a campaign created
+# without a budget cap, etc.). We never let a missing field crash the
+# endpoint — we fall back to safe defaults.
+# ---------------------------------------------------------------------------
+
+
+def _extract_campaigns(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Map Direct API v5 campaigns.get result → list of YandexCampaign dicts."""
+    items: list[dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return items
+    raw = result.get("Campaigns") or result.get("campaigns") or []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        daily_budget = c.get("DailyBudget")
+        if isinstance(daily_budget, dict):
+            # Yandex returns amount in micro-units (1/1_000_000 of currency).
+            amount = daily_budget.get("Amount", 0) or 0
+            try:
+                budget_value = float(amount) / 1_000_000
+            except (TypeError, ValueError):
+                budget_value = 0.0
+        else:
+            budget_value = 0.0
+        items.append(
+            {
+                "id": str(c.get("Id") or c.get("id") or ""),
+                "name": str(c.get("Name") or c.get("name") or ""),
+                "status": str(c.get("Status") or c.get("status") or "UNKNOWN"),
+                "type": str(c.get("Type") or c.get("type") or "UNKNOWN"),
+                "daily_budget": budget_value,
+            }
+        )
+    return items
+
+
+def _extract_ad_groups(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return items
+    raw = result.get("AdGroups") or result.get("adgroups") or []
+    for g in raw:
+        if not isinstance(g, dict):
+            continue
+        items.append(
+            {
+                "id": str(g.get("Id") or g.get("id") or ""),
+                "campaign_id": str(g.get("CampaignId") or g.get("campaignId") or ""),
+                "name": str(g.get("Name") or g.get("name") or ""),
+                "status": str(g.get("Status") or g.get("status") or "UNKNOWN"),
+            }
+        )
+    return items
+
+
+def _extract_ads(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return items
+    raw = result.get("Ads") or result.get("ads") or []
+    for a in raw:
+        if not isinstance(a, dict):
+            continue
+        text_ad = a.get("TextAd") or a.get("textAd")
+        title = ""
+        if isinstance(text_ad, dict):
+            raw_title = text_ad.get("Title") or text_ad.get("title")
+            if isinstance(raw_title, str):
+                title = raw_title
+        items.append(
+            {
+                "id": str(a.get("Id") or a.get("id") or ""),
+                "ad_group_id": str(a.get("AdGroupId") or a.get("adGroupId") or ""),
+                "campaign_id": str(a.get("CampaignId") or a.get("campaignId") or ""),
+                "title": title,
+                "status": str(a.get("Status") or a.get("status") or "UNKNOWN"),
+            }
+        )
+    return items
+
+
+def _extract_keywords(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return items
+    raw = result.get("Keywords") or result.get("keywords") or []
+    for k in raw:
+        if not isinstance(k, dict):
+            continue
+        items.append(
+            {
+                "id": str(k.get("Id") or k.get("id") or ""),
+                "ad_group_id": str(k.get("AdGroupId") or k.get("adGroupId") or ""),
+                "phrase": str(k.get("Keyword") or k.get("keyword") or ""),
+                "status": str(k.get("Status") or k.get("status") or "UNKNOWN"),
+            }
+        )
+    return items
+
+
+def _is_live_read_mode(settings: Settings) -> bool:
+    """True for any non-mock mode that should use the real get endpoints."""
+    return settings.directpilot_mode in ("sandbox", "live_readonly", "live_write")
+
+
+# --- endpoint handlers ------------------------------------------------------
+
+
 @app.get("/yandex/campaigns", response_model=YandexCampaignList)
-def yandex_campaigns() -> YandexCampaignList:
+def yandex_campaigns(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexCampaignList:
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.campaigns_get()
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        f"Yandex Direct rejected campaigns.get: "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        items = _extract_campaigns(response.get("result"))
+        return YandexCampaignList(
+            items=[YandexCampaign(**c) for c in items],
+            source="yandex",
+            read_only=True,
+        )
     return YandexCampaignList(
         items=[YandexCampaign(**campaign) for campaign in mock_yandex.list_campaigns()],
         source="mock",
@@ -581,13 +757,67 @@ def yandex_campaigns() -> YandexCampaignList:
     "/yandex/campaigns/{campaign_id}/ad-groups",
     response_model=YandexAdGroupList,
 )
-def yandex_ad_groups(campaign_id: str) -> YandexAdGroupList:
+def yandex_ad_groups(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdGroupList:
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.adgroups_get(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        f"Yandex Direct rejected adgroups.get: "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        items = _extract_ad_groups(response.get("result"))
+        return YandexAdGroupList(
+            items=[YandexAdGroup(**g) for g in items],
+            source="yandex",
+            read_only=True,
+        )
     items = [YandexAdGroup(**g) for g in mock_yandex.list_ad_groups(campaign_id)]
     return YandexAdGroupList(items=items, source="mock", read_only=True)
 
 
 @app.get("/yandex/campaigns/{campaign_id}/ads", response_model=YandexAdList)
-def yandex_ads(campaign_id: str) -> YandexAdList:
+def yandex_ads(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdList:
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.ads_get(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        f"Yandex Direct rejected ads.get: "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        items = _extract_ads(response.get("result"))
+        return YandexAdList(
+            items=[YandexAd(**a) for a in items],
+            source="yandex",
+            read_only=True,
+        )
     items = [YandexAd(**a) for a in mock_yandex.list_ads(campaign_id)]
     return YandexAdList(items=items, source="mock", read_only=True)
 
@@ -596,7 +826,34 @@ def yandex_ads(campaign_id: str) -> YandexAdList:
     "/yandex/campaigns/{campaign_id}/keywords",
     response_model=YandexKeywordList,
 )
-def yandex_keywords(campaign_id: str) -> YandexKeywordList:
+def yandex_keywords(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexKeywordList:
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.keywords_get(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        f"Yandex Direct rejected keywords.get: "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        items = _extract_keywords(response.get("result"))
+        return YandexKeywordList(
+            items=[YandexKeyword(**kw) for kw in items],
+            source="yandex",
+            read_only=True,
+        )
     items = mock_yandex.list_keywords(campaign_id)
     return YandexKeywordList(
         items=[YandexKeyword(**kw) for kw in items],
@@ -604,6 +861,299 @@ def yandex_keywords(campaign_id: str) -> YandexKeywordList:
         read_only=True,
     )
 
+
+def _raw_yandex_result(service: str, method: str, response: dict[str, Any]) -> YandexRawResult:
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": f"Yandex Direct rejected {service}.{method}: error_code={err.get('error_code')!r}",
+            },
+        )
+    return YandexRawResult(
+        service=service,
+        method=method,
+        data=response.get("result"),
+        source="yandex",
+        read_only=True,
+    )
+
+
+def _require_yandex_read_client(
+    settings: Settings,
+    client: YandexDirectClient | None,
+) -> YandexDirectClient:
+    if not _is_live_read_mode(settings) or client is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This endpoint requires sandbox, live_readonly, or live_write mode with Yandex credentials",
+        )
+    return client
+
+
+def _call_raw_read(
+    settings: Settings,
+    client: YandexDirectClient | None,
+    service: str,
+    method: str,
+    call,
+) -> YandexRawResult:
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        response = call(direct)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    return _raw_yandex_result(service, method, response)
+
+
+@app.get("/yandex/campaigns/{campaign_id}/bids", response_model=YandexRawResult)
+def yandex_bids(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "bids", "get", lambda c: c.bids_get(campaign_id))
+
+
+@app.get("/yandex/changes/check", response_model=YandexRawResult)
+def yandex_changes_check(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "changes", "check", lambda c: c.changes_check())
+
+
+@app.get("/yandex/changes", response_model=YandexRawResult)
+def yandex_changes_get(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "changes", "get", lambda c: c.changes_get())
+
+
+@app.get("/yandex/dictionaries", response_model=YandexRawResult)
+def yandex_dictionaries(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "dictionaries", "get", lambda c: c.dictionaries_get())
+
+
+@app.get("/yandex/campaigns/{campaign_id}/bid-modifiers", response_model=YandexRawResult)
+def yandex_bid_modifiers(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "bidmodifiers", "get", lambda c: c.bidmodifiers_get(campaign_id))
+
+
+@app.get("/yandex/campaigns/{campaign_id}/negative-keywords", response_model=YandexRawResult)
+def yandex_negative_keywords(
+    campaign_id: str,
+    ids: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "negativekeywordsharedsets",
+        "get",
+        lambda c: c.negativekeywords_get(campaign_id, _csv_ints(ids)),
+    )
+
+
+@app.get("/yandex/retargeting-lists", response_model=YandexRawResult)
+def yandex_retargeting_lists(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "retargetinglists", "get", lambda c: c.retargetinglists_get())
+
+
+@app.get("/yandex/campaigns/{campaign_id}/audience-targets", response_model=YandexRawResult)
+def yandex_audience_targets(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "audiencetargets", "get", lambda c: c.audiencetargets_get(campaign_id))
+
+
+@app.get("/yandex/sitelinks", response_model=YandexRawResult)
+def yandex_sitelinks(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "sitelinks", "get", lambda c: c.sitelinks_get())
+
+
+@app.get("/yandex/vcards", response_model=YandexRawResult)
+def yandex_vcards(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "vcards", "get", lambda c: c.vcards_get())
+
+
+@app.get("/yandex/ad-images", response_model=YandexRawResult)
+def yandex_ad_images(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "adimages", "get", lambda c: c.adimages_get())
+
+
+@app.get("/yandex/creatives", response_model=YandexRawResult)
+def yandex_creatives(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "creatives", "get", lambda c: c.creatives_get())
+
+
+@app.get("/yandex/feeds", response_model=YandexRawResult)
+def yandex_feeds(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "feeds", "get", lambda c: c.feeds_get())
+
+
+@app.get("/yandex/businesses", response_model=YandexRawResult)
+def yandex_businesses(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "businesses", "get", lambda c: c.businesses_get())
+
+
+@app.get("/yandex/agency-clients", response_model=YandexRawResult)
+def yandex_agency_clients(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(settings, client, "agencyclients", "get", lambda c: c.agencyclients_get())
+
+
+def _csv_items(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _csv_ints(value: str) -> list[int]:
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+@app.get("/yandex/keywords-research/has-search-volume", response_model=YandexRawResult)
+def yandex_keywords_has_search_volume(
+    keywords: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "keywordsresearch",
+        "hasSearchVolume",
+        lambda c: c.keywordsresearch_has_search_volume(_csv_items(keywords)),
+    )
+
+
+@app.get("/yandex/keywords-research/deduplicate", response_model=YandexRawResult)
+def yandex_keywords_deduplicate(
+    keywords: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "keywordsresearch",
+        "deduplicate",
+        lambda c: c.keywordsresearch_deduplicate(_csv_items(keywords)),
+    )
+
+
+@app.get("/yandex/keywords-research/wordstat/create", response_model=YandexRawResult)
+def yandex_wordstat_create(
+    phrases: str,
+    geo_ids: str = "213",
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "keywordsresearch",
+        "createNewWordstatReport",
+        lambda c: c.keywordsresearch_create_wordstat_report(_csv_items(phrases), _csv_ints(geo_ids)),
+    )
+
+
+@app.get("/yandex/keywords-research/wordstat/{report_id}", response_model=YandexRawResult)
+def yandex_wordstat_get(
+    report_id: int,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "keywordsresearch",
+        "getWordstatReport",
+        lambda c: c.keywordsresearch_get_wordstat_report(report_id),
+    )
+
+
+@app.delete("/yandex/keywords-research/wordstat/{report_id}", response_model=YandexRawResult)
+def yandex_wordstat_delete(
+    report_id: int,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "keywordsresearch",
+        "deleteWordstatReport",
+        lambda c: c.keywordsresearch_delete_wordstat_report(report_id),
+    )
+
+
+@app.get("/yandex/reports/live/{report_type}", response_model=YandexRawResult)
+def yandex_report(
+    report_type: str,
+    date_from: str,
+    date_to: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "reports",
+        report_type,
+        lambda c: c.report(report_type, date_from=date_from, date_to=date_to),
+    )
+
+
+@app.get("/yandex/reports/search-queries-live", response_model=YandexRawResult)
+def yandex_search_queries_live(
+    date_from: str,
+    date_to: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult:
+    return _call_raw_read(
+        settings,
+        client,
+        "reports",
+        "SEARCH_QUERY_PERFORMANCE_REPORT",
+        lambda c: c.report("SEARCH_QUERY_PERFORMANCE_REPORT", date_from=date_from, date_to=date_to),
+    )
 
 @app.get("/yandex/reports/summary", response_model=ReportSummary)
 def yandex_reports_summary() -> ReportSummary:
@@ -634,17 +1184,60 @@ def yandex_search_queries() -> YandexSearchQueriesReport:
     "/yandex/campaigns/{campaign_id}/pause",
     response_model=YandexControlResult,
 )
-def yandex_pause(campaign_id: str, payload: YandexControlRequest) -> YandexControlResult:
+def yandex_pause(
+    campaign_id: str,
+    payload: YandexControlRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexControlResult:
     if not payload.approved:
         raise HTTPException(status_code=409, detail="Action requires explicit approval")
-    return store.yandex_control(campaign_id, "pause", payload)
+    if settings.directpilot_mode == "live_readonly" and not payload.dry_run:
+        raise HTTPException(
+            status_code=409,
+            detail="Live writes require DIRECTPILOT_MODE=live_write; live_readonly only allows dry_run",
+        )
+    try:
+        return store.yandex_control(
+            campaign_id, "pause", payload, settings=settings, client=client
+        )
+    except YandexDirectError as exc:
+        # Never include the OAuth token in the response.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": str(exc),
+            },
+        ) from exc
 
 
 @app.post(
     "/yandex/campaigns/{campaign_id}/resume",
     response_model=YandexControlResult,
 )
-def yandex_resume(campaign_id: str, payload: YandexControlRequest) -> YandexControlResult:
+def yandex_resume(
+    campaign_id: str,
+    payload: YandexControlRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexControlResult:
     if not payload.approved:
         raise HTTPException(status_code=409, detail="Action requires explicit approval")
-    return store.yandex_control(campaign_id, "resume", payload)
+    if settings.directpilot_mode == "live_readonly" and not payload.dry_run:
+        raise HTTPException(
+            status_code=409,
+            detail="Live writes require DIRECTPILOT_MODE=live_write; live_readonly only allows dry_run",
+        )
+    try:
+        return store.yandex_control(
+            campaign_id, "resume", payload, settings=settings, client=client
+        )
+    except YandexDirectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": str(exc),
+            },
+        ) from exc

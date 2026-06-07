@@ -6,12 +6,31 @@ All endpoints must:
 - never perform real network calls
 - pause/resume: require approved=true + idempotency_key, default dry_run=True,
   write audit event, return applied=not dry_run
+
+These tests run in mock mode so the contract "mock mode unchanged" is
+verified end-to-end. Live-mode behavior is covered in test_live_control.py.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.config import Settings
+from app.main import app, get_settings
 from app.store import store
+
+
+@pytest.fixture(autouse=True)
+def _force_mock_mode():
+    """Pin directpilot_mode=mock for the legacy facade contract tests.
+
+    The .env may say sandbox; this fixture re-installs a mock override
+    before every test in this module, in case a previous module's
+    dependency_overrides leaked.
+    """
+    _mock = Settings(_env_file=None, directpilot_mode="mock")
+    app.dependency_overrides[get_settings] = lambda: _mock
+    yield
+    # Leave the override in place; other modules may reset it.
 
 client = TestClient(app)
 

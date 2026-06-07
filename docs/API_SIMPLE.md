@@ -2,15 +2,18 @@
 
 DirectPilot Beta — отдельное API-first приложение для безопасной подготовки и проверки рекламных кампаний Яндекс Директ.
 
-## Главное правило безопасности
+## Текущий режим
 
-Сейчас приложение работает в `mock/sandbox` режиме:
+Сейчас приложение работает с реальными production-данными Директа в режиме:
 
-- реальные кампании в Яндекс Директ не создаются;
-- реальные настройки в Директе не меняются;
+```text
+DIRECTPILOT_MODE=live_readonly
+```
+
+- реальные кампании, группы, объявления и ключевые фразы читаются через API Директа;
+- реальные настройки в Директе не меняются в `live_readonly`;
 - токены и секреты не выводятся в ответах;
-- все write-like действия пишутся в audit log;
-- потенциально опасные действия требуют `approved=true` и `idempotency_key`.
+- write-like действия требуют `approved=true`, `idempotency_key` и отдельный режим `live_write`.
 
 OpenAPI:
 
@@ -46,7 +49,7 @@ GET /integrations/yandex/direct/status
 GET /campaigns
 ```
 
-Возвращает mock-кампании и созданные черновики.
+Возвращает внутренний список кампаний/черновиков приложения. Для реальных кампаний Директа используйте `/yandex/campaigns`.
 
 ### Создать черновик кампании
 
@@ -350,7 +353,7 @@ PATCH /campaign-drafts/{draft_id}/bids
 
 ## 10. Yandex Direct read-only facade
 
-Эти методы безопасны: они возвращают mock/read-only данные в форме, похожей на будущие ответы Direct.
+В режиме `live_readonly` эти методы читают реальные production-данные Яндекс Директа и возвращают `source="yandex"`, `read_only=true`. В режиме `mock` они возвращают локальные демонстрационные данные.
 
 ### Кампании
 
@@ -392,16 +395,25 @@ GET /yandex/reports/search-queries
 
 ```json
 {
-  "source": "mock",
+  "source": "yandex",
   "read_only": true
 }
+```
+
+Последняя проверка реального аккаунта:
+
+```text
+GET /yandex/campaigns -> count=1
+GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/ad-groups -> count=1
+GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/ads -> count=1
+GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/keywords -> count=32
 ```
 
 ---
 
 ## 11. Pause / resume
 
-Это единственная часть из live-control блока, которую оставили в scope. Сейчас она тоже работает как mock/sandbox control facade.
+Это ограниченный live-control блок. В текущем `live_readonly` режиме реальные write-вызовы заблокированы; `dry_run=true` доступен для проверки сценария без изменения Директа.
 
 ### Поставить кампанию на паузу
 
@@ -439,7 +451,7 @@ POST /yandex/campaigns/{campaign_id}/resume
 - `idempotency_key` обязателен;
 - при `dry_run=true` реальное состояние не меняется;
 - audit log фиксирует запрос;
-- реальных внешних write calls нет.
+- реальные внешние write calls возможны только в отдельном режиме `live_write` при `dry_run=false`.
 
 ---
 
@@ -468,7 +480,7 @@ POST /recommendations/{recommendation_id}/reject
 POST /actions/{action_id}/apply
 ```
 
-`apply` требует approve и idempotency key. Сейчас это mock/dry-run логика.
+`apply` требует approve и idempotency key. Для внешних изменений в Директе используется отдельный live-control слой `/yandex/.../pause|resume`; общий recommendations/apply flow остаётся внутренним сценарием приложения.
 
 ---
 
@@ -509,4 +521,62 @@ POST /simulations/budget
 - отправки preview payload в Direct;
 - автоматического расходования бюджета.
 
-Это сделано намеренно: сначала безопасный конструктор, preview, validate, read-only слой и audit trail. Live writes — отдельный этап после проверки доступа, лимитов и approval-политики.
+Это сделано намеренно: текущий production-режим — real-data read-only. Live writes — отдельный управляемый этап через `live_write` после проверки лимитов и approval-политики.
+
+
+### Расширенный read-only/API-first слой Яндекс Директа
+
+DirectPilot Beta теперь содержит обёртки для полного практического read-only и аналитического покрытия Direct API v5. Все методы работают через реальный OAuth-токен из переменной окружения, но значение токена нигде не сохраняется и не выводится.
+
+#### Аналитика reports
+
+```text
+GET /yandex/reports/live/CAMPAIGN_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+GET /yandex/reports/live/ADGROUP_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+GET /yandex/reports/live/AD_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+GET /yandex/reports/live/CRITERIA_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+GET /yandex/reports/search-queries-live?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+```
+
+Назначение: статистика кампаний, групп, объявлений, условий показа и поисковых запросов. Ответ возвращается как read-only provider payload (`source=yandex`, `read_only=true`).
+
+#### Настройки и диагностика кампаний
+
+```text
+GET /yandex/campaigns/{campaign_id}/bids              -> bids.get
+GET /yandex/campaigns/{campaign_id}/bid-modifiers     -> bidmodifiers.get
+GET /yandex/campaigns/{campaign_id}/negative-keywords?ids=1,2 -> negativekeywordsharedsets.get
+GET /yandex/changes/check                             -> changes.check
+GET /yandex/changes                                   -> changes.get
+GET /yandex/dictionaries                              -> dictionaries.get
+```
+
+Назначение: ставки, корректировки ставок, минус-фразы, изменения в аккаунте и справочники Директа.
+
+#### Аудит таргетингов и семантики
+
+```text
+GET /yandex/retargeting-lists                         -> retargetinglists.get
+GET /yandex/campaigns/{campaign_id}/audience-targets  -> audiencetargets.get
+GET /yandex/keywords-research/has-search-volume?keywords=...
+GET /yandex/keywords-research/deduplicate?keywords=...
+GET /yandex/keywords-research/wordstat/create?phrases=...&geo_ids=213
+GET /yandex/keywords-research/wordstat/{report_id}
+DELETE /yandex/keywords-research/wordstat/{report_id}
+```
+
+Назначение: аудит аудиторий, проверка спроса, дедупликация фраз и работа с Wordstat-отчётами.
+
+#### Расширения объявлений и ассеты
+
+```text
+GET /yandex/sitelinks      -> sitelinks.get
+GET /yandex/vcards         -> vcards.get
+GET /yandex/ad-images      -> adimages.get
+GET /yandex/creatives      -> creatives.get
+GET /yandex/feeds          -> feeds.get
+GET /yandex/businesses     -> businesses.get
+GET /yandex/agency-clients -> agencyclients.get
+```
+
+Назначение: быстрые ссылки, визитки, изображения, креативы, фиды, организации и агентские клиенты. Эти endpoints нужны, чтобы программа могла строить полную карту аккаунта Директа, а не только кампании/ключи.

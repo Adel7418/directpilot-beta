@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_env: str = "local"
-    directpilot_mode: str = Field(default="mock", pattern="^(mock|sandbox|live_readonly)$")
+    directpilot_mode: str = Field(default="mock", pattern="^(mock|sandbox|live_readonly|live_write)$")
     yandex_client_id: str | None = None
     yandex_client_secret: str | None = None
     yandex_oauth_token: str | None = None
