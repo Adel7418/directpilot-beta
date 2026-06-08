@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from html import escape
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 
 from app.config import Settings, get_settings
 from app.services import check_yandex_direct
@@ -14,6 +13,7 @@ from app.models import (
     AdGroupCreate,
     AdGroupUpdate,
     AdUpdate,
+    ApiErrorResponse,
     ApplyActionRequest,
     ApplyActionResult,
     ApprovalResult,
@@ -38,26 +38,48 @@ from app.models import (
     PreviewPayload,
     RecommendationList,
     ReportSummary,
+    SemanticChangeApplyRequest,
+    SemanticChangeApplyResult,
+    SemanticChangePackage,
+    SemanticChangeRequest,
     UtmGenerateRequest,
     UtmGenerateResult,
     ValidationResult,
+    YandexAccountBalance,
+    YandexAccountBalanceResult,
     YandexAd,
     YandexAdGroup,
     YandexAdGroupList,
     YandexAdList,
     YandexCampaign,
+    YandexCampaignFinance,
+    YandexCampaignFinanceList,
     YandexCampaignList,
     YandexControlRequest,
     YandexControlResult,
     YandexKeyword,
     YandexKeywordList,
+    YandexMetrikaResult,
     YandexRawResult,
+    YandexSearchApiResult,
     YandexSearchQueriesReport,
     YandexSearchQuery,
+    YandexVCardRequest,
+    YandexVCardResult,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError
 from app.yandex_facade import mock_yandex
+from app.yandex_metrika import (
+    YandexMetrikaClient,
+    YandexMetrikaError,
+    YandexMetrikaMissingTokenError,
+)
+from app.yandex_search_wordstat import (
+    YandexSearchWordstatClient,
+    YandexSearchWordstatError,
+    YandexSearchWordstatMissingKeyError,
+)
 
 
 def get_yandex_client(
@@ -81,185 +103,96 @@ app = FastAPI(
 )
 
 
-def demo_layout(title: str, content: str) -> HTMLResponse:
-    nav = "".join(
-        f'<a href="{href}">{label}</a>'
-        for href, label in [
-            ("/", "Главная"),
-            ("/demo/yandex-status", "Статус Яндекса"),
-            ("/demo/campaigns", "Yandex campaigns"),
-            ("/demo/report", "Report"),
-            ("/demo/recommendations", "Recommendations"),
-            ("/demo/tools", "Tools"),
-            ("/demo/security-approval", "Security/approval flow"),
-        ]
-    )
-    html = f"""<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{escape(title)} · DirectPilot Beta</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; margin: 0; color: #172033; background: #f7f8fb; }}
-    header, main {{ max-width: 960px; margin: 0 auto; padding: 24px; }}
-    header {{ background: #fff; border-bottom: 1px solid #dde3ee; }}
-    nav {{ display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }}
-    nav a {{ color: #0b57d0; text-decoration: none; font-weight: 600; }}
-    .card {{ background: #fff; border: 1px solid #dde3ee; border-radius: 14px; padding: 20px; margin: 16px 0; }}
-    .badge {{ display: inline-block; background: #e8f3ff; color: #064a9b; border-radius: 999px; padding: 4px 10px; }}
-    table {{ width: 100%; border-collapse: collapse; }}
-    th, td {{ text-align: left; border-bottom: 1px solid #dde3ee; padding: 8px; }}
-    .safe {{ color: #146c2e; font-weight: 700; }}
-  </style>
-</head>
-<body>
-  <header>
-    <span class="badge">Live read-only</span>
-    <h1>DirectPilot Beta</h1>
-    <p>Интерфейс DirectPilot Beta для чтения реальных данных Яндекс Директа без live-записей.</p>
-    <nav>{nav}</nav>
-  </header>
-  <main>{content}</main>
-</body>
-</html>"""
-    return HTMLResponse(html)
+YANDEX_DIRECT_ERROR_RESPONSES = {
+    502: {"model": ApiErrorResponse, "description": "Yandex Direct upstream error"},
+    503: {"model": ApiErrorResponse, "description": "YANDEX_OAUTH_TOKEN is not configured"},
+}
 
 
-@app.get("/", response_class=HTMLResponse, include_in_schema=False)
-def demo_home() -> HTMLResponse:
-    return demo_layout(
-        "Главная",
-        """
-        <section class="card">
-          <h2>DirectPilot Beta — API-first слой для Яндекс Директа</h2>
-          <p>Показывает real-data read-only сценарий: доступ к кампаниям, группам, объявлениям и ключевым фразам через внешний REST API.</p>
-          <ul>
-            <li>Direct API используется в режиме <code>live_readonly</code> для production-данных.</li>
-            <li>Live write-вызовы заблокированы до отдельного режима <code>live_write</code>.</li>
-            <li>Любое применение изменений требует явного approve, idempotency key и поддерживает dry-run.</li>
-          </ul>
-          <h3>API demo endpoints</h3>
-          <ul>
-            <li><a href="/docs">OpenAPI docs</a></li>
-            <li><a href="/campaigns">GET /campaigns</a></li>
-            <li><a href="/campaign-drafts">GET /campaign-drafts</a></li>
-            <li><a href="/audit/campaigns">GET /audit/campaigns</a></li>
-            <li><a href="/recommendations">GET /recommendations</a></li>
-            <li><a href="/audit-log">GET /audit-log</a></li>
-            <li><a href="/integrations/yandex/direct/status">GET /integrations/yandex/direct/status</a></li>
-          </ul>
-          <p class="safe">Real data, no live writes: DirectPilot Beta читает production-данные и не меняет настройки Директа в live_readonly.</p>
-        </section>
-        """,
-    )
+WORDSTAT_ERROR_RESPONSES = {
+    502: {"model": ApiErrorResponse, "description": "Yandex Search API upstream error"},
+    503: {"model": ApiErrorResponse, "description": "YANDEX_SEARCH_API_KEY is not configured"},
+}
 
 
-@app.get("/demo/yandex-status", response_class=HTMLResponse, include_in_schema=False)
-def demo_yandex_status() -> HTMLResponse:
-    settings = get_settings()
-    return demo_layout(
-        "Статус Яндекса",
-        f"""
-        <section class="card">
-          <h2>Статус доступа к Yandex Direct API</h2>
-          <p class="safe">Direct API используется для real-data read-only доступа.</p>
-          <p>Текущий режим приложения: <strong>{escape(settings.directpilot_mode)}</strong>.</p>
-          <p>Интерфейс не показывает секреты и не выполняет live-записи.</p>
-        </section>
-        """,
-    )
+METRIKA_ERROR_RESPONSES = {
+    502: {"model": ApiErrorResponse, "description": "Yandex Metrika upstream error"},
+    503: {"model": ApiErrorResponse, "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured"},
+}
 
 
-@app.get("/demo/campaigns", response_class=HTMLResponse, include_in_schema=False)
-def demo_campaigns() -> HTMLResponse:
-    settings = get_settings()
-    client = get_yandex_client(settings)
-    campaigns = yandex_campaigns(settings=settings, client=client).items
-    rows = "".join(
-        f"<tr><td>{escape(c.name)}</td><td>{escape(c.type)}</td><td>{escape(c.status)}</td><td>{c.daily_budget:.0f} ₽</td></tr>"
-        for c in campaigns
-    )
-    return demo_layout(
-        "Yandex campaigns",
-        f"""
-        <section class="card">
-          <h2>Yandex campaigns</h2>
-          <p>Источник: production API Директа, режим read-only.</p>
-          <table><thead><tr><th>Кампания</th><th>Тип</th><th>Статус</th><th>Дневной бюджет</th></tr></thead><tbody>{rows}</tbody></table>
-        </section>
-        """,
-    )
+# ---------------------------------------------------------------------------
+# Non-product guard
+# ---------------------------------------------------------------------------
+# Demo/UI routes (HTML home + 6 /demo/* pages) are not part of the DirectPilot
+# product surface: they were built for early stakeholder reviews and are no
+# longer shipped. They are registered only as explicit non-product guards so
+# old links/bookmarks get a 404 instead of silently routing elsewhere. These
+# guard handlers are NOT included in the OpenAPI schema and must not return
+# product/demo data.
+
+_NON_PRODUCT_PATHS = {
+    "/",
+    "/demo/yandex-status",
+    "/demo/campaigns",
+    "/demo/report",
+    "/demo/recommendations",
+    "/demo/tools",
+    "/demo/security-approval",
+}
 
 
-@app.get("/demo/report", response_class=HTMLResponse, include_in_schema=False)
-def demo_report() -> HTMLResponse:
-    report = report_summary()
-    return demo_layout(
-        "Mock report",
-        f"""
-        <section class="card">
-          <h2>Сводный mock-отчёт</h2>
-          <p>Показывает read-only аналитику до подключения Direct API.</p>
-          <ul><li>Показы: {report.impressions}</li><li>Клики: {report.clicks}</li><li>CTR: {report.ctr}%</li><li>CPC: {report.cpc} ₽</li><li>Расход: {report.spend} ₽</li></ul>
-        </section>
-        """,
-    )
+def _non_product_guard(path: str):
+    """Return a 404 JSONResponse for retired demo/UI paths, or None.
+
+    Keeping this as a small explicit allow-list (rather than re-registering
+    the original HTML routes) ensures the demo surface cannot accidentally
+    come back online and cannot leak into OpenAPI.
+    """
+    if path in _NON_PRODUCT_PATHS:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": "Not part of DirectPilot product surface",
+                "path": path,
+            },
+        )
+    return None
 
 
-@app.get("/demo/recommendations", response_class=HTMLResponse, include_in_schema=False)
-def demo_recommendations() -> HTMLResponse:
-    recs = list_recommendations().items
-    items = "".join(
-        f'<li><strong>{escape(r.id)}</strong>: {escape(r.reason)} Риск: {escape(r.risk_level)}. <button disabled>approve</button> <button disabled>reject</button></li>'
-        for r in recs
-    )
-    return demo_layout(
-        "Recommendations",
-        f"""
-        <section class="card">
-          <h2>Recommendations</h2>
-          <p>Все рекомендации требуют явного approve/reject; кнопки на странице демонстрационные.</p>
-          <ul>{items}</ul>
-        </section>
-        """,
-    )
+@app.get("/", include_in_schema=False)
+def _non_product_root():
+    return _non_product_guard("/")
 
 
-@app.get("/demo/tools", response_class=HTMLResponse, include_in_schema=False)
-def demo_tools() -> HTMLResponse:
-    return demo_layout(
-        "Tools",
-        """
-        <section class="card">
-          <h2>Инструменты из eLama-референса для MVP</h2>
-          <ul>
-            <li><strong>Campaign Audit</strong>: проверка UTM, целей Метрики и дорогих кликов.</li>
-            <li><strong>UTM Generator</strong>: быстрая разметка ссылок под Яндекс CPC.</li>
-            <li><strong>Budget Simulator</strong>: dry-run оценка кликов и конверсий без изменения ставок.</li>
-          </ul>
-          <p class="safe">Все инструменты работают как demo/sandbox и не выполняют live-записи.</p>
-        </section>
-        """,
-    )
+@app.get("/demo/yandex-status", include_in_schema=False)
+def _non_product_yandex_status():
+    return _non_product_guard("/demo/yandex-status")
 
 
-@app.get("/demo/security-approval", response_class=HTMLResponse, include_in_schema=False)
-def demo_security_approval() -> HTMLResponse:
-    return demo_layout(
-        "Security/approval flow",
-        """
-        <section class="card">
-          <h2>Security/approval flow</h2>
-          <ol>
-            <li>Сначала mock/read-only анализ.</li>
-            <li>Затем рекомендация с уровнем риска и audit_id.</li>
-            <li>Применение возможно только после explicit approval и с idempotency key.</li>
-            <li class="safe">live-записи отключены до отдельного одобрения и настройки режима.</li>
-          </ol>
-        </section>
-        """,
-    )
+@app.get("/demo/campaigns", include_in_schema=False)
+def _non_product_demo_campaigns():
+    return _non_product_guard("/demo/campaigns")
+
+
+@app.get("/demo/report", include_in_schema=False)
+def _non_product_demo_report():
+    return _non_product_guard("/demo/report")
+
+
+@app.get("/demo/recommendations", include_in_schema=False)
+def _non_product_demo_recommendations():
+    return _non_product_guard("/demo/recommendations")
+
+
+@app.get("/demo/tools", include_in_schema=False)
+def _non_product_demo_tools():
+    return _non_product_guard("/demo/tools")
+
+
+@app.get("/demo/security-approval", include_in_schema=False)
+def _non_product_demo_security_approval():
+    return _non_product_guard("/demo/security-approval")
 
 
 @app.get("/health")
@@ -999,6 +932,20 @@ def yandex_vcards(
     return _call_raw_read(settings, client, "vcards", "get", lambda c: c.vcards_get())
 
 
+@app.post("/yandex/vcards", response_model=YandexVCardResult)
+def yandex_vcards_add(
+    payload: YandexVCardRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexVCardResult:
+    try:
+        return store.yandex_vcard_add(payload, settings=settings, client=client)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+
 @app.get("/yandex/ad-images", response_model=YandexRawResult)
 def yandex_ad_images(
     settings: Settings = Depends(get_settings),
@@ -1077,7 +1024,12 @@ def yandex_keywords_deduplicate(
     )
 
 
-@app.get("/yandex/keywords-research/wordstat/create", response_model=YandexRawResult)
+@app.get(
+    "/yandex/keywords-research/wordstat/create",
+    response_model=YandexRawResult,
+    responses=YANDEX_DIRECT_ERROR_RESPONSES,
+    deprecated=True,
+)
 def yandex_wordstat_create(
     phrases: str,
     geo_ids: str = "213",
@@ -1093,7 +1045,12 @@ def yandex_wordstat_create(
     )
 
 
-@app.get("/yandex/keywords-research/wordstat/{report_id}", response_model=YandexRawResult)
+@app.get(
+    "/yandex/keywords-research/wordstat/{report_id}",
+    response_model=YandexRawResult,
+    responses=YANDEX_DIRECT_ERROR_RESPONSES,
+    deprecated=True,
+)
 def yandex_wordstat_get(
     report_id: int,
     settings: Settings = Depends(get_settings),
@@ -1108,7 +1065,12 @@ def yandex_wordstat_get(
     )
 
 
-@app.delete("/yandex/keywords-research/wordstat/{report_id}", response_model=YandexRawResult)
+@app.delete(
+    "/yandex/keywords-research/wordstat/{report_id}",
+    response_model=YandexRawResult,
+    responses=YANDEX_DIRECT_ERROR_RESPONSES,
+    deprecated=True,
+)
 def yandex_wordstat_delete(
     report_id: int,
     settings: Settings = Depends(get_settings),
@@ -1241,3 +1203,615 @@ def yandex_resume(
                 "message": str(exc),
             },
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Yandex AI Studio / Search API v2 — Wordstat
+#
+# This is the modern documented v2 path (https://yandex.cloud/en/services/
+# search-api) and is fully separate from the v5 keywordsresearch service
+# used by the rest of the /yandex/* facade. Wordstat on v5 is not
+# implemented, which is why the older keywordsresearch.wordstat.* helpers
+# return UNSUPPORTED_IN_V5 envelopes.
+# ---------------------------------------------------------------------------
+
+
+def get_yandex_search_wordstat_client(
+    settings: Settings = Depends(get_settings),
+) -> YandexSearchWordstatClient:
+    """Build a YandexSearchWordstatClient for the v2 Wordstat endpoints.
+
+    The client is always created — even when no API key is configured.
+    Missing-key errors are raised inside the client's ``_post`` method so
+    the corresponding /wordstat/* endpoints can translate them into a 503
+    "service not configured" response without crashing.
+    """
+    return YandexSearchWordstatClient(settings=settings)
+
+
+def _wordstat_error_to_503(exc: YandexSearchWordstatError) -> HTTPException:
+    """Translate a missing-config error into a 503 (service not configured)."""
+    return HTTPException(
+        status_code=503,
+        detail={
+            "error_type": "YandexSearchWordstatError",
+            "message": str(exc),
+        },
+    )
+
+
+def _wordstat_error_to_502(exc: YandexSearchWordstatError) -> HTTPException:
+    """Translate an upstream / transport error into a 502 with no key echo."""
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error_type": "YandexSearchWordstatError",
+            "message": str(exc),
+        },
+    )
+
+
+def _parse_int_list(raw: list[str] | None) -> list[int] | None:
+    """Parse repeated and/or CSV query params into ints.
+
+    Supports both ``?regions=43&regions=213`` and ``?regions=43,213``.
+    ``None`` is returned for an empty list so callers can keep the "omit
+    when not provided" semantics intact.
+    """
+    if not raw:
+        return None
+    values: list[int] = []
+    for item in raw:
+        for part in item.split(","):
+            part = part.strip()
+            if part:
+                try:
+                    values.append(int(part))
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"regions must contain integer ids; got {part!r}",
+                    ) from exc
+    return values or None
+
+
+def _raise_wordstat_http_error(exc: YandexSearchWordstatError) -> None:
+    if isinstance(exc, YandexSearchWordstatMissingKeyError):
+        raise _wordstat_error_to_503(exc) from exc
+    raise _wordstat_error_to_502(exc) from exc
+
+
+@app.get(
+    "/wordstat/top",
+    response_model=YandexSearchApiResult,
+    responses=WORDSTAT_ERROR_RESPONSES,
+)
+def wordstat_top(
+    phrase: str,
+    regions: list[str] | None = Query(default=None),
+    limit: int | None = None,
+    devices: list[str] | None = Query(default=None),
+    client: YandexSearchWordstatClient = Depends(get_yandex_search_wordstat_client),
+) -> YandexSearchApiResult:
+    """Top related queries for a phrase (Yandex Search API v2 topRequests)."""
+    try:
+        result = client.wordstat_top_requests(
+            phrase,
+            region_ids=_parse_int_list(regions),
+            limit=limit,
+            devices=devices or None,
+        )
+    except YandexSearchWordstatError as exc:
+        _raise_wordstat_http_error(exc)
+    return YandexSearchApiResult(
+        method="topRequests",
+        data=result["data"],
+    )
+
+
+@app.get(
+    "/wordstat/dynamics",
+    response_model=YandexSearchApiResult,
+    responses=WORDSTAT_ERROR_RESPONSES,
+)
+def wordstat_dynamics(
+    phrase: str,
+    date_from: str,
+    period: str = "PERIOD_MONTHLY",
+    date_to: str | None = None,
+    regions: list[str] | None = Query(default=None),
+    devices: list[str] | None = Query(default=None),
+    client: YandexSearchWordstatClient = Depends(get_yandex_search_wordstat_client),
+) -> YandexSearchApiResult:
+    """Show / abs show per period (Yandex Search API v2 dynamics)."""
+    try:
+        result = client.wordstat_dynamics(
+            phrase,
+            period=period,
+            date_from=date_from,
+            date_to=date_to,
+            region_ids=_parse_int_list(regions),
+            devices=devices or None,
+        )
+    except YandexSearchWordstatError as exc:
+        _raise_wordstat_http_error(exc)
+    return YandexSearchApiResult(
+        method="dynamics",
+        data=result["data"],
+    )
+
+
+@app.get(
+    "/wordstat/regions",
+    response_model=YandexSearchApiResult,
+    responses=WORDSTAT_ERROR_RESPONSES,
+)
+def wordstat_regions(
+    phrase: str,
+    region: str = "REGION_ALL",
+    devices: list[str] | None = Query(default=None),
+    client: YandexSearchWordstatClient = Depends(get_yandex_search_wordstat_client),
+) -> YandexSearchApiResult:
+    """Share of impressions by region (Yandex Search API v2 regions)."""
+    try:
+        result = client.wordstat_regions_distribution(
+            phrase,
+            region=region,
+            devices=devices or None,
+        )
+    except YandexSearchWordstatError as exc:
+        _raise_wordstat_http_error(exc)
+    return YandexSearchApiResult(
+        method="regions",
+        data=result["data"],
+    )
+
+
+@app.get(
+    "/wordstat/regions-tree",
+    response_model=YandexSearchApiResult,
+    responses=WORDSTAT_ERROR_RESPONSES,
+)
+def wordstat_regions_tree(
+    client: YandexSearchWordstatClient = Depends(get_yandex_search_wordstat_client),
+) -> YandexSearchApiResult:
+    """Region tree (Yandex Search API v2 getRegionsTree, no phrase)."""
+    try:
+        result = client.wordstat_regions_tree()
+    except YandexSearchWordstatError as exc:
+        _raise_wordstat_http_error(exc)
+    return YandexSearchApiResult(
+        method="getRegionsTree",
+        data=result["data"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct Live v4 — account balance (read-only)
+#
+# Live v4 AccountManagement → Get is the canonical way to read the
+# current account balance (Amount, AmountAvailableForTransfer, Currency,
+# AccountDayBudget). The endpoint is read-only and never returns the
+# token in any body. Without a configured `?login=` we fall back to
+# `clients.get` to discover the login the current token is bound to.
+# ---------------------------------------------------------------------------
+
+
+def _parse_live_v4_account_block(block: Any, login: str | None) -> YandexAccountBalance:
+    if not isinstance(block, dict):
+        return YandexAccountBalance(login=login, raw={"value": block} if not isinstance(block, dict) else None)
+    day_budget = block.get("AccountDayBudget")
+    day_budget_amount: float | None = None
+    day_budget_mode: str | None = None
+    if isinstance(day_budget, dict):
+        raw_amount = day_budget.get("Amount")
+        if isinstance(raw_amount, (int, float)):
+            day_budget_amount = float(raw_amount)
+        elif isinstance(raw_amount, str):
+            try:
+                day_budget_amount = float(raw_amount)
+            except ValueError:
+                day_budget_amount = None
+        mode = day_budget.get("SpendMode")
+        if isinstance(mode, str):
+            day_budget_mode = mode
+    amount_raw = block.get("Amount")
+    available_raw = block.get("AmountAvailableForTransfer")
+    return YandexAccountBalance(
+        login=str(block.get("Login") or login) if block.get("Login") or login else None,
+        amount=float(amount_raw) if isinstance(amount_raw, (int, float)) else 0.0,
+        amount_available_for_transfer=(
+            float(available_raw) if isinstance(available_raw, (int, float)) else 0.0
+        ),
+        currency=str(block.get("Currency")) if isinstance(block.get("Currency"), str) else None,
+        account_day_budget_amount=day_budget_amount,
+        account_day_budget_spend_mode=day_budget_mode,
+        raw=block,
+    )
+
+
+def _resolve_login_for_balance(
+    client: YandexDirectClient,
+) -> str | None:
+    """Discover the login the current OAUTH token is bound to via clients.get.
+
+    Returns ``None`` if the call fails or returns an unexpected envelope —
+    the caller then surfaces the underlying 502 to the user.
+    """
+    try:
+        response = client.clients_get()
+    except YandexDirectError:
+        return None
+    if not response.get("ok"):
+        return None
+    result = response.get("result")
+    if not isinstance(result, dict):
+        return None
+    clients = result.get("Clients") or result.get("clients") or []
+    if not clients:
+        return None
+    first = clients[0]
+    if not isinstance(first, dict):
+        return None
+    login = first.get("Login") or first.get("login")
+    return str(login) if isinstance(login, str) and login else None
+
+
+def _require_direct_read_client(
+    settings: Settings, client: YandexDirectClient | None
+) -> YandexDirectClient:
+    if not _is_live_read_mode(settings) or client is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This endpoint requires sandbox, live_readonly, or live_write mode with Yandex credentials",
+        )
+    return client
+
+
+@app.get(
+    "/yandex/account/balance",
+    response_model=YandexAccountBalanceResult,
+    responses={
+        502: {"model": ApiErrorResponse, "description": "Yandex Direct upstream error"},
+        503: {"model": ApiErrorResponse, "description": "YANDEX_OAUTH_TOKEN is not configured"},
+    },
+)
+def yandex_account_balance(
+    login: str | None = None,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAccountBalanceResult:
+    """Read-only Live v4 AccountManagement → Get.
+
+    Without ``?login=`` we discover the login via ``clients.get`` and then
+    call Live v4. With ``?login=`` we call Live v4 directly. The token is
+    never echoed back in any body.
+    """
+    direct = _require_direct_read_client(settings, client)
+    if not direct.settings.yandex_oauth_token:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": "YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls",
+            },
+        )
+    if not login:
+        login = _resolve_login_for_balance(direct)
+    try:
+        response = direct.account_balance(login=login)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"Yandex Direct Live v4 rejected AccountManagement: "
+                    f"error_code={err.get('error_code')!r}"
+                ),
+            },
+        )
+    data = response.get("data") or []
+    accounts = [_parse_live_v4_account_block(block, login) for block in data]
+    return YandexAccountBalanceResult(accounts=accounts, source="yandex", read_only=True)
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct campaign finance (v5 campaigns.get with finance fields)
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/yandex/campaigns/finance",
+    response_model=YandexCampaignFinanceList,
+    responses=YANDEX_DIRECT_ERROR_RESPONSES,
+)
+def yandex_campaigns_finance(
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexCampaignFinanceList:
+    """v5 campaigns.get with Funds / Statistics / StartDate / EndDate.
+
+    Surfaces the raw micro-unit values and the display floats for money
+    fields so the caller can pick whichever representation they need.
+    """
+    direct = _require_direct_read_client(settings, client)
+    if not direct.settings.yandex_oauth_token:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": "YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls",
+            },
+        )
+    try:
+        response = direct.campaigns_get_finance()
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"Yandex Direct rejected campaigns.get (finance): "
+                    f"error_code={err.get('error_code')!r}"
+                ),
+            },
+        )
+    items = [YandexCampaignFinance(**row) for row in (response.get("data") or [])]
+    return YandexCampaignFinanceList(items=items, source="yandex", read_only=True)
+
+
+# ---------------------------------------------------------------------------
+# Semantic change package (staged / dry-run-first)
+#
+# Lets the user design a negative-keyword and/or positive-keyword
+# change for a real Yandex Direct campaign (e.g. ``710382063``) and
+# preview the exact Direct API v5 request bodies that WOULD be sent.
+# Apply is gated by ``approved`` / ``idempotency_key`` / ``dry_run``
+# and the runtime mode (``live_readonly`` blocks real apply;
+# ``live_write`` allows it).
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/campaigns/{campaign_id}/semantic-changes",
+    response_model=SemanticChangePackage,
+)
+def prepare_semantic_change(
+    campaign_id: str,
+    payload: SemanticChangeRequest,
+    settings: Settings = Depends(get_settings),
+) -> SemanticChangePackage:
+    """Build a staged semantic-change package.
+
+    Always pure-local: no network call, no approval required. The
+    response is a :class:`SemanticChangePackage` whose ``preview``
+    lists the v5 ``keywords.add`` / ``adgroups.update`` operations
+    that *would* be sent on apply. The user (or another tool) can
+    inspect the proposed change before deciding to actually apply it.
+
+    The Direct API v5 ``keywords.add`` method requires ``AdGroupId``
+    per keyword and ``adgroups.update`` requires the target group
+    ``Id``. If the user supplies either keyword list without an
+    ``ad_group_id`` the request is rejected with HTTP 400 BEFORE any
+    package is built.
+    """
+    try:
+        return store.prepare_semantic_change_package(
+            campaign_id, payload, settings=settings
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/semantic-changes/{package_id}/apply",
+    response_model=SemanticChangeApplyResult,
+)
+def apply_semantic_change(
+    package_id: str,
+    payload: SemanticChangeApplyRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> SemanticChangeApplyResult:
+    """Apply a previously prepared semantic change.
+
+    Gate contract (matches the rest of the product):
+
+    * ``approved`` must be ``True`` — otherwise 409.
+    * ``idempotency_key`` must be supplied (length >= 6) — same key
+      returns the cached result without re-sending.
+    * In ``live_readonly`` mode, ``dry_run=False`` is REJECTED before
+      any network call.
+    * In ``live_write`` mode with all gates satisfied, the operations
+      from the package are sent to Yandex via the injected client.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before apply",
+        )
+    if settings.directpilot_mode == "live_readonly" and not payload.dry_run:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Live writes require DIRECTPILOT_MODE=live_write; "
+                "live_readonly only allows dry_run"
+            ),
+        )
+    try:
+        return store.apply_semantic_change(
+            package_id, payload, settings=settings, client=client
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail="semantic change package not found"
+        ) from exc
+    except YandexDirectError as exc:
+        # Never include the OAuth token in the response.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": str(exc),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Yandex Metrika — read-only (counters, goals, summary, traffic-sources)
+#
+# The Metrika Management API (api-metrika.yandex.net/management/v1) and
+# the Stats API (api-metrika.yandex.net/stat/v1) are separate from the
+# v5 Direct API. They use a service OAUTH token (NOT an Api-Key, NOT a
+# v5 OAuth token) and `Authorization: OAuth <token>` for auth.
+# ---------------------------------------------------------------------------
+
+
+def get_yandex_metrika_client(
+    settings: Settings = Depends(get_settings),
+) -> YandexMetrikaClient:
+    """Build a YandexMetrikaClient for the read-only Metrika endpoints.
+
+    The client is always created — even when no OAUTH token is configured.
+    Missing-token errors are raised inside the client's request methods so
+    the /metrika/* endpoints can translate them into a 503
+    "service not configured" response without crashing.
+    """
+    return YandexMetrikaClient(settings=settings)
+
+
+def _metrika_error_to_503(exc: YandexMetrikaError) -> HTTPException:
+    """Translate a missing-config error into a 503 (service not configured)."""
+    return HTTPException(
+        status_code=503,
+        detail={
+            "error_type": "YandexMetrikaError",
+            "message": str(exc),
+        },
+    )
+
+
+def _metrika_error_to_502(exc: YandexMetrikaError) -> HTTPException:
+    """Translate an upstream / transport error into a 502 with no token echo."""
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error_type": "YandexMetrikaError",
+            "message": str(exc),
+        },
+    )
+
+
+def _raise_metrika_http_error(exc: YandexMetrikaError) -> None:
+    if isinstance(exc, YandexMetrikaMissingTokenError):
+        raise _metrika_error_to_503(exc) from exc
+    raise _metrika_error_to_502(exc) from exc
+
+
+@app.get(
+    "/metrika/counters",
+    response_model=YandexMetrikaResult,
+    responses=METRIKA_ERROR_RESPONSES,
+)
+def metrika_counters(
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> YandexMetrikaResult:
+    """List Metrika counters accessible by the configured OAUTH token."""
+    try:
+        result = client.list_counters()
+    except YandexMetrikaError as exc:
+        _raise_metrika_http_error(exc)
+    return YandexMetrikaResult(
+        service="management",
+        method="counters",
+        data=result["data"],
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/goals",
+    response_model=YandexMetrikaResult,
+    responses=METRIKA_ERROR_RESPONSES,
+)
+def metrika_counter_goals(
+    counter_id: int,
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> YandexMetrikaResult:
+    """List goals for one Metrika counter."""
+    try:
+        result = client.goals(counter_id)
+    except YandexMetrikaError as exc:
+        _raise_metrika_http_error(exc)
+    return YandexMetrikaResult(
+        service="management",
+        method="counter_goals",
+        counter_id=counter_id,
+        data=result["data"],
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/summary",
+    response_model=YandexMetrikaResult,
+    responses=METRIKA_ERROR_RESPONSES,
+)
+def metrika_counter_summary(
+    counter_id: int,
+    date1: str,
+    date2: str,
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> YandexMetrikaResult:
+    """Goals-conversion summary (any-goal reaches per day) for date1..date2.
+
+    Uses the documented ``ym:s:anyGoalReaches`` metric, NOT the per-goal
+    ``ym:s:goalReaches`` (the latter is per-goal and is no longer a valid
+    metric name in v2).
+    """
+    try:
+        result = client.summary(counter_id, date1=date1, date2=date2)
+    except YandexMetrikaError as exc:
+        _raise_metrika_http_error(exc)
+    return YandexMetrikaResult(
+        service="stat",
+        method="summary",
+        counter_id=counter_id,
+        data=result["data"],
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/traffic-sources",
+    response_model=YandexMetrikaResult,
+    responses=METRIKA_ERROR_RESPONSES,
+)
+def metrika_counter_traffic_sources(
+    counter_id: int,
+    date1: str,
+    date2: str,
+    limit: int = 10,
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> YandexMetrikaResult:
+    """Visits split by the last-sign traffic source.
+
+    Uses the documented ``ym:s:lastsignTrafficSource`` dimension, NOT the
+    older ``ym:s:TrafficSource`` (which is deprecated and breaks in v2).
+    """
+    try:
+        result = client.traffic_sources(
+            counter_id, date1=date1, date2=date2, limit=limit
+        )
+    except YandexMetrikaError as exc:
+        _raise_metrika_http_error(exc)
+    return YandexMetrikaResult(
+        service="stat",
+        method="traffic_sources",
+        counter_id=counter_id,
+        data=result["data"],
+    )

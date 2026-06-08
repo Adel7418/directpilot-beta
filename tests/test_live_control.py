@@ -175,10 +175,11 @@ def test_non_dict_error_envelope_returns_safe_fallback_without_leaking_token():
     assert result["ok"] is False
     assert result["error"]["error_code"] is None
     assert result["error"]["message"] == "Yandex Direct returned a non-structured error"
-    # The raw error string is exposed via error_detail for diagnostics,
-    # but the OAuth token must never appear in the response envelope.
+    # The raw upstream error string is intentionally not exposed: proxy
+    # bodies can contain tokens, ids, or user data.
     assert "TOPSECRET-TOKEN" not in str(result)
-    assert "secret-xyz" in result["error"]["error_detail"]
+    assert "secret-xyz" not in str(result)
+    assert "error_detail" not in result["error"]
 
 
 # ---------------------------------------------------------------------------

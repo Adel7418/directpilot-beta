@@ -4,22 +4,29 @@ DirectPilot Beta — отдельное API-first приложение для б
 
 ## Текущий режим
 
-Сейчас приложение работает с реальными production-данными Директа в режиме:
+DirectPilot ведется в live-first продуктовом режиме. На текущем этапе разработки это **активное live/read-only тестирование**:
 
-```text
-DIRECTPILOT_MODE=live_readonly
-```
-
-- реальные кампании, группы, объявления и ключевые фразы читаются через API Директа;
-- реальные настройки в Директе не меняются в `live_readonly`;
+- `DIRECTPILOT_MODE=live_readonly` — чтение production-данных Яндекс Директа;
 - токены и секреты не выводятся в ответах;
-- write-like действия требуют `approved=true`, `idempotency_key` и отдельный режим `live_write`.
+- write-like действия возможны только через явные `approved`, `idempotency_key` + режим `live_write`.
 
-OpenAPI:
+Что не является продуктовым/API-first путём:
+
+- `mock` и `sandbox` — legacy/dev fallback, если ещё остаются в коде;
+- legacy- и fallback-эндпойнты `/yandex/keywords-research/wordstat/create` и `/yandex/keywords-research/wordstat/{report_id}` (`GET`/`DELETE`) — deprecated для обратной совместимости;
+- legacy/временные отчёты, которые пока не покрывают продакт-цепочку.
+
+OpenAPI (видимые API endpoints):
 
 ```text
 http://127.0.0.1:8000/openapi.json
 ```
+
+`/`, `/demo/yandex-status`, `/demo/campaigns`, `/demo/report`,
+`/demo/recommendations`, `/demo/tools`, `/demo/security-approval` — 7
+retired demo/UI paths. They are not product API endpoints and are excluded from
+OpenAPI; the app keeps only explicit non-product guard handlers that return 404
+for old links.
 
 ---
 
@@ -271,7 +278,7 @@ POST /campaign-drafts/{draft_id}/generate-structure
 }
 ```
 
-Это mock-генератор структуры. Он помогает быстро получить рабочий каркас кампании, но перед live-запуском структуру нужно проверить человеком/агентом.
+Это service-side генератор структуры (локальный/legacy helper). Он помогает быстро получить рабочий каркас кампании, но перед отправкой в live-слой структура должна пройти валидацию человеком/маркетологом.
 
 Важно: поле `region` в запросе используется для генерации фраз, но не перезаписывает регион самого черновика. Регион черновика меняется через `PATCH /campaign-drafts/{draft_id}`.
 
@@ -353,7 +360,7 @@ PATCH /campaign-drafts/{draft_id}/bids
 
 ## 10. Yandex Direct read-only facade
 
-В режиме `live_readonly` эти методы читают реальные production-данные Яндекс Директа и возвращают `source="yandex"`, `read_only=true`. В режиме `mock` они возвращают локальные демонстрационные данные.
+В режиме `live_readonly` эти методы читают реальные production-данные Яндекс Директа и возвращают `source="yandex"`, `read_only=true`. В `mock`/`sandbox` fallback режимах возможен локальный демо-результат (`source="mock"`) для сравнения и отладки.
 
 ### Кампании
 
@@ -480,7 +487,7 @@ POST /recommendations/{recommendation_id}/reject
 POST /actions/{action_id}/apply
 ```
 
-`apply` требует approve и idempotency key. Для внешних изменений в Директе используется отдельный live-control слой `/yandex/.../pause|resume`; общий recommendations/apply flow остаётся внутренним сценарием приложения.
+`apply` требует approve и idempotency key. Для внешних изменений в Директе используется отдельный live-control слой `/yandex/campaigns/{campaign_id}/pause` и `/yandex/campaigns/{campaign_id}/resume`; общий recommendations/apply flow остаётся внутренним сценарием приложения.
 
 ---
 
@@ -514,23 +521,25 @@ POST /simulations/budget
 
 ## Что НЕ реализовано специально
 
-Пока нет live endpoints для:
+Пока product-live-first scope не включает:
 
-- создания кампании в Яндекс Директ;
-- полного обновления реальной кампании в Яндекс Директ;
-- отправки preview payload в Direct;
-- автоматического расходования бюджета.
+- создание кампании в Яндекс Директ;
+- полное обновление live-кампаний в Яндекс Директ;
+- отправку preview payload в Direct как apply-флоу;
+- автоматическое расходование бюджета.
 
-Это сделано намеренно: текущий production-режим — real-data read-only. Live writes — отдельный управляемый этап через `live_write` после проверки лимитов и approval-политики.
+Это сделано намеренно: текущий этап — real-data read-only (`live_readonly`) с live test в контролируемом режиме. Live writes — отдельный `live_write` этап через approval/policy и аудит.
 
 
 ### Расширенный read-only/API-first слой Яндекс Директа
 
 DirectPilot Beta теперь содержит обёртки для полного практического read-only и аналитического покрытия Direct API v5. Все методы работают через реальный OAuth-токен из переменной окружения, но значение токена нигде не сохраняется и не выводится.
 
-#### Аналитика reports
+#### Баланс, финансы и аналитика reports
 
 ```text
+GET /yandex/account/balance?login=...                  -> Live v4 AccountManagement.Get
+GET /yandex/campaigns/finance                          -> campaigns.get с Funds/Statistics
 GET /yandex/reports/live/CAMPAIGN_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 GET /yandex/reports/live/ADGROUP_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 GET /yandex/reports/live/AD_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
@@ -538,7 +547,18 @@ GET /yandex/reports/live/CRITERIA_PERFORMANCE_REPORT?date_from=YYYY-MM-DD&date_t
 GET /yandex/reports/search-queries-live?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 ```
 
-Назначение: статистика кампаний, групп, объявлений, условий показа и поисковых запросов. Ответ возвращается как read-only provider payload (`source=yandex`, `read_only=true`).
+Назначение: баланс общего счёта, текущий расход кампаний, статистика кампаний, групп, объявлений, условий показа и поисковых запросов. Ответ возвращается как read-only provider payload (`source=yandex`, `read_only=true`). Токен Live v4 передаётся только во внутреннем запросе и не возвращается наружу.
+
+#### Яндекс Метрика
+
+```text
+GET /metrika/counters
+GET /metrika/counters/{counter_id}/goals
+GET /metrika/counters/{counter_id}/summary?date1=YYYY-MM-DD&date2=YYYY-MM-DD
+GET /metrika/counters/{counter_id}/traffic-sources?date1=YYYY-MM-DD&date2=YYYY-MM-DD&limit=10
+```
+
+Назначение: счётчики, цели, визиты, пользователи, просмотры, отказы, средняя длительность визита, агрегированные достижения целей (`ym:s:anyGoalReaches`) и источники трафика (`ym:s:lastsignTrafficSource`). Метрика использует отдельный `YANDEX_METRIKA_OAUTH_TOKEN` и не зависит от Direct OAuth.
 
 #### Настройки и диагностика кампаний
 
@@ -553,26 +573,37 @@ GET /yandex/dictionaries                              -> dictionaries.get
 
 Назначение: ставки, корректировки ставок, минус-фразы, изменения в аккаунте и справочники Директа.
 
-#### Аудит таргетингов и семантики
+#### Аудит таргетингов и семантики Direct API v5
 
 ```text
 GET /yandex/retargeting-lists                         -> retargetinglists.get
 GET /yandex/campaigns/{campaign_id}/audience-targets  -> audiencetargets.get
 GET /yandex/keywords-research/has-search-volume?keywords=...
 GET /yandex/keywords-research/deduplicate?keywords=...
-GET /yandex/keywords-research/wordstat/create?phrases=...&geo_ids=213
-GET /yandex/keywords-research/wordstat/{report_id}
-DELETE /yandex/keywords-research/wordstat/{report_id}
 ```
 
-Назначение: аудит аудиторий, проверка спроса, дедупликация фраз и работа с Wordstat-отчётами.
+Назначение: аудит аудиторий, проверка наличия поискового объёма и дедупликация фраз. Direct API v5 `keywordsresearch` не содержит Wordstat create/get/delete; эти legacy v4 методы в текущем v5-клиенте возвращают `UNSUPPORTED_IN_V5` и не делают сетевой вызов.
+
+#### Yandex AI Studio / Search API v2 Wordstat
+
+Современный Wordstat API подключается отдельно через `YANDEX_SEARCH_API_KEY` и возвращает `source="yandex_search_api"`, `read_only=true`.
+
+```text
+GET /wordstat/top?phrase=ремонт&regions=43&limit=10
+GET /wordstat/dynamics?phrase=ремонт&regions=43&date_from=2026-01-01T00:00:00Z&period=PERIOD_MONTHLY
+GET /wordstat/regions?phrase=ремонт
+GET /wordstat/regions-tree
+```
+
+Назначение: подбор и расширение семантики, динамика спроса и распределение по регионам без создания/удаления legacy v4 Wordstat-отчётов. Для `/wordstat/dynamics` даты должны соответствовать периоду API: `PERIOD_MONTHLY` начинается с первого дня месяца, `PERIOD_WEEKLY` — с понедельника и заканчивается воскресеньем.
 
 #### Расширения объявлений и ассеты
 
 ```text
 GET /yandex/sitelinks      -> sitelinks.get
-GET /yandex/vcards         -> vcards.get
-GET /yandex/ad-images      -> adimages.get
+GET  /yandex/vcards        -> vcards.get
+POST /yandex/vcards        -> vcards.add (dry-run по умолчанию; live-write только через approved + idempotency_key + dry_run=false; для реальной записи Direct требует campaign_id)
+GET  /yandex/ad-images     -> adimages.get
 GET /yandex/creatives      -> creatives.get
 GET /yandex/feeds          -> feeds.get
 GET /yandex/businesses     -> businesses.get

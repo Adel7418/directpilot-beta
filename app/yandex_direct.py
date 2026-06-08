@@ -60,6 +60,12 @@ class YandexDirectClient:
 
     def adgroups_get(self, campaign_id: int | str) -> dict[str, Any]:
         campaign_id = self._direct_id(campaign_id)
+        # NegativeKeywords is requested here so the semantic-change apply
+        # path can merge the user's requested phrases with the live
+        # group-level negative set on Direct (adgroups.update with
+        # NegativeKeywords.Items is REPLACE, not APPEND). Without this
+        # field the merge would be a blind overwrite of any pre-existing
+        # negative keywords.
         payload = {
             "method": "get",
             "params": {
@@ -72,6 +78,7 @@ class YandexDirectClient:
                     "ServingStatus",
                     "Type",
                     "RegionIds",
+                    "NegativeKeywords",
                 ],
             },
         }
@@ -198,7 +205,89 @@ class YandexDirectClient:
         return self._call("sitelinks", {"method": "get", "params": {"SelectionCriteria": {}}})
 
     def vcards_get(self) -> dict[str, Any]:
-        return self._call("vcards", {"method": "get", "params": {"SelectionCriteria": {}}})
+        return self._call(
+            "vcards",
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": {},
+                    "FieldNames": [
+                        "Id",
+                        "Country",
+                        "City",
+                        "CompanyName",
+                        "WorkTime",
+                        "Phone",
+                        "ContactPerson",
+                        "Street",
+                        "House",
+                    ],
+                },
+            },
+        )
+
+    def vcards_add(self, vcard: dict[str, Any]) -> dict[str, Any]:
+        return self._call("vcards", {"method": "add", "params": {"VCards": [vcard]}})
+
+    # ------------------------------------------------------------------
+    # Semantic-change write helpers
+    #
+    # Direct API v5 confirmed contract (see
+    # https://yandex.ru/dev/direct/doc/en/keywords/add.html and
+    # .../adgroups/update.html):
+    #
+    # * ``keywords.add`` — service ``keywords``, method ``add``,
+    #   params ``{"Keywords": [{"Keyword": str, "AdGroupId": long,
+    #   optional Bid/ContextBid/...}]}``. Max 1000 keywords per call,
+    #   duplicates are silently dropped, and the keyword string may
+    #   include negative words prefixed with ``-`` (the API itself
+    #   normalises that).
+    # * ``adgroups.update`` — service ``adgroups``, method ``update``,
+    #   params ``{"AdGroups": [{"Id": long, "NegativeKeywords":
+    #   {"Items": [str, ...]}}]}``. The ``NegativeKeywords.Items`` list
+    #   is the group-level shared negative-keyword set; phrases must
+    #   be supplied WITHOUT a leading ``-`` (Direct treats them as
+    #   negative by position, not by prefix) and the combined length
+    #   must not exceed 4096 chars.
+    #
+    # These helpers are the ONLY way the store is allowed to call
+    # those v5 services. The store never touches the private ``_call``
+    # for semantic changes — keeping the call surface explicit and
+    # auditable.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalize_negative_phrase(phrase: str) -> str:
+        """Strip a leading ``-`` and any surrounding whitespace.
+
+        Direct API v5 expects ``NegativeKeywords.Items`` to be plain
+        positive-form phrases (``бесплатно``, not ``-бесплатно``). The
+        original store code accepted user input with a leading ``-``
+        for symmetry with positive keywords; we normalise here so the
+        upstream payload is exactly what Direct expects.
+        """
+        return phrase.strip().lstrip("-").strip()
+
+    def keywords_add(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Add positive keywords to existing ad groups.
+
+        ``items`` must be a list of ``{"Keyword": str, "AdGroupId": long}``
+        dictionaries (optional ``Bid`` / ``ContextBid`` etc. are passed
+        through unchanged). The payload is sent to the v5 ``keywords``
+        service with ``method=add``.
+        """
+        return self._call("keywords", {"method": "add", "params": {"Keywords": list(items)}})
+
+    def adgroups_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update ad groups, currently used for shared negative keywords.
+
+        ``items`` is a list of ``{"Id": long, ...}`` dictionaries; the
+        caller is expected to supply ``NegativeKeywords.Items`` (already
+        normalised — no leading ``-``) when used from the semantic-change
+        pipeline. The payload is sent to the v5 ``adgroups`` service
+        with ``method=update``.
+        """
+        return self._call("adgroups", {"method": "update", "params": {"AdGroups": list(items)}})
 
     def adimages_get(self) -> dict[str, Any]:
         return self._call("adimages", {"method": "get", "params": {"SelectionCriteria": {}}})
@@ -215,23 +304,284 @@ class YandexDirectClient:
     def agencyclients_get(self) -> dict[str, Any]:
         return self._call("agencyclients", {"method": "get", "params": {"SelectionCriteria": {}}})
 
-    def keywordsresearch_has_search_volume(self, keywords: list[str]) -> dict[str, Any]:
-        return self._call("keywordsresearch", {"method": "hasSearchVolume", "params": {"Keywords": keywords}})
+    # ------------------------------------------------------------------
+    # Live v4 AccountManagement — read-only balance.
+    #
+    # Live v4 is the legacy POST endpoint at https://api.direct.yandex.ru/
+    # live/v4/json/ and uses a different envelope than the v5 JSON-RPC
+    # services above: {token, method, param}. The `method` is the
+    # service name ("AccountManagement"), and the action is passed
+    # inside `param.Action`. We keep this call strictly read-only: we
+    # only ever send Action=Get.
+    #
+    # Auth is also different — Live v4 expects the OAuth token in the
+    # JSON body, NOT as an `Authorization: Bearer` header (the v4 server
+    # ignores that header). The token is NEVER returned in the result
+    # envelope or surfaced in error messages.
+    # ------------------------------------------------------------------
 
-    def keywordsresearch_deduplicate(self, keywords: list[str]) -> dict[str, Any]:
-        return self._call("keywordsresearch", {"method": "deduplicate", "params": {"Keywords": keywords}})
+    LIVE_V4_BASE_URL = "https://api.direct.yandex.ru/live/v4/json/"
 
-    def keywordsresearch_create_wordstat_report(self, phrases: list[str], geo_ids: list[int]) -> dict[str, Any]:
-        return self._call(
-            "keywordsresearch",
-            {"method": "createNewWordstatReport", "params": {"Phrases": phrases, "GeoID": geo_ids}},
-        )
+    def account_balance(self, login: str | None = None) -> dict[str, Any]:
+        """Read-only Live v4 AccountManagement → Get for the current account.
+
+        Returns ``{"ok": True, "data": [<account block>], "units": ...}`` where
+        each ``<account block>`` exposes ``Amount``, ``AmountAvailableForTransfer``,
+        ``Currency`` and ``AccountDayBudget`` — the four fields the user
+        needs to decide whether the account can keep serving impressions.
+        """
+        if not self.settings.yandex_oauth_token:
+            raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
+
+        body = {
+            "token": self.settings.yandex_oauth_token,
+            "method": "AccountManagement",
+            "param": {
+                "Action": "Get",
+                "SelectionCriteria": {
+                    "Logins": [login] if login else [],
+                    "AccountIDS": [],
+                },
+            },
+        }
+
+        try:
+            response = self._client.post(
+                self.LIVE_V4_BASE_URL,
+                json=body,
+                headers={"Accept-Language": "ru"},
+            )
+        except httpx.HTTPError as exc:
+            raise YandexDirectError(
+                f"Yandex Direct transport error: {type(exc).__name__}"
+            ) from exc
+
+        if response.status_code >= 400:
+            # Do not include headers or body — Live v4 can echo the token
+            # or other account identifying data on errors.
+            raise YandexDirectError(
+                f"Yandex Direct HTTP {response.status_code}"
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise YandexDirectError("Yandex Direct returned non-JSON response") from exc
+
+        if isinstance(payload, dict) and payload.get("error_code"):
+            # Live v4 returns {"error_code": "...", "error_str": "..."} on
+            # some failures; surface only the code so the response never
+            # echoes the body.
+            return {
+                "ok": False,
+                "error": {"error_code": payload.get("error_code")},
+                "units": None,
+            }
+
+        if not isinstance(payload, dict):
+            raise YandexDirectError("Yandex Direct returned an unexpected Live v4 envelope")
+
+        data = payload.get("data") or []
+        return {"ok": True, "data": data, "units": response.headers.get("Units")}
+
+    # ------------------------------------------------------------------
+    # campaigns.get with the finance field set
+    #
+    # Direct API v5 `campaigns` service supports a wider set of fields
+    # than the basic Id/Name/Status/State/Type/DailyBudget set. Adding
+    # Funds / Statistics / StartDate / EndDate gives the user a
+    # finance-shaped read of every campaign without making a second
+    # call. Micro-unit values (1/1_000_000 of currency) are surfaced
+    # both as raw ``*_micros`` ints and as display floats, so the
+    # caller can pick whichever representation they need.
+    # ------------------------------------------------------------------
+
+    _FINANCE_FIELD_NAMES = (
+        "Id",
+        "Name",
+        "Status",
+        "State",
+        "Type",
+        "DailyBudget",
+        "Funds",
+        "Statistics",
+        "StartDate",
+        "EndDate",
+    )
+
+    @staticmethod
+    def _micros_to_display(value: Any) -> float:
+        if value is None:
+            return 0.0
+        try:
+            return float(value) / 1_000_000
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _parse_finance_row(cls, campaign: dict[str, Any]) -> dict[str, Any]:
+        daily_budget_raw = campaign.get("DailyBudget")
+        daily_budget: dict[str, Any]
+        if isinstance(daily_budget_raw, dict):
+            daily_budget = daily_budget_raw
+        else:
+            daily_budget = {}
+        daily_budget_micros = int(daily_budget.get("Amount") or 0)
+
+        funds_raw = campaign.get("Funds")
+        funds: dict[str, Any]
+        if isinstance(funds_raw, dict):
+            funds = funds_raw
+        else:
+            funds = {}
+        campaign_funds_raw = funds.get("CampaignFunds")
+        campaign_funds: dict[str, Any]
+        if isinstance(campaign_funds_raw, dict):
+            campaign_funds = campaign_funds_raw
+        else:
+            campaign_funds = {}
+        funds_balance_micros = int(campaign_funds.get("Balance") or 0)
+
+        statistics_raw = campaign.get("Statistics")
+        statistics: dict[str, Any]
+        if isinstance(statistics_raw, dict):
+            statistics = statistics_raw
+        else:
+            statistics = {}
+        statistics_shows = int(statistics.get("Shows") or 0)
+        statistics_clicks = int(statistics.get("Clicks") or 0)
+        # Direct API v5 reports cost in micro-units (1/1_000_000 of currency).
+        spend_micros = int(statistics.get("Cost") or 0)
+
+        return {
+            "id": str(campaign.get("Id") or ""),
+            "name": str(campaign.get("Name") or ""),
+            "status": str(campaign.get("Status") or "UNKNOWN"),
+            "state": str(campaign.get("State") or "UNKNOWN"),
+            "type": str(campaign.get("Type") or "UNKNOWN"),
+            "daily_budget_micros": daily_budget_micros,
+            "daily_budget": cls._micros_to_display(daily_budget_micros),
+            "funds_balance_micros": funds_balance_micros,
+            "funds_balance": cls._micros_to_display(funds_balance_micros),
+            "spend_micros": spend_micros,
+            "spend": cls._micros_to_display(spend_micros),
+            "statistics_shows": statistics_shows,
+            "statistics_clicks": statistics_clicks,
+            "start_date": campaign.get("StartDate"),
+            "end_date": campaign.get("EndDate"),
+        }
+
+    def campaigns_get_finance(self) -> dict[str, Any]:
+        """v5 campaigns.get with the finance-shaped field set.
+
+        Returns ``{"ok": True, "data": [<row>], "units": ...}``. Each row
+        surfaces both the raw micro-unit value and the display float for
+        money fields so the caller can pick whichever representation
+        they need.
+        """
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {},
+                "FieldNames": list(self._FINANCE_FIELD_NAMES),
+            },
+        }
+        response = self._call("campaigns", payload)
+        result_payload = response.get("result")
+        if response.get("ok") and isinstance(result_payload, dict):
+            raw_campaigns = result_payload.get("Campaigns") or []
+            response = {
+                **response,
+                "data": [self._parse_finance_row(c) for c in raw_campaigns if isinstance(c, dict)],
+            }
+        return response
+
+    # ------------------------------------------------------------------
+    # KeywordsResearch — Direct API v5
+    #
+    # `keywordsresearch` is a real v5 service but only supports two methods
+    # at the JSON-RPC level: `hasSearchVolume` and `deduplicate`. Wordstat
+    # (create/get/delete) used to live on the older v4 Live URL and is NOT
+    # available on the v5 keywordsresearch endpoint, so the wordstat methods
+    # here return a safe unsupported envelope and never touch the transport.
+    # ------------------------------------------------------------------
+
+    _DEFAULT_HAS_SEARCH_VOLUME_FIELD_NAMES = (
+        "Keyword",
+        "RegionIds",
+        "AllDevices",
+        "MobilePhones",
+        "Tablets",
+        "Desktops",
+    )
+    _DEFAULT_REGION_IDS: tuple[int, ...] = (43,)
+
+    def keywordsresearch_has_search_volume(
+        self,
+        keywords: list[str],
+        *,
+        region_ids: list[int] | None = None,
+        field_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        params = {
+            "SelectionCriteria": {
+                "Keywords": keywords,
+                "RegionIds": list(region_ids) if region_ids is not None else list(self._DEFAULT_REGION_IDS),
+            },
+            "FieldNames": list(field_names) if field_names is not None else list(self._DEFAULT_HAS_SEARCH_VOLUME_FIELD_NAMES),
+        }
+        return self._call("keywordsresearch", {"method": "hasSearchVolume", "params": params})
+
+    @staticmethod
+    def _deduplicate_normalize_keywords(keywords: list[Any]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for item in keywords:
+            if isinstance(item, str):
+                normalized.append({"Keyword": item})
+            else:
+                # Trust caller-provided objects as long as they look like a
+                # mapping with at least a `Keyword` field.
+                normalized.append(dict(item))
+        return normalized
+
+    def keywordsresearch_deduplicate(
+        self,
+        keywords: list[Any],
+        *,
+        operation: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "Keywords": self._deduplicate_normalize_keywords(keywords),
+        }
+        if operation is not None:
+            params["Operation"] = operation
+        return self._call("keywordsresearch", {"method": "deduplicate", "params": params})
+
+    @staticmethod
+    def _unsupported_v5_envelope(method: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": {
+                "error_code": "UNSUPPORTED_IN_V5",
+                "error_detail": (
+                    f"{method} is not part of the Direct API v5 keywordsresearch "
+                    "service (legacy v4 Live wordstat endpoint). The v5 client "
+                    "returns this envelope without making a network call."
+                ),
+            },
+            "units": None,
+        }
+
+    def keywordsresearch_create_wordstat_report(
+        self, phrases: list[str], geo_ids: list[int]
+    ) -> dict[str, Any]:
+        return self._unsupported_v5_envelope("createNewWordstatReport")
 
     def keywordsresearch_get_wordstat_report(self, report_id: int) -> dict[str, Any]:
-        return self._call("keywordsresearch", {"method": "getWordstatReport", "params": {"ReportID": report_id}})
+        return self._unsupported_v5_envelope("getWordstatReport")
 
     def keywordsresearch_delete_wordstat_report(self, report_id: int) -> dict[str, Any]:
-        return self._call("keywordsresearch", {"method": "deleteWordstatReport", "params": {"ReportID": report_id}})
+        return self._unsupported_v5_envelope("deleteWordstatReport")
 
     def report(
         self,
@@ -359,7 +709,6 @@ class YandexDirectClient:
                 "error": {
                     "error_code": None,
                     "message": "Yandex Direct returned a non-structured error",
-                    "error_detail": str(body["error"]),
                 },
                 "units": units,
             }

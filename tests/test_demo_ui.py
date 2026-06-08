@@ -1,3 +1,17 @@
+"""Non-product guard for the retired DirectPilot demo/UI surface.
+
+The HTML home page and the 6 ``/demo/*`` pages were built for early
+stakeholder reviews and are no longer part of the product surface. They must
+not be reachable in the running app, must not be advertised in the OpenAPI
+schema, and must not collide with real product endpoints.
+
+This test file is the regression guard for that contract. It is intentionally
+kept under the historical ``test_demo_ui`` module name so the test pipeline
+still runs it; the assertions it makes are the opposite of the old
+test_demo_ui suite (404 + OpenAPI absence, not 200 + HTML body).
+"""
+
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -5,59 +19,63 @@ from app.main import app
 client = TestClient(app)
 
 
-def assert_demo_page(path: str, expected_text: str) -> None:
-    response = client.get(path)
-
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    body = response.text
-    assert expected_text in body
-    assert "DirectPilot Beta" in body
-    assert "live-запис" in body
-    assert "token" not in body.lower()
-    assert ".env" not in body
+NON_PRODUCT_PATHS = [
+    "/",
+    "/demo/yandex-status",
+    "/demo/campaigns",
+    "/demo/report",
+    "/demo/recommendations",
+    "/demo/tools",
+    "/demo/security-approval",
+]
 
 
-def test_demo_home_page_links_to_application_sections():
-    response = client.get("/")
+def test_non_product_paths_return_404_and_explicit_message():
+    for path in NON_PRODUCT_PATHS:
+        response = client.get(path)
 
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/html")
-    body = response.text
-    assert "DirectPilot Beta" in body
-    assert "API-first слой для Яндекс Директа" in body
-    for path in [
-        "/demo/yandex-status",
-        "/demo/campaigns",
-        "/demo/report",
-        "/demo/recommendations",
-        "/demo/tools",
-        "/demo/security-approval",
-    ]:
-        assert f'href="{path}"' in body
-    assert "token" not in body.lower()
-    assert ".env" not in body
+        assert response.status_code == 404, (
+            f"{path} must not be served as product surface; "
+            f"got {response.status_code} {response.text[:200]}"
+        )
+        body = response.json()
+        assert body["path"] == path
+        assert "Not part of DirectPilot product surface" in body["detail"]
 
 
-def test_demo_yandex_status_page_is_safe_and_read_only():
-    assert_demo_page("/demo/yandex-status", "Direct API используется для real-data read-only доступа")
+def test_non_product_paths_are_absent_from_openapi_schema():
+    schema = client.get("/openapi.json").json()
+    openapi_paths = set(schema["paths"].keys())
+
+    for path in NON_PRODUCT_PATHS:
+        assert path not in openapi_paths, (
+            f"{path} must not leak into the OpenAPI schema; "
+            f"found: {openapi_paths & set(NON_PRODUCT_PATHS)}"
+        )
 
 
-def test_demo_campaigns_page_shows_yandex_campaigns():
-    assert_demo_page("/demo/campaigns", "Yandex campaigns")
+def test_non_product_paths_do_not_collide_with_real_product_routes():
+    """The retired paths must not shadow live API endpoints.
 
+    A regression here would be the most dangerous: a stale demo handler
+    catching traffic intended for a real route. We assert that all currently
+    registered application paths outside the non-product allow-list are the
+    real product surface.
+    """
 
-def test_demo_report_page_shows_mock_metrics():
-    assert_demo_page("/demo/report", "Сводный mock-отчёт")
+    real_paths = {
+        route.path
+        for route in app.routes
+        if isinstance(route, APIRoute)
+    }
 
-
-def test_demo_recommendations_page_shows_approval_buttons_as_demo_only():
-    assert_demo_page("/demo/recommendations", "рекомендации требуют явного approve/reject")
-
-
-def test_demo_tools_page_shows_elama_inspired_mvp_tools():
-    assert_demo_page("/demo/tools", "Инструменты из eLama-референса для MVP")
-
-
-def test_demo_security_approval_flow_page_documents_no_live_writes():
-    assert_demo_page("/demo/security-approval", "live-записи отключены")
+    for path in NON_PRODUCT_PATHS:
+        assert path in real_paths, (
+            f"non-product guard for {path} is not registered"
+        )
+        # The retired path must be the only registered handler for that exact
+        # path (no shadowing of a future real product route with the same URL).
+        matches = [p for p in real_paths if p == path]
+        assert len(matches) == 1, (
+            f"path {path} is registered {len(matches)} times: {matches}"
+        )

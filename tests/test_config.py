@@ -1,10 +1,15 @@
 from app.config import Settings, mask_secret
 
 
-def test_settings_default_to_mock_mode():
+def test_settings_default_to_live_readonly_mode():
+    # Default mode is live-first: the product path is live_readonly with
+    # active testing against real Yandex Direct data, and writes only
+    # possible through the gated live_write mode. mock/sandbox are kept
+    # in the codebase as a legacy/dev fallback and must be selected
+    # explicitly via the DIRECTPILOT_MODE env var.
     settings = Settings(_env_file=None)
 
-    assert settings.directpilot_mode == "mock"
+    assert settings.directpilot_mode == "live_readonly"
     assert settings.is_yandex_configured is False
 
 

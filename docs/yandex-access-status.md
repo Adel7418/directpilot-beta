@@ -42,6 +42,8 @@ Read-only production data:
 ```text
 clients.get
 campaigns.get
+campaigns.get (finance shape: Funds, Statistics, DailyBudget, StartDate, EndDate)
+AccountManagement.Get (Live v4, Action=Get, read-only account balance)
 adgroups.get
 ads.get
 keywords.get
@@ -55,9 +57,6 @@ retargetinglists.get
 audiencetargets.get
 keywordsresearch.hasSearchVolume
 keywordsresearch.deduplicate
-keywordsresearch.createNewWordstatReport
-keywordsresearch.getWordstatReport
-keywordsresearch.deleteWordstatReport
 reports: CAMPAIGN_PERFORMANCE_REPORT
 reports: ADGROUP_PERFORMANCE_REPORT
 reports: AD_PERFORMANCE_REPORT
@@ -71,6 +70,32 @@ feeds.get
 businesses.get
 agencyclients.get
 ```
+
+## Yandex Metrika read-only
+
+Metrika is implemented as a separate read-only integration and uses `YANDEX_METRIKA_OAUTH_TOKEN`, not the Direct OAuth token.
+
+```text
+GET /metrika/counters                              -> management/v1/counters
+GET /metrika/counters/{counter_id}/goals           -> management/v1/counter/{counter_id}/goals
+GET /metrika/counters/{counter_id}/summary         -> stat/v1/data with ym:s:anyGoalReaches
+GET /metrika/counters/{counter_id}/traffic-sources -> stat/v1/data with ym:s:lastsignTrafficSource
+```
+
+The aggregate goal metric is `ym:s:anyGoalReaches`; `ym:s:goalReaches` is intentionally not used because it is rejected by the Metrika Stats API.
+
+## Yandex AI Studio / Search API v2 Wordstat
+
+Modern Wordstat access is implemented separately from Direct API v5 and uses `YANDEX_SEARCH_API_KEY`, not the Direct OAuth token.
+
+```text
+GET /wordstat/top?phrase=...&regions=43&limit=10        -> topRequests
+GET /wordstat/dynamics?phrase=...&regions=43&date_from=2026-01-01T00:00:00Z -> dynamics
+GET /wordstat/regions?phrase=...                        -> regions
+GET /wordstat/regions-tree                              -> getRegionsTree
+```
+
+Direct API v5 `keywordsresearch` supports only `hasSearchVolume` and `deduplicate`; legacy Wordstat report lifecycle methods are not sent to v5 and return `UNSUPPORTED_IN_V5` in the v5 client. For `dynamics`, date boundaries must match the requested period (`PERIOD_MONTHLY`: first day of month; `PERIOD_WEEKLY`: Monday→Sunday).
 
 Limited write adapter implemented but not enabled in current mode:
 

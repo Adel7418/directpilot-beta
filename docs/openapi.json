@@ -1608,6 +1608,42 @@
             }
           }
         }
+      },
+      "post": {
+        "summary": "Yandex Vcards Add",
+        "operationId": "yandex_vcards_add_yandex_vcards_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexVCardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexVCardResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/yandex/ad-images": {
@@ -1782,6 +1818,7 @@
       "get": {
         "summary": "Yandex Wordstat Create",
         "operationId": "yandex_wordstat_create_yandex_keywords_research_wordstat_create_get",
+        "deprecated": true,
         "parameters": [
           {
             "name": "phrases",
@@ -1814,6 +1851,26 @@
               }
             }
           },
+          "502": {
+            "description": "Yandex Direct upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1831,6 +1888,7 @@
       "get": {
         "summary": "Yandex Wordstat Get",
         "operationId": "yandex_wordstat_get_yandex_keywords_research_wordstat__report_id__get",
+        "deprecated": true,
         "parameters": [
           {
             "name": "report_id",
@@ -1853,6 +1911,26 @@
               }
             }
           },
+          "502": {
+            "description": "Yandex Direct upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Validation Error",
             "content": {
@@ -1868,6 +1946,7 @@
       "delete": {
         "summary": "Yandex Wordstat Delete",
         "operationId": "yandex_wordstat_delete_yandex_keywords_research_wordstat__report_id__delete",
+        "deprecated": true,
         "parameters": [
           {
             "name": "report_id",
@@ -1886,6 +1965,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/YandexRawResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Direct upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
                 }
               }
             }
@@ -2141,6 +2240,752 @@
           }
         }
       }
+    },
+    "/wordstat/top": {
+      "get": {
+        "summary": "Wordstat Top",
+        "description": "Top related queries for a phrase (Yandex Search API v2 topRequests).",
+        "operationId": "wordstat_top_wordstat_top_get",
+        "parameters": [
+          {
+            "name": "phrase",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Phrase"
+            }
+          },
+          {
+            "name": "regions",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Regions"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "devices",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Devices"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexSearchApiResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Search API upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_SEARCH_API_KEY is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wordstat/dynamics": {
+      "get": {
+        "summary": "Wordstat Dynamics",
+        "description": "Show / abs show per period (Yandex Search API v2 dynamics).",
+        "operationId": "wordstat_dynamics_wordstat_dynamics_get",
+        "parameters": [
+          {
+            "name": "phrase",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Phrase"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "PERIOD_MONTHLY",
+              "title": "Period"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "regions",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Regions"
+            }
+          },
+          {
+            "name": "devices",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Devices"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexSearchApiResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Search API upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_SEARCH_API_KEY is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wordstat/regions": {
+      "get": {
+        "summary": "Wordstat Regions",
+        "description": "Share of impressions by region (Yandex Search API v2 regions).",
+        "operationId": "wordstat_regions_wordstat_regions_get",
+        "parameters": [
+          {
+            "name": "phrase",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Phrase"
+            }
+          },
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "REGION_ALL",
+              "title": "Region"
+            }
+          },
+          {
+            "name": "devices",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Devices"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexSearchApiResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Search API upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_SEARCH_API_KEY is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wordstat/regions-tree": {
+      "get": {
+        "summary": "Wordstat Regions Tree",
+        "description": "Region tree (Yandex Search API v2 getRegionsTree, no phrase).",
+        "operationId": "wordstat_regions_tree_wordstat_regions_tree_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexSearchApiResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Search API upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_SEARCH_API_KEY is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/account/balance": {
+      "get": {
+        "summary": "Yandex Account Balance",
+        "description": "Read-only Live v4 AccountManagement → Get.\n\nWithout ``?login=`` we discover the login via ``clients.get`` and then\ncall Live v4. With ``?login=`` we call Live v4 directly. The token is\nnever echoed back in any body.",
+        "operationId": "yandex_account_balance_yandex_account_balance_get",
+        "parameters": [
+          {
+            "name": "login",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Login"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAccountBalanceResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Direct upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/yandex/campaigns/finance": {
+      "get": {
+        "summary": "Yandex Campaigns Finance",
+        "description": "v5 campaigns.get with Funds / Statistics / StartDate / EndDate.\n\nSurfaces the raw micro-unit values and the display floats for money\nfields so the caller can pick whichever representation they need.",
+        "operationId": "yandex_campaigns_finance_yandex_campaigns_finance_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexCampaignFinanceList"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Direct upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrika/counters": {
+      "get": {
+        "summary": "Metrika Counters",
+        "description": "List Metrika counters accessible by the configured OAUTH token.",
+        "operationId": "metrika_counters_metrika_counters_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexMetrikaResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Metrika upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrika/counters/{counter_id}/goals": {
+      "get": {
+        "summary": "Metrika Counter Goals",
+        "description": "List goals for one Metrika counter.",
+        "operationId": "metrika_counter_goals_metrika_counters__counter_id__goals_get",
+        "parameters": [
+          {
+            "name": "counter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Counter Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexMetrikaResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Metrika upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrika/counters/{counter_id}/summary": {
+      "get": {
+        "summary": "Metrika Counter Summary",
+        "description": "Goals-conversion summary (any-goal reaches per day) for date1..date2.\n\nUses the documented ``ym:s:anyGoalReaches`` metric, NOT the per-goal\n``ym:s:goalReaches`` (the latter is per-goal and is no longer a valid\nmetric name in v2).",
+        "operationId": "metrika_counter_summary_metrika_counters__counter_id__summary_get",
+        "parameters": [
+          {
+            "name": "counter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Counter Id"
+            }
+          },
+          {
+            "name": "date1",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date1"
+            }
+          },
+          {
+            "name": "date2",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date2"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexMetrikaResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Metrika upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrika/counters/{counter_id}/traffic-sources": {
+      "get": {
+        "summary": "Metrika Counter Traffic Sources",
+        "description": "Visits split by the last-sign traffic source.\n\nUses the documented ``ym:s:lastsignTrafficSource`` dimension, NOT the\nolder ``ym:s:TrafficSource`` (which is deprecated and breaks in v2).",
+        "operationId": "metrika_counter_traffic_sources_metrika_counters__counter_id__traffic_sources_get",
+        "parameters": [
+          {
+            "name": "counter_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Counter Id"
+            }
+          },
+          {
+            "name": "date1",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date1"
+            }
+          },
+          {
+            "name": "date2",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Date2"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 10,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexMetrikaResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Yandex Metrika upstream error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2359,6 +3204,36 @@
         },
         "type": "object",
         "title": "AdUpdate"
+      },
+      "ApiErrorDetail": {
+        "properties": {
+          "error_type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error_type",
+          "message"
+        ],
+        "title": "ApiErrorDetail"
+      },
+      "ApiErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/ApiErrorDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail"
+        ],
+        "title": "ApiErrorResponse"
       },
       "ApplyActionRequest": {
         "properties": {
@@ -3556,6 +4431,106 @@
         ],
         "title": "ValidationResult"
       },
+      "YandexAccountBalance": {
+        "properties": {
+          "login": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Login"
+          },
+          "amount": {
+            "type": "number",
+            "title": "Amount",
+            "default": 0.0
+          },
+          "amount_available_for_transfer": {
+            "type": "number",
+            "title": "Amount Available For Transfer",
+            "default": 0.0
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "account_day_budget_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Day Budget Amount"
+          },
+          "account_day_budget_spend_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Day Budget Spend Mode"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          }
+        },
+        "type": "object",
+        "title": "YandexAccountBalance",
+        "description": "One block from a Live v4 AccountManagement → Get response.\n\nExposes the four fields the user needs to decide whether the account\ncan keep serving impressions: the current ``Amount``, the\n``AmountAvailableForTransfer``, the ``Currency`` and the optional\n``AccountDayBudget`` block."
+      },
+      "YandexAccountBalanceResult": {
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/YandexAccountBalance"
+            },
+            "type": "array",
+            "title": "Accounts"
+          },
+          "source": {
+            "type": "string",
+            "const": "yandex",
+            "title": "Source",
+            "default": "yandex"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "accounts"
+        ],
+        "title": "YandexAccountBalanceResult"
+      },
       "YandexAd": {
         "properties": {
           "id": {
@@ -3709,6 +4684,129 @@
           "daily_budget"
         ],
         "title": "YandexCampaign"
+      },
+      "YandexCampaignFinance": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "daily_budget_micros": {
+            "type": "integer",
+            "title": "Daily Budget Micros",
+            "default": 0
+          },
+          "daily_budget": {
+            "type": "number",
+            "title": "Daily Budget",
+            "default": 0.0
+          },
+          "funds_balance_micros": {
+            "type": "integer",
+            "title": "Funds Balance Micros",
+            "default": 0
+          },
+          "funds_balance": {
+            "type": "number",
+            "title": "Funds Balance",
+            "default": 0.0
+          },
+          "spend_micros": {
+            "type": "integer",
+            "title": "Spend Micros",
+            "default": 0
+          },
+          "spend": {
+            "type": "number",
+            "title": "Spend",
+            "default": 0.0
+          },
+          "statistics_shows": {
+            "type": "integer",
+            "title": "Statistics Shows",
+            "default": 0
+          },
+          "statistics_clicks": {
+            "type": "integer",
+            "title": "Statistics Clicks",
+            "default": 0
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Date"
+          },
+          "end_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Date"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status",
+          "state",
+          "type"
+        ],
+        "title": "YandexCampaignFinance",
+        "description": "One row from a finance-shaped v5 campaigns.get response.\n\nSurfaces both the raw micro-unit value (``*_micros`` ints) and the\ndisplay float (``*``) for money fields so the caller can pick\nwhichever representation they need. The micro-unit values are the\ncanonical ones — the display floats are derived."
+      },
+      "YandexCampaignFinanceList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexCampaignFinance"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "source": {
+            "type": "string",
+            "const": "yandex",
+            "title": "Source",
+            "default": "yandex"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "YandexCampaignFinanceList"
       },
       "YandexCampaignList": {
         "properties": {
@@ -3884,6 +4982,54 @@
         ],
         "title": "YandexKeywordList"
       },
+      "YandexMetrikaResult": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "title": "Service"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "counter_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counter Id"
+          },
+          "data": {
+            "title": "Data"
+          },
+          "source": {
+            "type": "string",
+            "const": "yandex_metrika",
+            "title": "Source",
+            "default": "yandex_metrika"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "service",
+          "method",
+          "data"
+        ],
+        "title": "YandexMetrikaResult",
+        "description": "Read-only envelope for the Metrika Management and Stats APIs.\n\nDistinct from :class:`YandexRawResult` because the ``source`` tag is\n``yandex_metrika`` rather than ``yandex`` — the Metrika APIs are a\nseparate service with a separate OAUTH token."
+      },
       "YandexRawResult": {
         "properties": {
           "service": {
@@ -3919,6 +5065,40 @@
           "data"
         ],
         "title": "YandexRawResult"
+      },
+      "YandexSearchApiResult": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "title": "Service",
+            "default": "wordstat"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "data": {
+            "title": "Data"
+          },
+          "source": {
+            "type": "string",
+            "const": "yandex_search_api",
+            "title": "Source",
+            "default": "yandex_search_api"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "method",
+          "data"
+        ],
+        "title": "YandexSearchApiResult",
+        "description": "Envelope for the Yandex AI Studio / Search API v2 endpoints.\n\nDistinct from :class:`YandexRawResult` because the ``source`` tag is\ndifferent (``yandex_search_api`` rather than ``yandex``) and the\nservice name is the v2 wordstat family."
       },
       "YandexSearchQueriesReport": {
         "properties": {
@@ -3982,6 +5162,236 @@
           "ctr"
         ],
         "title": "YandexSearchQuery"
+      },
+      "YandexVCardPhone": {
+        "properties": {
+          "country_code": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Country Code",
+            "default": "7"
+          },
+          "city_code": {
+            "type": "string",
+            "minLength": 2,
+            "title": "City Code"
+          },
+          "phone_number": {
+            "type": "string",
+            "minLength": 5,
+            "title": "Phone Number"
+          },
+          "extension": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extension"
+          }
+        },
+        "type": "object",
+        "required": [
+          "city_code",
+          "phone_number"
+        ],
+        "title": "YandexVCardPhone"
+      },
+      "YandexVCardRequest": {
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 6,
+            "title": "Idempotency Key"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id",
+            "description": "Direct campaign id required by vcards.add for real Yandex writes"
+          },
+          "company_name": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Company Name"
+          },
+          "country": {
+            "type": "string",
+            "minLength": 2,
+            "title": "Country",
+            "default": "Россия"
+          },
+          "city": {
+            "type": "string",
+            "minLength": 2,
+            "title": "City",
+            "default": "Казань"
+          },
+          "phone": {
+            "$ref": "#/components/schemas/YandexVCardPhone"
+          },
+          "work_time": {
+            "type": "string",
+            "title": "Work Time",
+            "description": "Yandex Direct WorkTime format, e.g. daily 07:00-24:00",
+            "default": "0#6#07#00#24#00"
+          },
+          "contact_person": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Person"
+          },
+          "street": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Street"
+          },
+          "house": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "House"
+          },
+          "building": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Building"
+          },
+          "apartment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Apartment"
+          },
+          "extra_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extra Message"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approved",
+          "idempotency_key",
+          "company_name",
+          "phone"
+        ],
+        "title": "YandexVCardRequest",
+        "description": "Safe Direct vCard create request.\n\n``dry_run=True`` never calls Yandex. A real vCard create requires\n``approved=True``, ``dry_run=False``, ``idempotency_key`` and DirectPilot\nmode ``sandbox`` or ``live_write``."
+      },
+      "YandexVCardResult": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "mock"
+          },
+          "audit_id": {
+            "type": "string",
+            "title": "Audit Id"
+          },
+          "vcard_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vcard Id"
+          },
+          "work_time": {
+            "type": "string",
+            "title": "Work Time"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dry_run",
+          "applied",
+          "audit_id",
+          "work_time"
+        ],
+        "title": "YandexVCardResult"
       }
     }
   }

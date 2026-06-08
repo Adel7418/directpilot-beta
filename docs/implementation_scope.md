@@ -2,7 +2,8 @@
 
 ## Goal
 
-Operate DirectPilot Beta as a practical API-first campaign-control layer that reads real Yandex Direct data through stable REST endpoints and keeps live writes behind explicit controls.
+Run DirectPilot Beta as a live-first API-first campaign-control layer with active testing in `live_readonly` and explicit controlled writes via `live_write`.
+Current development phase is live-only orientation: production data is primary, mock/demo are legacy/dev fallbacks only and must not drive product workflows.
 
 ## Included now
 
@@ -48,11 +49,12 @@ Only pause/resume-style actions are allowed in this scope. They support dry-run 
 - Updating live campaign settings in Yandex Direct.
 - Applying generated campaign payloads to Yandex Direct.
 - Any endpoint that spends budget or performs write operations without explicit approval, idempotency, and audit.
+- Retired demo/UI paths (`/`, `/demo/yandex-status`, `/demo/campaigns`, `/demo/report`, `/demo/recommendations`, `/demo/tools`, `/demo/security-approval`) are not product API endpoints. They are excluded from OpenAPI and kept only as explicit non-product guard handlers returning 404; regression test: `tests/test_demo_ui.py`.
 
 ## Safety rules
 
-- Current production-data mode is `live_readonly`.
-- `mock` and `sandbox` remain available only for development/testing.
+- Current production-data mode is `live_readonly` (active testing).
+- `mock` and `sandbox` are legacy/dev fallback modes only (not product path).
 - No secret values in responses, docs, tests, or logs.
 - Write-like operations record audit events.
 - Dangerous operations expose `dry_run`, `approved`, `idempotency_key`, `risk_level` or equivalent where applicable.
@@ -62,4 +64,17 @@ Only pause/resume-style actions are allowed in this scope. They support dry-run 
 
 ## Расширенный Direct API слой
 
-Добавлен read-only/API-first слой для полного практического покрытия Яндекс Директа: reports, bids, changes, dictionaries, bid modifiers, negativekeywordsharedsets, retargeting/audience targets, keyword research/Wordstat, sitelinks, vcards, images, creatives, feeds, businesses и agency clients. Live-write граница не изменилась: production-записи возможны только через `live_write`, approval, `dry_run=false` и idempotency key.
+Добавлен read-only/API-first слой для полного практического покрытия Яндекс Директа: reports, bids, changes, dictionaries, bid modifiers, negativekeywordsharedsets, retargeting/audience targets, `keywordsresearch.hasSearchVolume`, `keywordsresearch.deduplicate`, sitelinks, vcards, images, creatives, feeds, businesses и agency clients. Для визиток добавлен `POST /yandex/vcards` → `vcards.add`: по умолчанию dry-run; реальная запись только через `live_write`, `approved=true`, `dry_run=false` и idempotency key. Общая live-write граница не изменилась: production-записи возможны только через явное подтверждение и аудит.
+
+## Yandex AI Studio / Search API v2 Wordstat
+
+Добавлен отдельный read-only слой современного Wordstat API: `/wordstat/top`, `/wordstat/dynamics`, `/wordstat/regions`, `/wordstat/regions-tree`. Он использует `YANDEX_SEARCH_API_KEY` и не зависит от Direct OAuth token. Legacy Wordstat v4 report lifecycle остаётся внешним fallback-путём; Direct API v5 `keywordsresearch` не используется для create/get/delete Wordstat reports.
+
+## Direct Live v4 баланс и Metrika read-only
+
+Добавлены постоянные API-функции вместо одноразовых скриптов:
+
+- `/yandex/account/balance` читает баланс общего счёта через Live v4 `AccountManagement.Get` (`Action=Get` only) и не возвращает OAuth token;
+- `/yandex/campaigns/finance` читает `campaigns.get` с `Funds`, `Statistics`, `DailyBudget`, `StartDate`, `EndDate`, нормализуя micro-units в рубли;
+- `/metrika/counters`, `/metrika/counters/{counter_id}/goals`, `/metrika/counters/{counter_id}/summary`, `/metrika/counters/{counter_id}/traffic-sources` читают Метрику через отдельный `YANDEX_METRIKA_OAUTH_TOKEN`;
+- для агрегированных целей Метрики используется `ym:s:anyGoalReaches`, для источников — `ym:s:lastsignTrafficSource`.

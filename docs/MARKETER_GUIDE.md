@@ -1,0 +1,116 @@
+# DirectPilot Beta — guide for marketer
+
+Цель: маркетолог работает с рекламными и аналитическими данными через DirectPilot, а не напрямую через Yandex Direct/Metrika/Wordstat API.
+
+## Главный принцип
+
+Продуктовый путь сейчас — `live-only` + active testing в `live_readonly`:
+
+- маркетолог использует **только живые DirectPilot endpoints (`/yandex/*`, `/metrika/*`, `/wordstat/*`) в режиме чтения**;
+- `mock`/`sandbox`/`/demo/*` — legacy fallback и не используются в рабочем маркетинг-процессе;
+- live-write допускается только через отдельный контролируемый режим `live_write` с `approved=true`, `dry_run=false`, `idempotency_key` и audit-log.
+
+DirectPilot — единая прослойка для маркетолога:
+
+- читает реальные данные Яндекс Директа в безопасном режиме `live_readonly`;
+- читает Метрику через отдельные endpoints DirectPilot;
+- читает Wordstat/Search API через отдельные endpoints DirectPilot;
+- скрывает токены, OAuth headers и сырые API-ошибки;
+- живые изменения только через отдельную систему одобрения.
+
+Маркетолог не должен сам выбирать raw Yandex API methods. Он выбирает задачу → endpoint DirectPilot.
+
+## Decision map
+
+| Задача маркетолога | Endpoint DirectPilot | Что использовать в выводе |
+|---|---|---|
+| Проверить, живо ли приложение | `GET /health` | статус приложения |
+| Проверить Direct-интеграцию | `GET /integrations/yandex/direct/status` | ok/status без секретов |
+| Посмотреть реальные кампании | `GET /yandex/campaigns` | id, name, status, type |
+| Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
+| Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
+| Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
+| Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC если доступны |
+| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи |
+| Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
+| Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
+| Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
+| Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
+| Сводка Метрики | `GET /metrika/counters/{counter_id}/summary` | visits/users/pageviews/goals |
+| Источники трафика | `GET /metrika/counters/{counter_id}/traffic-sources` | source mix |
+| Расширить семантику | `GET /wordstat/top?phrase=...&regions=...&limit=...` | похожие запросы и спрос |
+| Динамика спроса | `GET /wordstat/dynamics?phrase=...&regions=...&date_from=...&date_to=...&period=...` | сезонность/тренд |
+| Региональный спрос | `GET /wordstat/regions?phrase=...` | где спрос выше |
+| Найти id региона | `GET /wordstat/regions-tree` | region id/name |
+| Быстрые ссылки/визитки/креативы/организации | `GET /yandex/sitelinks`, `/yandex/vcards`, `/yandex/ad-images`, `/yandex/creatives`, `/yandex/businesses` | аудит ассетов и контактной привязки |
+
+## Что использовать дополнительно (advanced)
+
+Для задач с углубленной диагностикой используй только DirectPilot endpoints ниже:
+
+- `/yandex/campaigns/{campaign_id}/bids`
+- `/yandex/campaigns/{campaign_id}/bid-modifiers`
+- `/yandex/campaigns/{campaign_id}/negative-keywords`
+- `/yandex/changes`, `/yandex/changes/check`
+- `/yandex/dictionaries`
+- `/yandex/retargeting-lists`, `/yandex/campaigns/{campaign_id}/audience-targets`
+- `/yandex/keywords-research/has-search-volume`, `/yandex/keywords-research/deduplicate`
+- `/yandex/reports/live/{report_type}`, `/yandex/reports/search-queries-live`
+- `/yandex/account/balance`, `/yandex/campaigns/finance`
+- `/metrika/counters`, `/metrika/counters/{counter_id}/goals`, `/metrika/counters/{counter_id}/summary`, `/metrika/counters/{counter_id}/traffic-sources`
+- `/wordstat/top`, `/wordstat/dynamics`, `/wordstat/regions`, `/wordstat/regions-tree`
+
+## Что маркетолог может делать сам
+
+**Важно:** `/demo/*` и любые mock/sandbox-only маршруты не используются в рабочем маркетинг-процессе.
+
+- Формировать выводы: что не так с семантикой, объявлениями, источниками, бюджетом, целями, спросом.
+- Давать гипотезы: новые группы, ключи, минус-слова, тексты, офферы, посадочные страницы.
+- Готовить безопасный план изменений для пользователя/оркестратора.
+
+## Что маркетолог не должен делать сам
+
+- Не ходить напрямую в `api.direct.yandex.com`, `api-metrika.yandex.net`, AI Studio/Search API, если та же задача покрыта DirectPilot.
+- Не печатать токены, `.env`, OAuth headers, cookies.
+- Не выполнять live-write без явного запроса и подтверждения пользователя.
+- Не менять код DirectPilot — это задача `coder`.
+- Не ревьюить код DirectPilot — это задача `reviewer`.
+- Не запускать полноценную техническую проверку сборки/тестов — это задача `verifier`.
+
+## Стандартный workflow анализа рекламы
+
+1. `GET /health` и `GET /integrations/yandex/direct/status`.
+2. `GET /yandex/campaigns` — выбрать кампанию.
+3. Для кампании: ad-groups, ads, keywords.
+4. Отчеты: summary + search-queries.
+5. Финансы: account balance + campaigns finance.
+6. Метрика: counters → goals → summary → traffic-sources.
+7. Wordstat: top/dynamics/regions для проверки спроса и расширения семантики.
+8. Сформировать вывод:
+   - что работает;
+   - где потери;
+   - какие ключи/минус-слова/объявления/офферы проверить;
+   - какие данные нужны дополнительно;
+   - 3 варианта действий: Max Performance / Cost-Efficient / Ultra-Fast-Low-Cost.
+
+## Контакты, телефон, график, организация
+
+Для телефона/графика/визитки маркетолог не должен пытаться напрямую управлять Yandex API.
+
+Через DirectPilot:
+
+- `GET /yandex/vcards` — посмотреть визитки;
+- `GET /yandex/businesses` — посмотреть организации/BusinessId;
+- `GET /yandex/campaigns/{campaign_id}/ads` — проверить привязки `BusinessId`/`PreferVCardOverBusiness`, если они есть в ответе.
+
+Если DirectPilot показывает, что создание визиток не поддерживается для кампании, маршрут — через организацию/Яндекс Бизнес, а не повторные попытки `vCards.add`.
+
+## Проверка качества вывода маркетолога
+
+Перед ответом пользователь должен получить:
+
+- конкретные endpoints DirectPilot, на которых основаны выводы;
+- короткую интерпретацию без сырых API-дампов;
+- список действий и ожидаемый эффект;
+- явное разделение фактов из DirectPilot и гипотез;
+- отсутствие секретов и raw-токенов.

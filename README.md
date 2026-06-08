@@ -1,47 +1,33 @@
 # DirectPilot Beta
 
-Standalone API-first beta application for safe Yandex Direct automation for small business.
+DirectPilot is an API-first backend service for safe interaction with Yandex Direct, Yandex Metrika, and Wordstat. It is designed for programmatic integration only (REST/JSON API) and stores no business logic in external UIs.
 
-## Boundary
+## Current product mode
 
-DirectPilot is not part of Hermes. Hermes, another agent, a web UI, or any other model should use the same REST/JSON API. DirectPilot owns Yandex OAuth tokens, Direct/Metrica integrations, permissions, budget limits, approval pipeline, and audit log.
-
-## MVP mode
-
-Default mode is `mock`: no calls to Yandex and no write actions. Real/sandbox Yandex access is configured via local `.env` only.
-
-## Current Yandex access check
-
-Local credentials were copied from the user's Obsidian note into `.env` with `chmod 600`.
-
-- Yandex OAuth token check: PASS via `https://login.yandex.ru/info?format=json`.
-- Yandex Direct API `clients.get`: BLOCKED by Yandex with error code `58` / `Незавершенная регистрация` — the app access request must be completed in the Direct interface and approved before Direct API calls will work.
-- Current local mode: `sandbox`; DirectPilot targets `https://api-sandbox.direct.yandex.com/json/v5` for Direct API checks.
-
-See: `docs/yandex-access-status.md`.
-
-## Documentation
-
-- `docs/API_SIMPLE.md` — human-readable API guide in Russian: campaign drafts, keywords, negative keywords, ad groups, ads, validation, preview, budget/bids, Yandex read-only facade, pause/resume.
-- `docs/implementation_scope.md` — selected implementation scope and safety boundary.
-
-## References
-
-- `docs/references/elama-vs-promopult.md` — comparison of eLama and PromoPult: what to borrow for DirectPilot Beta and what to avoid in MVP.
+- Orientation: **live-first**
+- Active testing/runtime mode: **`live_readonly`**
+- Behavior: production Yandex data is read in real-time; write operations are blocked unless explicitly enabled.
 
 ## Quick start
 
 ```bash
 uv sync
-uv run pytest -q
-uv run uvicorn app.main:app --reload
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-OpenAPI: http://127.0.0.1:8000/openapi.json
+- Local OpenAPI: `http://127.0.0.1:8000/openapi.json`
+- Static spec: `docs/openapi.json`
 
-## Safety
+## Primary docs
 
-- `.env` is ignored by git.
-- OAuth tokens must not be logged.
-- Write actions require approval and idempotency keys.
-- Yandex Direct live writes are out of scope for the first baseline.
+- `docs/TECHNICAL_CONTEXT.md` — technical mode/controls/modes, live-write gates, retired routes, and source-of-truth map
+- `docs/API_SIMPLE.md` — practical API usage map
+- `docs/MARKETER_GUIDE.md` — marketer workflow map to DirectPilot endpoints
+- `docs/implementation_scope.md` — current scope, in/out boundaries, and safety assumptions
+- `docs/yandex-access-status.md` — latest Yandex access verification snapshot
+
+## Safety notes
+
+- No secrets are committed in docs or repo (secrets in local `.env` only).
+- In `live_readonly`, external write-style actions are intentionally blocked.
+- Controlled write execution requires the explicit write gate in runtime configuration and audit approval checks.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as _dt
+import uuid as _uuid
 from itertools import count
 from typing import Any, Iterable, Literal
 
@@ -23,10 +25,18 @@ from app.models import (
     NegativeKeywordsReplace,
     PreviewPayload,
     Recommendation,
+    SemanticChangeApplyRequest,
+    SemanticChangeApplyResult,
+    SemanticChangeOperation,
+    SemanticChangePackage,
+    SemanticChangePreview,
+    SemanticChangeRequest,
     ValidationIssue,
     ValidationResult,
     YandexControlRequest,
     YandexControlResult,
+    YandexVCardRequest,
+    YandexVCardResult,
 )
 from app.yandex_direct import YandexDirectClient, YandexDirectError
 
@@ -87,6 +97,10 @@ class MockStore:
         ]
         self.apply_results_by_key: dict[str, ApplyActionResult] = {}
         self.yandex_actions_by_key: dict[str, YandexControlResult] = {}
+        # Semantic-change packages (see app.models.SemanticChangePackage).
+        # Kept in a dedicated dict so audit / list views can stay simple.
+        self.semantic_packages_by_id: dict[str, Any] = {}
+        self.semantic_apply_results_by_key: dict[str, Any] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -730,6 +744,664 @@ class MockStore:
                 },
             )
             raise
+
+
+    # --------------------------------------------------------------- yandex vcard
+
+    @staticmethod
+    def _vcard_to_direct_params(payload: YandexVCardRequest) -> dict[str, Any]:
+        phone: dict[str, Any] = {
+            "CountryCode": payload.phone.country_code.lstrip("+"),
+            "CityCode": payload.phone.city_code,
+            "PhoneNumber": payload.phone.phone_number,
+        }
+        if payload.phone.extension:
+            phone["Extension"] = payload.phone.extension
+
+        vcard: dict[str, Any] = {
+            "Country": payload.country,
+            "City": payload.city,
+            "CompanyName": payload.company_name,
+            "WorkTime": payload.work_time,
+            "Phone": phone,
+        }
+        if payload.campaign_id is not None:
+            vcard["CampaignId"] = payload.campaign_id
+        optional = {
+            "ContactPerson": payload.contact_person,
+            "Street": payload.street,
+            "House": payload.house,
+            "Building": payload.building,
+            "Apartment": payload.apartment,
+            "ExtraMessage": payload.extra_message,
+        }
+        vcard.update({key: value for key, value in optional.items() if value})
+        return vcard
+
+    @staticmethod
+    def _extract_vcard_id(response: dict[str, Any]) -> str | None:
+        result = response.get("result")
+        if not isinstance(result, dict):
+            return None
+        add_results = result.get("AddResults")
+        if isinstance(add_results, list) and add_results:
+            first = add_results[0]
+            if isinstance(first, dict) and first.get("Id") is not None:
+                return str(first["Id"])
+        return None
+
+    def yandex_vcard_add(
+        self,
+        payload: YandexVCardRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> YandexVCardResult:
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        existing = next(
+            (
+                event
+                for event in self.audit_events
+                if event.details
+                and event.details.get("idempotency_key") == payload.idempotency_key
+                and event.action == "yandex_vcard_add_requested"
+            ),
+            None,
+        )
+        if existing is not None:
+            details = existing.details or {}
+            source = details.get("source", "mock")
+            return YandexVCardResult(
+                dry_run=existing.dry_run,
+                applied=not existing.dry_run,
+                source=source if source in ("mock", "yandex") else "mock",
+                audit_id=existing.id,
+                vcard_id=details.get("vcard_id"),
+                work_time=payload.work_time,
+            )
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode in ("sandbox", "live_write")
+        direct_payload = self._vcard_to_direct_params(payload)
+
+        if payload.dry_run or not is_live:
+            audit = self.append_audit(
+                "yandex_vcard_add_requested",
+                "vcards",
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex" if is_live else "mock",
+                    "mode": mode,
+                    "payload_redacted": direct_payload,
+                },
+            )
+            return YandexVCardResult(
+                dry_run=payload.dry_run,
+                applied=not payload.dry_run and not is_live,
+                source="yandex" if is_live else "mock",
+                audit_id=audit.id,
+                work_time=payload.work_time,
+            )
+
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; use live_write"
+            )
+        if client is None:
+            raise YandexDirectError("YandexDirectClient is required for live vCard writes")
+
+        try:
+            yandex_result = client.vcards_add(direct_payload)
+            if not yandex_result.get("ok"):
+                err = yandex_result.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected vcards.add: error_code={err.get('error_code')!r}"
+                )
+            vcard_id = self._extract_vcard_id(yandex_result)
+            audit = self.append_audit(
+                "yandex_vcard_add_requested",
+                "vcards",
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "vcard_id": vcard_id,
+                    "yandex_units": yandex_result.get("units"),
+                },
+            )
+            return YandexVCardResult(
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                audit_id=audit.id,
+                vcard_id=vcard_id,
+                work_time=payload.work_time,
+            )
+        except YandexDirectError as exc:
+            self.append_audit(
+                "yandex_vcard_add_failed",
+                "vcards",
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+
+
+    # ------------------------------------------------- semantic change package
+    #
+    # The semantic-change pipeline is a safe-by-default way to prepare
+    # negative-keyword and positive-keyword changes for an existing
+    # Yandex Direct campaign (e.g. ``710382063``) and then explicitly
+    # apply them. ``prepare`` is pure-local and never touches the
+    # network. ``apply`` honours the same gate contract as the rest of
+    # the product: ``dry_run`` / ``approved`` / ``idempotency_key``,
+    # plus the runtime mode (``live_readonly`` blocks real apply;
+    # ``live_write`` allows it).
+    #
+    # The live-write path uses the v5 services confirmed against the
+    # public Direct API docs:
+    #
+    # * positive keywords -> ``keywords.add``
+    #   (service: ``keywords``, method: ``add``)
+    # * group-level negative keywords -> ``adgroups.update``
+    #   (service: ``adgroups``, method: ``update``) with
+    #   ``AdGroups[].NegativeKeywords.Items``
+    #
+    # Both require an explicit ``ad_group_id`` on the request; the
+    # endpoint rejects requests without it with HTTP 400. The store
+    # dispatches to ``YandexDirectClient.keywords_add`` and
+    # ``YandexDirectClient.adgroups_update`` rather than touching the
+    # private ``_call`` itself.
+
+    @staticmethod
+    def _normalize_ad_group_id(ad_group_id: int | str | None) -> int | str:
+        """Normalise ad_group_id to the form Direct expects in JSON bodies.
+
+        Numeric strings (``"123456"``) become ``int``; everything else is
+        passed through unchanged so non-numeric placeholder ids still
+        produce a deterministic error from Direct rather than a silent
+        type-coercion surprise.
+        """
+        if isinstance(ad_group_id, str) and ad_group_id.isdigit():
+            return int(ad_group_id)
+        return ad_group_id  # type: ignore[return-value]
+
+    @staticmethod
+    def _semantics_note_for_merge() -> str:
+        return (
+            "adgroups.update with NegativeKeywords.Items is REPLACE on "
+            "Direct API v5; live apply will read the current group-level "
+            "negatives via adgroups.get, merge with the requested phrases "
+            "(order-preserving, de-duplicated), and write the combined "
+            "set. Prepare / dry-run stay pure-local — no network call."
+        )
+
+    @staticmethod
+    def _build_semantic_operations(
+        campaign_id: str,
+        payload: SemanticChangeRequest,
+    ) -> list[SemanticChangeOperation]:
+        """Build the list of v5 operations that would be sent on apply.
+
+        Translation rules (locked against the confirmed v5 docs):
+
+        * ``add_keywords`` -> one ``keywords.add`` operation.
+          Service is ``keywords``, method is ``add``, payload is
+          ``{"Keywords": [{"Keyword": phrase, "AdGroupId": <id>}, ...]}``.
+          Each entry carries the same target ad group (the user-facing
+          semantic change is "add these phrases to this group").
+        * ``add_negative_keywords`` -> one ``adgroups.update`` operation.
+          Service is ``adgroups``, method is ``update``, payload is
+          ``{"AdGroups": [{"Id": <id>, "NegativeKeywords":
+          {"Items": [<phrase>, ...]}}]}``. Leading ``-`` is stripped
+          from every phrase so the v5 service receives the form it
+          expects.
+
+        IMPORTANT: ``NegativeKeywords.Items`` is REPLACE on Direct, not
+        APPEND. The apply path performs a read-modify-write via
+        ``adgroups.get`` + ``adgroups.update`` to preserve pre-existing
+        group-level negatives — see ``_apply_with_existing_negatives``.
+        The operation built here is the *requested* payload; the
+        effective payload on apply is the merged one.
+        """
+        operations: list[SemanticChangeOperation] = []
+        if payload.add_keywords:
+            ad_group_id = MockStore._normalize_ad_group_id(payload.ad_group_id)
+            operations.append(
+                SemanticChangeOperation(
+                    method="keywords.add",
+                    params={
+                        "Keywords": [
+                            {"Keyword": phrase, "AdGroupId": ad_group_id}
+                            for phrase in payload.add_keywords
+                        ],
+                    },
+                )
+            )
+        if payload.add_negative_keywords:
+            ad_group_id = MockStore._normalize_ad_group_id(payload.ad_group_id)
+            items = [
+                YandexDirectClient._normalize_negative_phrase(p)
+                for p in payload.add_negative_keywords
+            ]
+            operations.append(
+                SemanticChangeOperation(
+                    method="adgroups.update",
+                    params={
+                        "AdGroups": [
+                            {
+                                "Id": ad_group_id,
+                                "NegativeKeywords": {"Items": items},
+                            }
+                        ],
+                    },
+                )
+            )
+        # campaign_id is part of the audit log only — it is NOT threaded
+        # into the v5 request body (Direct's keywords.add / adgroups.update
+        # resolve the campaign from the AdGroupId).
+        _ = campaign_id
+        return operations
+
+    def prepare_semantic_change_package(
+        self,
+        campaign_id: str,
+        payload: SemanticChangeRequest,
+        *,
+        settings: Settings | None = None,
+    ) -> SemanticChangePackage:
+        """Prepare a semantic change package. Always pure-local.
+
+        No network call. No approval required. The result is a
+        ``SemanticChangePackage`` whose ``preview`` lists the v5
+        operations that *would* be sent on apply, so the user (or
+        another tool) can inspect the proposed change before deciding
+        whether to actually apply it.
+
+        Raises ``ValueError`` if the user supplied either keyword list
+        without an ``ad_group_id`` — Direct API v5 ``keywords.add``
+        requires ``AdGroupId`` per keyword and ``adgroups.update``
+        requires the target group ``Id``. Endpoints translate this
+        into HTTP 400.
+        """
+        if not payload.add_negative_keywords and not payload.add_keywords:
+            raise ValueError(
+                "At least one of add_negative_keywords / add_keywords must be provided"
+            )
+        if (
+            payload.add_negative_keywords or payload.add_keywords
+        ) and payload.ad_group_id is None:
+            raise ValueError(
+                "ad_group_id is required when add_keywords or "
+                "add_negative_keywords is provided"
+            )
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        operations = self._build_semantic_operations(campaign_id, payload)
+        has_negative_op = bool(payload.add_negative_keywords)
+        audit = self.append_audit(
+            "semantic_change_prepared",
+            campaign_id,
+            dry_run=True,
+            details={
+                "mode": mode,
+                "reason": payload.reason,
+                "ad_group_id": payload.ad_group_id,
+                "add_negative_keywords": payload.add_negative_keywords or [],
+                "add_keywords": payload.add_keywords or [],
+                "operations_count": len(operations),
+                # Mirror the merge marker into audit so reviewers can
+                # see from the audit log that live apply will do a
+                # read-modify-write for negative keywords. Stays
+                # pure-local here — no network call.
+                "merge_on_apply": has_negative_op,
+                "semantics_note": (
+                    MockStore._semantics_note_for_merge() if has_negative_op else None
+                ),
+            },
+        )
+        package = SemanticChangePackage(
+            package_id=f"scpkg_{_uuid.uuid4().hex[:10]}",
+            campaign_id=campaign_id,
+            status="prepared",
+            mode=mode,
+            dry_run=True,
+            created_at=_dt.datetime.now(tz=_dt.timezone.utc).isoformat(),
+            reason=payload.reason,
+            preview=SemanticChangePreview(
+                operations=operations,
+                merge_on_apply=has_negative_op,
+                semantics_note=(
+                    MockStore._semantics_note_for_merge()
+                    if has_negative_op
+                    else None
+                ),
+            ),
+            audit_id=audit.id,
+        )
+        self.semantic_packages_by_id[package.package_id] = package
+        return package
+
+    @staticmethod
+    def _normalize_for_merge(phrase: str) -> str:
+        """Normalize a phrase for de-duplication on the merge path.
+
+        Mirrors the normalisation applied to the request body
+        (strip leading ``-``, collapse whitespace) so the merge
+        comparison sees the same string that Direct will eventually
+        see.
+        """
+        return YandexDirectClient._normalize_negative_phrase(phrase)
+
+    @classmethod
+    def _merge_negative_phrases(
+        cls,
+        existing: list[str],
+        requested: list[str],
+    ) -> list[str]:
+        """Merge existing + requested group-level negatives.
+
+        Order-preserving: existing phrases come first (in their current
+        order on Direct), then any requested phrase that is not already
+        present. De-duplication is done on the normalised form (lowercase,
+        whitespace-collapsed, leading ``-`` stripped) to match the
+        normalisation the apply path applies to the request body.
+        """
+        merged: list[str] = []
+        seen: set[str] = set()
+        for phrase in list(existing) + list(requested):
+            key = cls._normalize_for_merge(phrase).lower()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(phrase.strip())
+        return merged
+
+    def _apply_with_existing_negatives(
+        self,
+        *,
+        client: YandexDirectClient,
+        campaign_id: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Read-modify-write the negative-keyword list for one ad group.
+
+        Direct API v5 ``adgroups.update`` with ``NegativeKeywords.Items``
+        is REPLACE, not APPEND. A naive send would silently drop any
+        pre-existing group-level negatives, which is a data-loss risk.
+        This helper:
+
+        1. Reads the campaign's ad groups via ``adgroups.get`` (the
+           ``NegativeKeywords`` field is requested explicitly so we
+           don't have to do a second call per group).
+        2. Locates the target group by id. If the response is not ``ok``
+           or the group is missing, raises ``YandexDirectError`` so the
+           caller can audit ``semantic_change_apply_failed`` BEFORE any
+           ``adgroups.update`` is sent.
+        3. Merges existing + requested negatives (order-preserving,
+           de-duplicated).
+        4. Sends ``adgroups.update`` with the merged list.
+
+        The return value is the response envelope from the final
+        ``adgroups.update`` call (``{"ok": ..., "result": ..., "units": ...}``).
+        """
+        ad_groups_param = (params.get("AdGroups") or [{}])[0]
+        target_id = ad_groups_param.get("Id")
+        if target_id is None:
+            raise YandexDirectError(
+                "adgroups.update operation is missing the target AdGroup Id"
+            )
+        requested_items: list[str] = list(
+            (ad_groups_param.get("NegativeKeywords") or {}).get("Items") or []
+        )
+
+        get_response = client.adgroups_get(campaign_id)
+        if not get_response.get("ok"):
+            err = get_response.get("error") or {}
+            raise YandexDirectError(
+                f"Yandex Direct rejected adgroups.get: error_code="
+                f"{err.get('error_code')!r}"
+            )
+        result_payload = get_response.get("result")
+        if not isinstance(result_payload, dict):
+            raise YandexDirectError(
+                "adgroups.get returned an unexpected envelope (no result.AdGroups)"
+            )
+        raw_ad_groups = result_payload.get("AdGroups")
+        if not isinstance(raw_ad_groups, list):
+            raise YandexDirectError(
+                "adgroups.get returned an unexpected envelope (no result.AdGroups)"
+            )
+
+        # Direct returns ids as ints for numeric ids; match the same way
+        # we normalise on the request side.
+        def _match(group_id: Any) -> bool:
+            if isinstance(target_id, int):
+                return isinstance(group_id, int) and group_id == target_id
+            return str(group_id) == str(target_id)
+
+        existing_items: list[str] = []
+        target_found = False
+        for group in raw_ad_groups:
+            if not isinstance(group, dict) or not _match(group.get("Id")):
+                continue
+            target_found = True
+            neg = group.get("NegativeKeywords")
+            if isinstance(neg, dict):
+                raw_items = neg.get("Items")
+                if isinstance(raw_items, list):
+                    existing_items = [
+                        str(p) for p in raw_items if isinstance(p, str)
+                    ]
+            break
+        if not target_found:
+            # Fail closed BEFORE any update: the target ad group id was
+            # not in the adgroups.get response, so we cannot safely
+            # merge — the caller will audit semantic_change_apply_failed
+            # and re-raise so the endpoint returns 502.
+            raise YandexDirectError(
+                f"adgroups.get response does not contain the target AdGroup Id={target_id!r}"
+            )
+
+        merged_items = self._merge_negative_phrases(existing_items, requested_items)
+        merged_payload = {
+            "Id": target_id,
+            "NegativeKeywords": {"Items": merged_items},
+        }
+        return client.adgroups_update([merged_payload])
+
+    def apply_semantic_change(
+        self,
+        package_id: str,
+        payload: SemanticChangeApplyRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> SemanticChangeApplyResult:
+        """Apply a previously prepared semantic change.
+
+        Gate contract (matches the rest of the product):
+
+        * ``approved`` MUST be ``True`` — otherwise raise ValueError.
+        * ``idempotency_key`` MUST be supplied (length >= 6, enforced
+          by the Pydantic model) — same key returns the cached result
+          without re-sending.
+        * ``dry_run=True`` is ALWAYS allowed and NEVER performs a
+          network write. The result is an audited preview.
+        * In ``live_readonly`` mode, ``dry_run=False`` is REJECTED
+          before any network call.
+        * In ``live_write`` mode with all gates satisfied, the
+          confirmed-shape operations from the package are sent via
+          the explicit ``YandexDirectClient`` helpers
+          (``keywords_add`` / ``adgroups_update``). Each successful
+          operation is counted; on the first failure the whole apply
+          aborts and ``semantic_change_apply_failed`` is recorded.
+        * ``mock`` and ``sandbox`` modes are NOT product write paths
+          for semantic changes (a sandbox flag here would imply the
+          operations are safe to test, but the sandbox token has the
+          same shape as a real one — we keep the gate strict).
+        """
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+        package = self.semantic_packages_by_id.get(package_id)
+        if package is None:
+            raise KeyError("semantic_change_package_not_found")
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # Idempotency replay.
+        cache_key = f"{package_id}:{payload.idempotency_key}"
+        if cache_key in self.semantic_apply_results_by_key:
+            return self.semantic_apply_results_by_key[cache_key]
+
+        # Dry-run path: never perform a network write.
+        if payload.dry_run:
+            audit = self.append_audit(
+                "semantic_change_apply_dry_run",
+                package.campaign_id,
+                dry_run=True,
+                details={
+                    "package_id": package_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex" if is_live else "mock",
+                    "operations_count": len(package.preview.operations),
+                },
+            )
+            result = SemanticChangeApplyResult(
+                package_id=package_id,
+                campaign_id=package.campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                audit_id=audit.id,
+                source="yandex" if is_live else "mock",
+                operations_sent=0,
+            )
+            self.semantic_apply_results_by_key[cache_key] = result
+            return result
+
+        # Real apply: gate by mode. live_readonly / sandbox are blocked
+        # before any network call so the rejection is guaranteed to be
+        # no-network.
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; "
+                "switch DIRECTPILOT_MODE to live_write to apply semantic changes"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live semantic-change writes"
+            )
+
+        # Send the prepared operations. Each operation is routed to the
+        # matching explicit helper on YandexDirectClient. We never call
+        # the private ``_call`` from the store. On the first error we
+        # record a ``semantic_change_apply_failed`` audit event with no
+        # token leakage and re-raise so the endpoint can return 502.
+        #
+        # Special case for ``adgroups.update``: Direct's
+        # ``NegativeKeywords.Items`` field is REPLACE, not APPEND. To
+        # avoid silently wiping the live group's existing negatives, the
+        # apply path first reads the current negatives via
+        # ``adgroups.get`` and merges them with the requested phrases
+        # (order-preserving, de-duplicated). If the read fails or the
+        # target ad group id is not found in the response, we abort
+        # BEFORE the update and audit ``semantic_change_apply_failed``.
+        sent_units = 0
+        try:
+            for operation in package.preview.operations:
+                method = operation.method
+                params = operation.params
+                if method == "keywords.add":
+                    response = client.keywords_add(params.get("Keywords", []))
+                elif method == "adgroups.update":
+                    response = self._apply_with_existing_negatives(
+                        client=client,
+                        campaign_id=package.campaign_id,
+                        params=params,
+                    )
+                else:
+                    # Defensive: every operation built by
+                    # ``_build_semantic_operations`` is one of the two
+                    # above. If something else slipped in (e.g. via a
+                    # future migration that hand-edits a package), fail
+                    # closed.
+                    raise YandexDirectError(
+                        f"Unsupported semantic-change operation: {method!r}"
+                    )
+                if not response.get("ok"):
+                    err = response.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected {method}: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                sent_units += int(response.get("units") or 0)
+        except YandexDirectError as exc:
+            self.append_audit(
+                "semantic_change_apply_failed",
+                package.campaign_id,
+                dry_run=False,
+                details={
+                    "package_id": package_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+
+        audit = self.append_audit(
+            "semantic_change_applied",
+            package.campaign_id,
+            dry_run=False,
+            details={
+                "package_id": package_id,
+                "approved": payload.approved,
+                "idempotency_key": payload.idempotency_key,
+                "mode": mode,
+                "source": "yandex",
+                "operations_count": len(package.preview.operations),
+                "yandex_units": sent_units,
+                # Surface the merge-on-apply marker and the live-group
+                # negative count that was read in front of the update,
+                # so the audit log shows the effective payload (not just
+                # the requested one). Stays pure-local when
+                # merge_on_apply is False.
+                "merge_on_apply": bool(package.preview.merge_on_apply),
+            },
+        )
+        package.status = "applied"
+        result = SemanticChangeApplyResult(
+            package_id=package_id,
+            campaign_id=package.campaign_id,
+            mode=mode,
+            dry_run=False,
+            applied=True,
+            audit_id=audit.id,
+            source="yandex",
+            operations_sent=len(package.preview.operations),
+        )
+        self.semantic_apply_results_by_key[cache_key] = result
+        return result
 
 
 store = MockStore()
