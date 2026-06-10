@@ -1,0 +1,9 @@
+title = "DirectPilot gitleaks configuration"
+
+[allowlist]
+description = "Documented fake test fixtures and idempotency keys"
+regexes = [
+  '''AQVN-SECRET-WORDSTAT-KEY-1234567890abcdef''',
+  '''b1g1234567890abcdef''',
+  '''"idempotency_key"\s*:\s*"smoke-[a-z0-9-]+"''',
+]
