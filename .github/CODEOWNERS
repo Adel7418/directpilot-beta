@@ -1,7 +1,7 @@
-# Replace @OWNER with the GitHub username or team that maintains DirectPilot before publishing.
-# Example:
-# * @OWNER
-# /app/yandex_*.py @OWNER
-# /app/config.py @OWNER
-# /.github/ @OWNER
-# /skills/ @OWNER
+# DirectPilot maintainers. Keep this file in sync with the GitHub team/users
+# that can review safety-sensitive beta changes.
+* @Adel7418
+/app/yandex_*.py @Adel7418
+/app/config.py @Adel7418
+/.github/ @Adel7418
+/skills/ @Adel7418
