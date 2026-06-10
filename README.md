@@ -2,6 +2,8 @@
 
 DirectPilot is an API-first backend service for safe interaction with Yandex Direct, Yandex Metrika, and Wordstat. It is designed for programmatic integration only (REST/JSON API) and stores no business logic in external UIs.
 
+This repository is also an AI-oriented implementation and playbook for safely using Yandex advertising APIs (Yandex Direct, Yandex Metrika, Wordstat) via REST/JSON, with strict read-only by default and explicit live-write gates for mutations.
+
 > **Public beta:** DirectPilot is not production-stable yet. The default runtime mode is `live_readonly`; write-capable operations are blocked unless the operator explicitly enables the `live_write` gate and sends an approved, idempotent request.
 
 ## Current product mode
