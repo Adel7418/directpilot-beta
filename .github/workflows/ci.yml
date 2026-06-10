@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Compile Python files
+        run: uv run python -m compileall app tests scripts
+      - name: Run tests
+        run: uv run pytest -q
+      - name: Check OpenAPI snapshot
+        run: uv run python scripts/check_openapi_sync.py
+      - name: Check repository for obvious secrets
+        run: uv run python scripts/check_no_secrets_in_git.py

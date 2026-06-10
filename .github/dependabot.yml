@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+# Python dependency updates are intentionally not automated through Dependabot
+# during beta: this project uses uv.lock and CI runs `uv sync --frozen`.
+# Update Python packages manually with `uv lock --upgrade-package <name>` so
+# pyproject.toml and uv.lock stay synchronized in the same PR.

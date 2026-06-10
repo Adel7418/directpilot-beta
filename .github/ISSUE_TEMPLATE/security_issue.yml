@@ -1,0 +1,29 @@
+name: Security issue
+description: Request private handling for a security concern
+title: "security: "
+labels: [security, needs-private-review]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets or exploit details in public issues. If private vulnerability reporting is enabled, use it instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Redacted summary
+      description: Keep this high-level and do not include secrets.
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Potential impact
+      options:
+        - credential exposure
+        - unauthorized read
+        - unauthorized write
+        - budget/campaign impact
+        - dependency/supply-chain
+        - other
+    validations:
+      required: true

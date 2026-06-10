@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a DirectPilot improvement
+title: "feat: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the proposed behavior.
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Safety impact
+      options:
+        - docs only
+        - read-only API behavior
+        - write-path behavior
+        - budget/campaign-impacting behavior
+        - unsure
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
