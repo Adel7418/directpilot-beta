@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +430,101 @@ class YandexVCardResult(BaseModel):
     audit_id: str
     vcard_id: str | None = None
     work_time: str
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct ads.update — BusinessId attach
+# ---------------------------------------------------------------------------
+#
+# The BusinessId-attach path is the safe-by-default way to attach an
+# existing Yandex Business organization (verified via
+# ``businesses.get``) to one or more TextAd objects. The endpoint sets
+# two v5 fields on each target ad:
+#
+# * ``TextAd.BusinessId`` — long
+# * ``TextAd.PreferVCardOverBusiness`` — ``"NO"`` (literal string per v5)
+#
+# Direct API v5 ``ads.update`` is a REPLACE-shaped call: every field
+# the operator wants to keep on the ad MUST be re-sent in the same
+# request. The store layer reads the live ad via ``ads.get`` and
+# forwards ``Title`` / ``Text`` / ``Href`` together with the new
+# ``BusinessId`` / ``PreferVCardOverBusiness`` fields.
+#
+# This is preferred over ``vcards.add`` for organization-level contact
+# information because ``vcards.add`` can fail with ``error_code=3500``
+# for several account types — see ``docs/API_SIMPLE.md`` for the
+# rationale.
+
+
+class YandexAdsBusinessAttachRequest(BaseModel):
+    """Body of ``POST /yandex/ads/business``.
+
+    Exactly one of ``ad_ids`` or ``campaign_id`` is required. When
+    ``campaign_id`` is supplied, the store reads the campaign's ads
+    via ``ads.get`` and targets only TextAds (``Ad.Type == "TEXT_AD"``).
+    Other ad types (e.g. ``IMAGE_AD``) are SKIPPED and surfaced in
+    the response so the operator can see which ads were excluded.
+
+    ``business_id`` is the Yandex Business id (a long). The store
+    NEVER validates that the business exists — that is the
+    operator's job before calling this endpoint. A bad ``business_id``
+    surfaces as a v5 ``error_code`` in the audit log + response.
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    business_id: int = Field(..., ge=1)
+    ad_ids: list[int] | None = None
+    campaign_id: int | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _require_at_least_one_target(self) -> "YandexAdsBusinessAttachRequest":
+        if not self.ad_ids and self.campaign_id is None:
+            raise ValueError(
+                "Either ad_ids or campaign_id is required for /yandex/ads/business"
+            )
+        return self
+
+
+class YandexAdsBusinessAttachSkipped(BaseModel):
+    """One ad the store decided NOT to attach the BusinessId to.
+
+    The most common reason is ``not_text_ad`` (e.g. an ``IMAGE_AD``
+    was returned by ``ads.get`` for the same campaign). The list is
+    always returned — empty when every target ad was a TextAd — so
+    the operator can see exactly which ads were excluded and why.
+    """
+
+    ad_id: int
+    reason: str
+
+
+class YandexAdsBusinessAttachResult(BaseModel):
+    """Response envelope for the BusinessId attach.
+
+    * ``dry_run=True`` returns the v5 ``ads.update`` payload that
+      WOULD be sent, with ``applied=False`` and ``ad_ids=[]``.
+    * ``dry_run=False`` + ``live_write`` + ``approved=True`` +
+      ``idempotency_key`` performs the real v5 ``ads.update`` call
+      and returns the targeted ad ids with ``applied=True`` and
+      ``source="yandex"``. The cached result is replayed when the
+      same ``idempotency_key`` is sent again.
+    * ``source="mock"`` is reserved for the mock-mode dry-run path.
+    """
+
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    business_id: int
+    ad_ids: list[int] = Field(default_factory=list)
+    skipped: list[YandexAdsBusinessAttachSkipped] = Field(default_factory=list)
+    payload_preview: dict | None = None
+    yandex_units: int | None = None
+    yandex_error: str | None = None
 
 
 class YandexSearchApiResult(BaseModel):

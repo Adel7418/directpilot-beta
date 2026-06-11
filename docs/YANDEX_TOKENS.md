@@ -43,7 +43,7 @@ If Yandex changes the UI or OAuth flow, prefer the official docs above over this
 6. Save the application credentials locally in `.env`:
    ```env
    YANDEX_CLIENT_ID=your_client_id_here
-   YANDEX_CLIENT_SECRET=your_client_secret_here
+   YANDEX_CLIENT_SECRET=your-client-secret-here
    YANDEX_REDIRECT_URI=https://oauth.yandex.ru/verification_code
    ```
 
@@ -62,7 +62,7 @@ https://oauth.yandex.ru/authorize?response_type=token&client_id=YANDEX_CLIENT_ID
 Authorize the app under the Yandex account that has access to the target Direct account. Copy only the resulting token value into local `.env`:
 
 ```env
-YANDEX_OAUTH_TOKEN=your_direct_oauth_token_here
+YANDEX_OAUTH_TOKEN=your-direct-oauth-token-here
 ```
 
 Do not paste the token into chat, issues, PRs, logs, screenshots, or documentation.
@@ -94,7 +94,7 @@ Wordstat in DirectPilot uses Yandex Search API v2 / AI Studio style credentials,
 Set:
 
 ```env
-YANDEX_SEARCH_API_KEY=your_search_api_key_here
+YANDEX_SEARCH_API_KEY=your-search-api-key-here
 YANDEX_SEARCH_FOLDER_ID=optional_folder_id_here
 ```
 
@@ -105,7 +105,7 @@ Leave these blank if you only need Direct/Metrika routes and do not need `/words
 Metrika endpoints use a separate OAuth token:
 
 ```env
-YANDEX_METRIKA_OAUTH_TOKEN=your_metrika_oauth_token_here
+YANDEX_METRIKA_OAUTH_TOKEN=your-metrika-oauth-token-here
 ```
 
 This is not the same value as `YANDEX_OAUTH_TOKEN`. Leave it blank if `/metrika/*` routes are not needed.

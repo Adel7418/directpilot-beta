@@ -383,6 +383,63 @@ class YandexDirectClient:
         """
         return self._call("ads", {"method": "add", "params": {"Ads": list(items)}})
 
+    # ------------------------------------------------------------------
+    # ads.update — safe-by-default write helper for attaching an
+    # existing Yandex Business organization to a TextAd.
+    #
+    # Direct API v5 ``ads.update`` (see
+    # https://yandex.com/dev/direct/doc/ref-v5/ads/update.html) is a
+    # REPLACE-shaped call: every field the operator wants to keep
+    # on the ad MUST be re-sent in the same request. The Direct
+    # docs document the TextAd body as requiring ``Title``,
+    # ``Text``, and ``Href``; optional fields include
+    # ``DisplayLinkPath``, ``AdImageHash``, ``VideoExtension``,
+    # ``BusinessId`` (long), and ``PreferVCardOverBusiness``
+    # (``YES`` / ``NO``).
+    #
+    # This helper is intentionally narrow: the caller (the store /
+    # endpoint layer) builds a fully-shaped v5 ``Ads`` list and
+    # forwards it. We never invent field names that the v5 contract
+    # does not document. The contract for the BusinessId-attach
+    # use case is:
+    #
+    # .. code-block:: json
+    #
+    #     {"method": "update", "params": {"Ads": [
+    #         {"Id": 99001,
+    #          "TextAd": {"Title": "...", "Text": "...", "Href": "...",
+    #                     "BusinessId": 11588384335,
+    #                     "PreferVCardOverBusiness": "NO"}},
+    #         ...
+    #     ]}}
+    #
+    # The BusinessId attach path is preferred over ``vcards.add`` for
+    # organization-level contact information because
+    # ``vcards.add`` can fail with ``error_code=3500`` for several
+    # account types — see the note in ``docs/API_SIMPLE.md`` for the
+    # rationale.
+    # ------------------------------------------------------------------
+
+    def ads_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update one or more Yandex Direct ads via v5 ``ads.update``.
+
+        ``items`` must be a list of fully-shaped v5 ``Ads``
+        dictionaries. Each entry carries the target ``Id`` and the
+        v5 sub-block(s) to update (``TextAd`` / ``MobileAppAd`` /
+        ``DynamicTextAd`` / etc.). The helper forwards the payload
+        to the v5 ``ads`` service with ``method=update`` and
+        returns the same ``{ok, result, error, units}`` envelope
+        used by the rest of the client.
+
+        The BusinessId-attach use case is the canonical caller. The
+        store layer reads the live ad via ``ads.get`` (so the
+        required ``Title`` / ``Text`` / ``Href`` fields can be
+        re-sent in the same REPLACE-shaped call), then forwards
+        the items here. ``DisplayLinkPath`` is OPTIONAL; we never
+        invent it.
+        """
+        return self._call("ads", {"method": "update", "params": {"Ads": list(items)}})
+
     def adgroups_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         """Update ad groups, currently used for shared negative keywords.
 

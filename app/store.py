@@ -35,6 +35,9 @@ from app.models import (
     SemanticChangeRequest,
     ValidationIssue,
     ValidationResult,
+    YandexAdsBusinessAttachRequest,
+    YandexAdsBusinessAttachResult,
+    YandexAdsBusinessAttachSkipped,
     YandexControlRequest,
     YandexControlResult,
     YandexVCardRequest,
@@ -2406,6 +2409,358 @@ class MockStore:
         )
         self.semantic_apply_results_by_key[cache_key] = result
         return result
+
+    # ------------------------------------------------- yandex ads business attach
+    #
+    # Attach an existing Yandex Business organization to one or more
+    # TextAd objects via v5 ``ads.update``. The endpoint
+    # ``POST /yandex/ads/business`` is the safe-by-default counterpart
+    # to ``POST /yandex/vcards`` for organization-level contact
+    # information: vcards.add can fail with ``error_code=3500`` for
+    # several account types, so the BusinessId attach is the
+    # preferred route.
+    #
+    # Gate contract (mirrors the rest of the product):
+    #
+    # * ``approved`` MUST be ``True`` (otherwise 409).
+    # * ``idempotency_key`` is required (length >= 6, enforced by
+    #   the Pydantic model). The first call performs the network
+    #   write; replays return the cached result without re-sending.
+    # * ``dry_run=True`` is ALWAYS allowed and NEVER performs a
+    #   network write. The result includes the redacted v5
+    #   ``ads.update`` payload preview.
+    # * In ``live_readonly`` mode, ``dry_run=False`` is REJECTED
+    #   before any network call.
+    # * In ``live_write`` mode with all gates satisfied, the
+    #   helper builds the v5 payload, reads the live ads (when
+    #   ``campaign_id`` is supplied) to keep the required
+    #   ``Title`` / ``Text`` / ``Href`` fields, and dispatches
+    #   one ``ads.update`` call via the injected client.
+    # * ``mock`` and ``sandbox`` modes are NOT product write paths
+    #   for this endpoint (same rationale as the live-create chain:
+    #   a sandbox token has the same v5 ``ads.update`` write shape
+    #   as a real token, so the gate stays strict).
+
+    @staticmethod
+    def _build_ads_business_update_items(
+        *,
+        ad_ids: list[int],
+        business_id: int,
+        live_ads: dict[int, dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build a v5 ``Ads`` list for the BusinessId-attach apply.
+
+        Direct API v5 ``ads.update`` is a REPLACE-shaped call: every
+        field the operator wants to keep on the ad MUST be re-sent
+        in the same request. For a TextAd the required body fields
+        are ``Title`` / ``Text`` / ``Href``; ``BusinessId`` and
+        ``PreferVCardOverBusiness`` are the new fields we are
+        setting.
+
+        ``live_ads`` (when supplied) is a ``{ad_id: TextAd dict}``
+        map read from the live ``ads.get`` response — its
+        ``Title`` / ``Text`` / ``Href`` flow into the payload so
+        the live call cannot drop required fields. When
+        ``live_ads`` is missing (the request only supplied
+        ``ad_ids`` with no ``campaign_id`` read), the items are
+        still shaped correctly so the dry-run preview can be
+        inspected; the apply path uses the live read to keep the
+        values accurate.
+        """
+        items: list[dict[str, Any]] = []
+        for ad_id in ad_ids:
+            text_ad: dict[str, Any] = {
+                "Title": "<read-from-live-ad-before-apply>",
+                "Text": "<read-from-live-ad-before-apply>",
+                "Href": "<read-from-live-ad-before-apply>",
+                "BusinessId": business_id,
+                "PreferVCardOverBusiness": "NO",
+            }
+            if live_ads and ad_id in live_ads:
+                live_text_ad = live_ads[ad_id]
+                # Carry over the required fields so the v5
+                # REPLACE-shape does not drop them.
+                for key in ("Title", "Text", "Href"):
+                    value = live_text_ad.get(key)
+                    if isinstance(value, str) and value:
+                        text_ad[key] = value
+            items.append({"Id": ad_id, "TextAd": text_ad})
+        return items
+
+    @staticmethod
+    def _redact_ads_business_payload(
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Redact a v5 ``Ads`` list for the audit log.
+
+        The BusinessId is NOT a secret, but we keep the redacted
+        shape (just ``Id`` + the BusinessId / PreferVCardOverBusiness
+        flags) so the audit log cannot leak the full TextAd body
+        (which may include operator-edited ad copy) into the
+        application logs. Title / Text / Href are redacted to a
+        short summary.
+        """
+        redacted: list[dict[str, Any]] = []
+        for item in items:
+            ad_id = item.get("Id")
+            text_ad = item.get("TextAd") or {}
+            redacted.append(
+                {
+                    "Id": ad_id,
+                    "TextAd": {
+                        "BusinessId": text_ad.get("BusinessId"),
+                        "PreferVCardOverBusiness": text_ad.get(
+                            "PreferVCardOverBusiness"
+                        ),
+                        "Title": "<redacted>",
+                        "Text": "<redacted>",
+                        "Href": text_ad.get("Href"),  # safe — public URL
+                    },
+                }
+            )
+        return redacted
+
+    def yandex_ads_business_attach(
+        self,
+        payload: YandexAdsBusinessAttachRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> YandexAdsBusinessAttachResult:
+        """Apply a BusinessId attach to one or more TextAds.
+
+        Idempotency cache: keyed by
+        ``(business_id, ad_ids tuple, idempotency_key, dry_run)`` so
+        a dry-run replay does NOT consume a real apply's
+        idempotency_key. Each (request, dry_run) triple has its
+        own cache entry.
+        """
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # Idempotency cache.
+        target_signature = (
+            tuple(payload.ad_ids) if payload.ad_ids else (f"campaign:{payload.campaign_id}",)
+        )
+        dry_flag = "dry" if payload.dry_run else "apply"
+        cache_key = (
+            f"ads_business:{payload.business_id}:{target_signature}:"
+            f"{payload.idempotency_key}:{dry_flag}"
+        )
+        cached = getattr(self, "ads_business_attach_results_by_key", None)
+        if cached is None:
+            cached = {}
+            self.ads_business_attach_results_by_key = cached
+        if cache_key in cached:
+            return cached[cache_key]
+
+        # Resolve target ad ids. When ``campaign_id`` is supplied,
+        # read the campaign's ads via the live client. We never
+        # touch the network on dry_run, so the dry-run preview
+        # surfaces the operator-supplied ad_ids verbatim.
+        skipped: list[YandexAdsBusinessAttachSkipped] = []
+        target_ad_ids: list[int] = list(payload.ad_ids or [])
+
+        # Pre-flight mode gate for apply.
+        if not payload.dry_run and mode != "live_write":
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch ads.update"
+            )
+
+        if payload.campaign_id is not None and not payload.dry_run:
+            # Live read of the campaign's ads. Required so the
+            # REPLACE-shaped ``ads.update`` payload can re-send the
+            # required TextAd fields. Refused if no client.
+            if client is None:
+                raise YandexDirectError(
+                    "YandexDirectClient is required for live ads/business writes"
+                )
+            try:
+                ads_response = client.ads_get(payload.campaign_id)
+            except YandexDirectError:
+                raise
+            if not ads_response.get("ok"):
+                err = ads_response.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected ads.get: error_code={err.get('error_code')!r}"
+                )
+            ads_payload = (ads_response.get("result") or {}).get("Ads") or []
+            text_ad_ids: list[int] = []
+            live_text_ads: dict[int, dict[str, Any]] = {}
+            for ad in ads_payload:
+                if not isinstance(ad, dict):
+                    continue
+                ad_id_value = ad.get("Id")
+                ad_type = ad.get("Type")
+                if not isinstance(ad_id_value, int):
+                    continue
+                if ad_type != "TEXT_AD":
+                    skipped.append(
+                        YandexAdsBusinessAttachSkipped(
+                            ad_id=ad_id_value,
+                            reason="not_text_ad",
+                        )
+                    )
+                    continue
+                text_ad = ad.get("TextAd")
+                if not isinstance(text_ad, dict):
+                    text_ad = {}
+                text_ad_ids.append(ad_id_value)
+                live_text_ads[ad_id_value] = text_ad
+            if not text_ad_ids:
+                raise YandexDirectError(
+                    f"campaign {payload.campaign_id} has no TextAds to attach "
+                    f"the BusinessId to"
+                )
+            target_ad_ids = text_ad_ids
+        else:
+            live_text_ads = None
+
+        # Build the v5 payload.
+        items = self._build_ads_business_update_items(
+            ad_ids=target_ad_ids,
+            business_id=payload.business_id,
+            live_ads=live_text_ads,
+        )
+        payload_preview = {
+            "method": "ads.update",
+            "params": {"Ads": items},
+        }
+
+        # Dry-run path: never perform a network write.
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_ads_business_attach_requested",
+                str(payload.campaign_id or "ad_ids"),
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex" if is_live else "mock",
+                    "reason": payload.reason,
+                    "business_id": payload.business_id,
+                    "ad_ids": list(target_ad_ids),
+                    "ad_count": len(target_ad_ids),
+                    "skipped": [s.model_dump() for s in skipped],
+                    "stage": "dry_run_preview",
+                    "payload_redacted": self._redact_ads_business_payload(items),
+                },
+            )
+            result = YandexAdsBusinessAttachResult(
+                dry_run=True,
+                applied=False,
+                source="yandex" if is_live else "mock",
+                mode=mode,
+                audit_id=audit.id,
+                business_id=payload.business_id,
+                ad_ids=list(target_ad_ids),
+                skipped=skipped,
+                payload_preview=payload_preview,
+            )
+            # Dry-runs are intentionally not cached: every operator preview
+            # should leave a fresh audit trace and must not consume/apply the
+            # real idempotency key.
+            return result
+
+        # Real apply: gate by mode (the pre-flight check above
+        # already raised for non-live_write modes). Defence in
+        # depth.
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; "
+                "switch DIRECTPILOT_MODE to live_write to attach BusinessId"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live ads/business writes"
+            )
+
+        try:
+            yandex_result = client.ads_update(items)
+            if not yandex_result.get("ok"):
+                err = yandex_result.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected ads.update: "
+                    f"error_code={err.get('error_code')!r}"
+                )
+            sent_units = _safe_units(yandex_result.get("units"))
+            audit = self.append_audit(
+                "yandex_ads_business_attach_requested",
+                str(payload.campaign_id or "ad_ids"),
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex",
+                    "reason": payload.reason,
+                    "business_id": payload.business_id,
+                    "ad_ids": list(target_ad_ids),
+                    "ad_count": len(target_ad_ids),
+                    "skipped": [s.model_dump() for s in skipped],
+                    "stage": "ads.update",
+                    "applied": True,
+                    "yandex_units": sent_units,
+                    "payload_redacted": self._redact_ads_business_payload(items),
+                },
+            )
+            result = YandexAdsBusinessAttachResult(
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                mode=mode,
+                audit_id=audit.id,
+                business_id=payload.business_id,
+                ad_ids=list(target_ad_ids),
+                skipped=skipped,
+                payload_preview=payload_preview,
+                yandex_units=sent_units,
+            )
+            cached[cache_key] = result
+            return result
+        except YandexDirectError as exc:
+            # Audit the failure with no token leakage. Re-raise so
+            # the endpoint returns 502 with a redacted message.
+            self.append_audit(
+                "yandex_ads_business_attach_failed",
+                str(payload.campaign_id or "ad_ids"),
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "business_id": payload.business_id,
+                    "ad_ids": list(target_ad_ids),
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 — safety net
+            safe = YandexDirectError(
+                f"unexpected error during ads/business apply: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.append_audit(
+                "yandex_ads_business_attach_failed",
+                str(payload.campaign_id or "ad_ids"),
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "business_id": payload.business_id,
+                    "ad_ids": list(target_ad_ids),
+                    "yandex_error": str(safe),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise safe from exc
 
 
 store = MockStore()

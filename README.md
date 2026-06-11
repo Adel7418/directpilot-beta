@@ -55,11 +55,13 @@ uv run python scripts/check_no_secrets_in_git.py
 - `docs/YANDEX_TOKENS.md` — how to obtain and verify local Yandex Direct/Metrika/Search credentials safely
 - `docs/TECHNICAL_CONTEXT.md` — technical mode/controls/modes, live-write gates, retired routes, and source-of-truth map
 - `docs/API_SIMPLE.md` — practical API usage map
+- `docs/YANDEX_BUSINESS_CONTACTS.md` — focused runbook for Yandex Business fallback when vCards.add is blocked (error_code=3500)
 - `docs/MARKETER_GUIDE.md` — marketer workflow map to DirectPilot endpoints
 - `docs/implementation_scope.md` — current scope, in/out boundaries, and safety assumptions
 - `docs/yandex-access-status.md` — latest Yandex access verification snapshot
 - `docs/SAFETY_MODEL.md` — beta safety contract for contributors and maintainers
 - `docs/AGENT_WORKFLOWS.md` — agent/skill workflow rules for documentation and code changes
+
 
 ## Contributing
 

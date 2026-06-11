@@ -2114,6 +2114,183 @@
         "title": "YandexAdList",
         "type": "object"
       },
+      "YandexAdsBusinessAttachRequest": {
+        "description": "Body of ``POST /yandex/ads/business``.\n\nExactly one of ``ad_ids`` or ``campaign_id`` is required. When\n``campaign_id`` is supplied, the store reads the campaign's ads\nvia ``ads.get`` and targets only TextAds (``Ad.Type == \"TEXT_AD\"``).\nOther ad types (e.g. ``IMAGE_AD``) are SKIPPED and surfaced in\nthe response so the operator can see which ads were excluded.\n\n``business_id`` is the Yandex Business id (a long). The store\nNEVER validates that the business exists — that is the\noperator's job before calling this endpoint. A bad ``business_id``\nsurfaces as a v5 ``error_code`` in the audit log + response.",
+        "properties": {
+          "ad_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Ids"
+          },
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "business_id": {
+            "minimum": 1.0,
+            "title": "Business Id",
+            "type": "integer"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "approved",
+          "idempotency_key",
+          "business_id"
+        ],
+        "title": "YandexAdsBusinessAttachRequest",
+        "type": "object"
+      },
+      "YandexAdsBusinessAttachResult": {
+        "description": "Response envelope for the BusinessId attach.\n\n* ``dry_run=True`` returns the v5 ``ads.update`` payload that\n  WOULD be sent, with ``applied=False`` and ``ad_ids=[]``.\n* ``dry_run=False`` + ``live_write`` + ``approved=True`` +\n  ``idempotency_key`` performs the real v5 ``ads.update`` call\n  and returns the targeted ad ids with ``applied=True`` and\n  ``source=\"yandex\"``. The cached result is replayed when the\n  same ``idempotency_key`` is sent again.\n* ``source=\"mock\"`` is reserved for the mock-mode dry-run path.",
+        "properties": {
+          "ad_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ad Ids",
+            "type": "array"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "business_id": {
+            "title": "Business Id",
+            "type": "integer"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/YandexAdsBusinessAttachSkipped"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "dry_run",
+          "applied",
+          "mode",
+          "audit_id",
+          "business_id"
+        ],
+        "title": "YandexAdsBusinessAttachResult",
+        "type": "object"
+      },
+      "YandexAdsBusinessAttachSkipped": {
+        "description": "One ad the store decided NOT to attach the BusinessId to.\n\nThe most common reason is ``not_text_ad`` (e.g. an ``IMAGE_AD``\nwas returned by ``ads.get`` for the same campaign). The list is\nalways returned — empty when every target ad was a TextAd — so\nthe operator can see exactly which ads were excluded and why.",
+        "properties": {
+          "ad_id": {
+            "title": "Ad Id",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ad_id",
+          "reason"
+        ],
+        "title": "YandexAdsBusinessAttachSkipped",
+        "type": "object"
+      },
       "YandexCampaign": {
         "properties": {
           "daily_budget": {
@@ -4883,6 +5060,44 @@
           }
         },
         "summary": "Yandex Ad Images"
+      }
+    },
+    "/yandex/ads/business": {
+      "post": {
+        "operationId": "yandex_ads_business_attach_yandex_ads_business_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexAdsBusinessAttachRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAdsBusinessAttachResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Ads Business Attach"
       }
     },
     "/yandex/agency-clients": {

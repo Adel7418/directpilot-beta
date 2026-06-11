@@ -113,7 +113,8 @@ DirectPilot — единая прослойка для маркетолога:
 
 - `GET /yandex/vcards` — посмотреть визитки;
 - `GET /yandex/businesses` — посмотреть организации/BusinessId;
-- `GET /yandex/campaigns/{campaign_id}/ads` — проверить привязки `BusinessId`/`PreferVCardOverBusiness`, если они есть в ответе.
+- `GET /yandex/campaigns/{campaign_id}/ads` — проверить привязки `BusinessId`/`PreferVCardOverBusiness`/`VCardId`, если они есть в ответе.
+- Для сценария `error_code=3500` после `POST /yandex/vcards` используйте специальный runbook: `docs/YANDEX_BUSINESS_CONTACTS.md`.
 
 Если DirectPilot показывает, что создание визиток не поддерживается для кампании, маршрут — через организацию/Яндекс Бизнес, а не повторные попытки `vCards.add`.
 

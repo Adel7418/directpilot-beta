@@ -49,6 +49,8 @@ from app.models import (
     ValidationResult,
     YandexAccountBalance,
     YandexAccountBalanceResult,
+    YandexAdsBusinessAttachRequest,
+    YandexAdsBusinessAttachResult,
     YandexAd,
     YandexAdGroup,
     YandexAdGroupList,
@@ -945,6 +947,23 @@ def yandex_vcards_add(
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post("/yandex/ads/business", response_model=YandexAdsBusinessAttachResult)
+def yandex_ads_business_attach(
+    payload: YandexAdsBusinessAttachRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdsBusinessAttachResult:
+    try:
+        return store.yandex_ads_business_attach(payload, settings=settings, client=client)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        message = str(exc)
+        if "Live writes require" in message or "live_readonly" in message:
+            raise HTTPException(status_code=409, detail=message) from exc
         raise _yandex_error_to_502(exc) from exc
 
 

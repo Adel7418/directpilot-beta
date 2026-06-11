@@ -707,6 +707,7 @@ GET /wordstat/regions-tree
 GET /yandex/sitelinks      -> sitelinks.get
 GET  /yandex/vcards        -> vcards.get
 POST /yandex/vcards        -> vcards.add (dry-run по умолчанию; live-write только через approved + idempotency_key + dry_run=false; для реальной записи Direct требует campaign_id)
+POST /yandex/ads/business  -> ads.update для привязки опубликованной организации BusinessId к TextAd (dry-run по умолчанию; live-write только через approved + idempotency_key + dry_run=false)
 GET  /yandex/ad-images     -> adimages.get
 GET /yandex/creatives      -> creatives.get
 GET /yandex/feeds          -> feeds.get
@@ -714,4 +715,37 @@ GET /yandex/businesses     -> businesses.get
 GET /yandex/agency-clients -> agencyclients.get
 ```
 
-Назначение: быстрые ссылки, визитки, изображения, креативы, фиды, организации и агентские клиенты. Эти endpoints нужны, чтобы программа могла строить полную карту аккаунта Директа, а не только кампании/ключи.
+Назначение: быстрые ссылки, визитки, BusinessId-привязка, изображения, креативы, фиды, организации и агентские клиенты. Эти endpoints нужны, чтобы программа могла строить полную карту аккаунта Директа, а не только кампании/ключи.
+
+Практический контактный маршрут (детально: `docs/YANDEX_BUSINESS_CONTACTS.md`):
+
+Если `POST /yandex/vcards` вернул `error_code=3500` (`Создание визиток не поддерживается`), не перебирать `vcard` payload — переходить в BusinessId-путь:
+
+1) Подтвердите организацию:
+   - `GET /yandex/businesses` и фильтр по `Id` в ответе `businesses.get`.
+   - Прежде чем выполнять привязку, проверьте в найденной сущности поля: `Id`, `Name`, `Phone`, `ProfileUrl`, `IsPublished`, `Urls`, `HasOffice`.
+   - Допуск только для опубликованных: `IsPublished == "YES"` (или эквивалент `true`) и совпадающего по вашему проверочному номеру телефона.
+
+2) Сформируйте dry-run для `POST /yandex/ads/business`:
+   - `approved: true`
+   - `idempotency_key`
+   - `dry_run: true`
+   - `business_id` (например `11588384335`)
+   - `campaign_id` или `ad_ids`
+
+3) Применение (live-write): только после проверки dry-run и бизнес-апрува:
+   - `approved: true`
+   - `dry_run: false`
+   - `idempotency_key` тот же (или новый по вашему process)
+   - `DIRECTPILOT_MODE=live_write`
+
+4) После apply выполните readback:
+   - `GET /yandex/campaigns/{campaign_id}/ads` (или другой внутренний отчётный путь, который возвращает TextAd-поля);
+   - ожидаем по каждому целевому ad_id: `TextAd.BusinessId == <business_id>`,
+     `TextAd.PreferVCardOverBusiness == "NO"`, `TextAd.VCardId == null`.
+
+Важное поведение endpoint `/yandex/ads/business`:
+- если передан `campaign_id`, сервис читает все `ads.get` этой кампании;
+- модифицирует только `TEXT_AD` (`Type == "TEXT_AD"`), другие типы (`IMAGE_AD` и т.д.) помечаются в `skipped`;
+- всегда отправляет в `ads.update` вместе с `BusinessId` и `PreferVCardOverBusiness="NO"` поля `Title` / `Text` / `Href` (REPLACE-shape требования v5).
+- пример подтверждённого live-кейса: `business_id=11588384335`, `campaign_id=710691939`, ads `17747346245..17747346249` → `applied=True`, `BusinessId=11588384335`, `PreferVCardOverBusiness="NO"`, `VCardId` пустой/`null`.
