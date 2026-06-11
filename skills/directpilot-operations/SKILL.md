@@ -57,6 +57,7 @@ Use this skill when working on DirectPilot code, docs, tests, or examples.
 - Do not set `NetworkBid` when the campaign must remain search-only (`Network.BiddingStrategyType=SERVING_OFF`).
 - Switching a text campaign from manual `HIGHEST_POSITION` to `WB_MAXIMUM_CONVERSION_RATE` uses `TextCampaign.BiddingStrategy.Search.WbMaximumConversionRate` with `GoalId`, `WeeklySpendLimit`, and optional `BidCeiling`; keep `Network.BiddingStrategyType=SERVING_OFF` for search-only campaigns.
 - Direct can return warning `10162` / `Дневной бюджет сброшен` when switching to weekly conversion strategy. This is expected: `DailyBudget` is meaningful for manual strategies; the conversion strategy uses `WeeklySpendLimit`.
+- When adding keywords under `WB_MAXIMUM_CONVERSION_RATE`, Direct can return warning `10160` / `Ставка не будет применена`: `Bid` is ignored by the auto-budget strategy, and `ContextBid` is ignored when Network is `SERVING_OFF`. This is expected; control spend through `WeeklySpendLimit` and `BidCeiling`.
 
 ## Verification checklist
 
