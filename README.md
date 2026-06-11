@@ -29,6 +29,7 @@ See [`docs/SAFETY_MODEL.md`](docs/SAFETY_MODEL.md) for the full contribution con
 ## Quick start
 
 ```bash
+cp .env.example .env
 uv sync
 uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
@@ -49,6 +50,9 @@ uv run python scripts/check_no_secrets_in_git.py
 
 ## Primary docs
 
+- `AGENTS.md` — first-stop handoff for external humans and generic agents
+- `.env.example` — safe local configuration template without secrets
+- `docs/YANDEX_TOKENS.md` — how to obtain and verify local Yandex Direct/Metrika/Search credentials safely
 - `docs/TECHNICAL_CONTEXT.md` — technical mode/controls/modes, live-write gates, retired routes, and source-of-truth map
 - `docs/API_SIMPLE.md` — practical API usage map
 - `docs/MARKETER_GUIDE.md` — marketer workflow map to DirectPilot endpoints

@@ -486,7 +486,20 @@ class YandexDirectClient:
         if not isinstance(payload, dict):
             raise YandexDirectError("Yandex Direct returned an unexpected Live v4 envelope")
 
-        data = payload.get("data") or []
+        data_payload = payload.get("data") or []
+        data: list[Any]
+        if isinstance(data_payload, dict):
+            accounts_payload = data_payload.get("Accounts") or data_payload.get("accounts") or []
+            if isinstance(accounts_payload, dict):
+                data = [accounts_payload]
+            elif isinstance(accounts_payload, list):
+                data = accounts_payload
+            else:
+                data = []
+        elif isinstance(data_payload, list):
+            data = data_payload
+        else:
+            data = []
         return {"ok": True, "data": data, "units": response.headers.get("Units")}
 
     # ------------------------------------------------------------------

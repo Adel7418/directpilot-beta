@@ -495,6 +495,16 @@
             ],
             "title": "Daily Budget"
           },
+          "daily_budget_mode": {
+            "default": "STANDARD",
+            "enum": [
+              "STANDARD",
+              "DISTRIBUTED",
+              "STAY_IN_DEFAULT_BUDGET"
+            ],
+            "title": "Daily Budget Mode",
+            "type": "string"
+          },
           "monthly_budget": {
             "anyOf": [
               {
@@ -590,6 +600,22 @@
               }
             ],
             "title": "Daily Budget"
+          },
+          "daily_budget_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "STANDARD",
+                  "DISTRIBUTED",
+                  "STAY_IN_DEFAULT_BUDGET"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Budget Mode"
           },
           "monthly_budget": {
             "anyOf": [
@@ -2834,7 +2860,7 @@
   "info": {
     "description": "Standalone API-first beta app for safe Yandex Direct automation.",
     "title": "DirectPilot Beta API",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
   "openapi": "3.1.0",
   "paths": {

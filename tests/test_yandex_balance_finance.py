@@ -136,6 +136,42 @@ def test_account_balance_without_login_omits_logins_but_keeps_envelope():
     assert result["data"] == []
 
 
+def test_account_balance_extracts_accounts_from_live_v4_data_envelope():
+    """Live v4 may return data as {Accounts, ActionsResult}, not a list."""
+    captured, handler = _live_v4_handler(
+        body={
+            "data": {
+                "Accounts": [
+                    {
+                        "Login": "flora-adel963",
+                        "Amount": "2781.27",
+                        "AmountAvailableForTransfer": "2770.65",
+                        "Currency": "RUB",
+                        "AccountDayBudget": None,
+                    }
+                ],
+                "ActionsResult": [],
+            }
+        }
+    )
+    client = _client(handler)
+
+    result = client.account_balance(login="flora-adel963")
+
+    assert captured["body"]["method"] == "AccountManagement"
+    assert result["ok"] is True
+    assert result["data"] == [
+        {
+            "Login": "flora-adel963",
+            "Amount": "2781.27",
+            "AmountAvailableForTransfer": "2770.65",
+            "Currency": "RUB",
+            "AccountDayBudget": None,
+        }
+    ]
+    assert SECRET_TOKEN not in str(result)
+
+
 def test_account_balance_redacts_response_body_on_http_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

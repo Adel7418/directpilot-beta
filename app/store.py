@@ -1194,12 +1194,21 @@ class MockStore:
             "Name": draft.name or f"Draft: {draft.business_type} / {draft.region}",
             "TextCampaign": {
                 "BiddingStrategy": {
-                    # Manual CPC w/ weekly budget cap. v5 also accepts
-                    # ``AVERAGE_CPC`` / ``AVERAGE_CPA`` — the user can
-                    # extend the payload if they want a different
-                    # strategy. We pick a sensible default that does
-                    # NOT require per-keyword bids.
-                    "Strategy": "AVERAGE_CPC",
+                    # Search-only starter strategy. Direct v5 requires both
+                    # Search and Network blocks on TextCampaign.BiddingStrategy.
+                    # We keep networks off for the user's single-intent service
+                    # landing until there is enough search-query evidence to
+                    # expand traffic safely.
+                    "Search": {
+                        "BiddingStrategyType": "HIGHEST_POSITION",
+                        "PlacementTypes": {
+                            "SearchResults": "YES",
+                            "ProductGallery": "NO",
+                        },
+                    },
+                    "Network": {
+                        "BiddingStrategyType": "SERVING_OFF",
+                    },
                 },
             },
         }
@@ -1214,10 +1223,10 @@ class MockStore:
         if daily_budget_amount is not None:
             campaign["DailyBudget"] = {
                 "Amount": daily_budget_amount,
-                "Currency": "RUB",
+                "Mode": budget_obj.daily_budget_mode,
             }
         if counter_ids:
-            campaign["TextCampaign"]["CounterIds"] = list(counter_ids)
+            campaign["TextCampaign"]["CounterIds"] = {"Items": list(counter_ids)}
         # Geo targeting: v5 expects RegionIds. The draft only stores
         # the human-readable region name; we leave ``Settings`` empty
         # by default and let the operator refine in the Yandex UI.
@@ -1286,7 +1295,11 @@ class MockStore:
         # failure mode in both ``dry_run`` and ``approved=True``
         # requests.
         region_ids = _resolve_region_to_ids(getattr(draft, "region", None))
-        negative_items = list(draft.negative_keywords or [])
+        negative_items = [
+            phrase
+            for phrase in (draft.negative_keywords or [])
+            if "/" not in phrase and "\\" not in phrase
+        ]
 
         # Stage 2 — adgroups.add. ``CampaignId`` may be ``None`` in
         # the dry-run preview because stage 1 has not run yet; the
@@ -1326,11 +1339,12 @@ class MockStore:
                 "Href": ad.landing_url,
             }
             if ad.display_link_path:
-                # Mirrors the ``StartDate``-omission convention from
-                # ``campaigns.add``: the optional field is omitted
-                # when None so v5 sees a clean payload rather than
-                # a ``null`` value it may reject.
-                text_ad["DisplayLinkPath"] = ad.display_link_path
+                # Direct v5 ``ads.add`` for TextAd currently rejects
+                # ``DisplayLinkPath`` in the add payload. Keep the field in
+                # the local draft/preview model for marketer readability, but
+                # omit it from live-create until the exact supported upstream
+                # field is confirmed and tested.
+                pass
             ads_param.append(
                 {
                     "AdGroupId": ad.ad_group_id,

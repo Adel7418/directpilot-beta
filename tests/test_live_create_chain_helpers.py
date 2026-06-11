@@ -289,10 +289,9 @@ def test_build_v5_chain_payloads_maps_draft_ad_groups_ads_keywords_to_v5_shape()
     the new ad group has no pre-existing negatives to merge with.
 
     Stage 3 ``ads.add`` keeps the v5 text-ad contract: ``AdGroupId``
-    on the item, ``TextAd.Title`` / ``TextAd.Text`` / ``TextAd.Href`` /
-    optional ``TextAd.DisplayLinkPath``. ``display_link_path`` is
-    omitted from the payload when ``None`` (mirrors the
-    ``StartDate``-omission convention from ``campaigns.add``).
+    on the item, ``TextAd.Title`` / ``TextAd.Text`` / ``TextAd.Href``.
+    ``display_link_path`` is intentionally not sent in live-create because
+    Direct v5 rejects ``TextAd.DisplayLinkPath`` in ``ads.add``.
 
     Stage 4 ``keywords.add`` flattens group-level keywords from the
     draft, looking up each keyword's Yandex ad group via the
@@ -350,7 +349,7 @@ def test_build_v5_chain_payloads_maps_draft_ad_groups_ads_keywords_to_v5_shape()
     assert ads_param[0]["TextAd"]["Title"] == "T1"
     assert ads_param[0]["TextAd"]["Text"] == "b1"
     assert ads_param[0]["TextAd"]["Href"] == "https://example.com/landing"
-    assert ads_param[0]["TextAd"]["DisplayLinkPath"] == "example.com/landing"
+    assert "DisplayLinkPath" not in ads_param[0]["TextAd"]
     # No display_link_path -> key is absent, not None.
     assert "DisplayLinkPath" not in ads_param[1]["TextAd"]
     # stage 4

@@ -348,12 +348,21 @@ POST /yandex/campaigns/live-create
 - `DIRECTPILOT_MODE=mock/sandbox/live_readonly` + `dry_run=false`: write путь отклоняется **до любого сетевого вызова** (ошибка валидации).
 - `idempotency_key` имеет отдельный кеш для preview и apply (`dry_run` учитывается в ключе).
 
-Что исключено из цепочки:
+Что исключено/нормализуется в цепочке:
 
 - `negativekeywordsharedsets.add` остаётся `not_implemented`.
 - Для групповых минус-слов используется `NegativeKeywords.Items` внутри `adgroups.add`.
   Блок `NegativeKeywords` опционален на v5: если в драфте нет минус-слов — блок опускается,
   если есть — передаётся с items. Пустой `Items` не отправляется.
+- Минус-фразы со слэшем (`/` или `\\`) не отправляются в `adgroups.add`: Direct v5 отклоняет их
+  с `code=5002: Используются недопустимые символы`. Например, вместо `б/у` используйте `бу`.
+- `TextAd.DisplayLinkPath` не отправляется в `ads.add`: текущий Direct v5 `TextAd` add payload
+  отклоняет это поле как неизвестное. Поле можно хранить в локальном драфте для readability,
+  но live-create пока отправляет только `Title`, `Text`, `Href`.
+- `TextCampaign.BiddingStrategy` отправляется как search-only: `Search.BiddingStrategyType=HIGHEST_POSITION`,
+  `Network.BiddingStrategyType=SERVING_OFF`. Сети намеренно выключены для single-intent лендингов.
+- `DailyBudget` отправляется как `{Amount, Mode}` без `Currency`; `Mode` обязателен, иначе Direct
+  возвращает `error_code=8000` / `Отсутствует обязательный параметр Mode`.
 
 Безопасность и ошибки:
 
@@ -425,6 +434,39 @@ PATCH /campaign-drafts/{draft_id}/bids
 ## 11. Yandex Direct read-only facade
 
 В режиме `live_readonly` эти методы читают реальные production-данные Яндекс Директа и возвращают `source="yandex"`, `read_only=true`. В `mock`/`sandbox` fallback режимах возможен локальный демо-результат (`source="mock"`) для сравнения и отладки.
+
+### Баланс аккаунта
+
+```http
+GET /yandex/account/balance
+```
+
+DirectPilot читает баланс через legacy Live v4, потому что это штатный метод для денег аккаунта:
+
+- endpoint: `https://api.direct.yandex.ru/live/v4/json/`
+- HTTP method: `POST`
+- JSON method: `AccountManagement`
+- action: `Get`
+
+Минимальная форма upstream-запроса:
+
+```json
+{
+  "method": "AccountManagement",
+  "token": "[REDACTED_OAUTH_TOKEN]",
+  "param": {
+    "Action": "Get",
+    "SelectionCriteria": {
+      "Logins": ["ВАШ_ЛОГИН"],
+      "AccountIDS": []
+    }
+  }
+}
+```
+
+Важный нюанс Live v4: ответ может прийти как envelope `data.Accounts`, а не как список напрямую.
+DirectPilot нормализует обе формы в список аккаунтов и парсит числовые строки (`"2781.27"`) как деньги.
+Токен никогда не логируется и не возвращается наружу.
 
 ### Кампании
 

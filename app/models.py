@@ -114,12 +114,22 @@ class BudgetSettings(BaseModel):
     daily_budget: float | None = Field(default=None, ge=0)
     monthly_budget: float | None = Field(default=None, ge=0)
     strategy: Literal["manual", "max_clicks", "max_conversions", "weekly_budget"] = "manual"
+    # DailyBudget.Mode on the v5 ``campaigns.add`` payload. Direct v5
+    # rejects a DailyBudget block without a Mode with error_code=8000
+    # ("Отсутствует обязательный параметр Mode"). We default to
+    # ``STANDARD`` — the documented spend mode for a freshly created
+    # campaign — and let the operator override it before launch via
+    # ``PATCH /campaign-drafts/{id}/budget``.
+    daily_budget_mode: Literal["STANDARD", "DISTRIBUTED", "STAY_IN_DEFAULT_BUDGET"] = "STANDARD"
 
 
 class BudgetUpdate(BaseModel):
     daily_budget: float | None = Field(default=None, ge=0)
     monthly_budget: float | None = Field(default=None, ge=0)
     strategy: Literal["manual", "max_clicks", "max_conversions", "weekly_budget"] | None = None
+    daily_budget_mode: (
+        Literal["STANDARD", "DISTRIBUTED", "STAY_IN_DEFAULT_BUDGET"] | None
+    ) = None
 
 
 class BidSettings(BaseModel):

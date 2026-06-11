@@ -340,10 +340,16 @@ def test_live_create_dry_run_payload_uses_confirmed_v5_text_campaign_shape():
           "Name": "...",
           "StartDate": "YYYY-MM-DD",
           "TextCampaign": {
-            "BiddingStrategy": {"Strategy": "AVERAGE_CPC"},
-            "CounterIds": [<int>, ...]  // optional
+            "BiddingStrategy": {
+              "Search": {"BiddingStrategyType": "HIGHEST_POSITION", "PlacementTypes": {"SearchResults": "YES", "ProductGallery": "NO"}},
+              "Network": {"BiddingStrategyType": "SERVING_OFF"}
+            },
+            "CounterIds": {"Items": [<int>, ...]}  // optional
           },
-          "DailyBudget": {"Amount": <int micros>, "Currency": "RUB"}  // optional
+          // DailyBudget is optional but, when sent, MUST include Mode
+          // (Direct v5 rejects it with error_code=8000
+          // "Отсутствует обязательный параметр Mode" otherwise).
+          "DailyBudget": {"Amount": <int micros>, "Mode": "STANDARD"}  // optional
         }
     """
     draft_id = _create_draft()
@@ -371,13 +377,62 @@ def test_live_create_dry_run_payload_uses_confirmed_v5_text_campaign_shape():
     assert campaign["StartDate"] == "2026-06-15"
     assert "Status" not in campaign
     assert "TextCampaign" in campaign
-    assert campaign["TextCampaign"]["BiddingStrategy"]["Strategy"] == "AVERAGE_CPC"
-    assert campaign["TextCampaign"]["CounterIds"] == [98765, 98766]
-    # DailyBudget is in micro-units (1/1_000_000 of currency).
+    bidding = campaign["TextCampaign"]["BiddingStrategy"]
+    assert bidding["Search"]["BiddingStrategyType"] == "HIGHEST_POSITION"
+    assert bidding["Search"]["PlacementTypes"] == {
+        "SearchResults": "YES",
+        "ProductGallery": "NO",
+    }
+    assert bidding["Network"] == {"BiddingStrategyType": "SERVING_OFF"}
+    assert campaign["TextCampaign"]["CounterIds"] == {"Items": [98765, 98766]}
+    # DailyBudget is in micro-units (1/1_000_000 of currency) and MUST
+    # carry a Mode — Direct v5 returns error_code=8000
+    # ("Отсутствует обязательный параметр Mode") if Mode is missing.
+    # We default to STANDARD; the user can override before launch.
     assert campaign["DailyBudget"] == {
         "Amount": int(1500.0 * 1_000_000),
-        "Currency": "RUB",
+        "Mode": "STANDARD",
     }
+
+
+def test_live_create_daily_budget_includes_mode_standard_default():
+    """Regression test for the Direct v5 ``campaigns.add`` contract.
+
+    Direct v5 rejects ``campaigns.add`` with error_code=8000
+    ("Отсутствует обязательный параметр Mode") when the optional
+    ``DailyBudget`` block is present but lacks a ``Mode`` field. This
+    was observed live when the user attempted a real ``campaigns.add``
+    against the production account: the v5 service returned
+    ``{"error_code": "8000", "error_detail": "Отсутствует обязательный
+    параметр Mode"}`` and the apply was safely blocked at the safety
+    net.
+
+    The fix is to always emit ``Mode="STANDARD"`` in the v5 payload
+    preview whenever ``DailyBudget`` is included. The user can still
+    override the value before launch (e.g. ``STAY_IN_DEFAULT_BUDGET``)
+    via the existing ``PATCH /campaign-drafts/{id}/budget`` endpoint —
+    that override is honoured here.
+    """
+    from app.store import MockStore
+    from app.models import CampaignDraft, BudgetSettings, BidSettings
+
+    draft = CampaignDraft(
+        id="draft_mode_regression",
+        business_type="local_services",
+        region="Казань",
+        monthly_budget=30000.0,
+        landing_url="https://example.com/landing",
+        budget=BudgetSettings(daily_budget=1500.0),
+        bids=BidSettings(),
+    )
+    v5 = MockStore._build_v5_campaign_from_draft(
+        draft, start_date=None, counter_ids=[]
+    )
+    # DailyBudget is present and MUST carry a Mode string.
+    assert "DailyBudget" in v5, v5
+    assert v5["DailyBudget"].get("Mode") == "STANDARD", v5["DailyBudget"]
+    # The other DailyBudget fields are still there.
+    assert v5["DailyBudget"]["Amount"] == int(1500.0 * 1_000_000)
 
 
 def test_live_create_dry_run_omits_start_date_when_none():
@@ -991,6 +1046,7 @@ def test_live_create_dry_run_previews_all_four_stages_with_v5_shape():
     assert ag["params"]["AdGroups"][0]["NegativeKeywords"] == {"Items": ["бесплатно", "diy"]}
     # Stage 3 preview uses the v5 Ads shape.
     assert chain[1]["params"]["Ads"][0]["TextAd"]["Title"] == "Заголовок объявления"
+    assert "DisplayLinkPath" not in chain[1]["params"]["Ads"][0]["TextAd"]
     # Stage 4 preview is a flat list of {Keyword, AdGroupId} placeholders.
     assert chain[2]["params"]["Keywords"][0]["Keyword"].startswith("ремонт")
     # Stage 5 is still NOT performed.

@@ -100,7 +100,7 @@ def get_yandex_client(
 
 app = FastAPI(
     title="DirectPilot Beta API",
-    version="0.1.0",
+    version="0.2.0",
     description="Standalone API-first beta app for safe Yandex Direct automation.",
 )
 
@@ -1402,6 +1402,17 @@ def wordstat_regions_tree(
 def _parse_live_v4_account_block(block: Any, login: str | None) -> YandexAccountBalance:
     if not isinstance(block, dict):
         return YandexAccountBalance(login=login, raw={"value": block} if not isinstance(block, dict) else None)
+
+    def _float_or_zero(value: Any) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.replace(",", "."))
+            except ValueError:
+                return 0.0
+        return 0.0
+
     day_budget = block.get("AccountDayBudget")
     day_budget_amount: float | None = None
     day_budget_mode: str | None = None
@@ -1421,10 +1432,8 @@ def _parse_live_v4_account_block(block: Any, login: str | None) -> YandexAccount
     available_raw = block.get("AmountAvailableForTransfer")
     return YandexAccountBalance(
         login=str(block.get("Login") or login) if block.get("Login") or login else None,
-        amount=float(amount_raw) if isinstance(amount_raw, (int, float)) else 0.0,
-        amount_available_for_transfer=(
-            float(available_raw) if isinstance(available_raw, (int, float)) else 0.0
-        ),
+        amount=_float_or_zero(amount_raw),
+        amount_available_for_transfer=_float_or_zero(available_raw),
         currency=str(block.get("Currency")) if isinstance(block.get("Currency"), str) else None,
         account_day_budget_amount=day_budget_amount,
         account_day_budget_spend_mode=day_budget_mode,
