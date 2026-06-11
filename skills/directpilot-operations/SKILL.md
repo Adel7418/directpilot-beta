@@ -44,6 +44,18 @@ Use this skill when working on DirectPilot code, docs, tests, or examples.
 - CI/security workflows
 - secrets and configuration
 
+## Direct API operational pitfalls
+
+- New DRAFT campaigns are not launched with `campaigns.resume`. Draft-to-moderation uses `ads.moderate` with `SelectionCriteria.Ids=[ad_ids]`; `campaigns.resume` is only for already-created stopped/suspended campaigns.
+- For live bid updates through Direct v5 `keywordbids.set`, concrete known keywords should use the minimal item shape:
+  ```json
+  {"KeywordId": 57440007797, "SearchBid": 250000000}
+  ```
+  `SearchBid` is in Direct micros: `250000000` = `250 ₽`.
+- Do not mix `CampaignId + AdGroupId + KeywordId + SearchBid` in each item for a concrete-keyword batch update. A live 30-keyword update returned `error_code=9300` for that form; retrying with `KeywordId + SearchBid` succeeded.
+- For autotargeting rows, add `AutotargetingSearchBidIsAuto="NO"` when setting a manual search bid.
+- Do not set `NetworkBid` when the campaign must remain search-only (`Network.BiddingStrategyType=SERVING_OFF`).
+
 ## Verification checklist
 
 - [ ] Tests pass.

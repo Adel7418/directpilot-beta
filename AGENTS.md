@@ -30,6 +30,12 @@ Purpose: quick onboarding for external humans and generic agents (including codi
 - Marketing / semantic tasks: use `docs/MARKETER_GUIDE.md` and corresponding DirectPilot endpoints.
 - If a direct Yandex API method exists in DirectPilot, **do not** call raw Yandex endpoints (`api.direct.yandex.com`, `api-metrika.yandex.net`, AI Studio/Search API) directly.
 
+## Public skill vs private local skills
+- This repository is self-contained for external humans and agents. Start with `AGENTS.md`, then read `skills/directpilot-operations/SKILL.md` and the docs listed above.
+- Private Hermes skills such as a maintainer's local `yandex-direct-api` skill are convenience memory for that maintainer only. They are not required to operate or contribute to this repository.
+- If a local/private skill discovers a reusable DirectPilot rule, copy the sanitized rule into repo docs or `skills/directpilot-operations/SKILL.md` so a fresh clone has the same operational knowledge.
+- Never copy private memories, local paths, tokens, OAuth headers, account credentials, or customer secrets into the repo skill.
+
 ## Code-change rule
 - Any code change affecting routes/models/safety/secrets/CI/openapi must include evidence:
   - `uv run pytest -q`

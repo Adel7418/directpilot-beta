@@ -24,3 +24,5 @@ Agents should include real command output in PR descriptions when they run check
 ## Reusable skill
 
 A sanitized public skill is available at `skills/directpilot-operations/SKILL.md`. It documents the safe operating contract without embedding private profile memory, tokens, customer data, or local machine paths.
+
+This public skill is the repository handoff artifact for any person or agent that clones the repo. Maintainers may also have private local Hermes skills (for example, broader Yandex Direct API memory), but those are not part of the repository contract. When a private skill reveals a reusable DirectPilot-specific pitfall, add the sanitized rule to repo docs and/or `skills/directpilot-operations/SKILL.md`; do not require future contributors to have the same private skill installed.

@@ -61,6 +61,7 @@ uv run python scripts/check_no_secrets_in_git.py
 - `docs/yandex-access-status.md` — latest Yandex access verification snapshot
 - `docs/SAFETY_MODEL.md` — beta safety contract for contributors and maintainers
 - `docs/AGENT_WORKFLOWS.md` — agent/skill workflow rules for documentation and code changes
+- `skills/directpilot-operations/SKILL.md` — public sanitized agent playbook bundled with the repo; use this instead of relying on any private local Hermes profile skill
 
 
 ## Contributing
