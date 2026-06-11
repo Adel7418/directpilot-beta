@@ -465,6 +465,42 @@ PATCH /campaign-drafts/{draft_id}/bids
 
 Не меняйте `NetworkBid`, если РСЯ должна оставаться выключенной (`Network.BiddingStrategyType=SERVING_OFF`).
 
+### Live Direct: стратегия максимум конверсий
+
+Чтобы перевести поисковую текстовую кампанию с ручной стратегии `HIGHEST_POSITION` на максимум конверсий, обновите `TextCampaign.BiddingStrategy.Search`:
+
+```json
+{
+  "method": "update",
+  "params": {
+    "Campaigns": [
+      {
+        "Id": 710691939,
+        "TextCampaign": {
+          "BiddingStrategy": {
+            "Search": {
+              "BiddingStrategyType": "WB_MAXIMUM_CONVERSION_RATE",
+              "WbMaximumConversionRate": {
+                "GoalId": 567732835,
+                "WeeklySpendLimit": 7000000000,
+                "BidCeiling": 1500000000
+              }
+            },
+            "Network": {
+              "BiddingStrategyType": "SERVING_OFF"
+            }
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+`WeeklySpendLimit` и `BidCeiling` тоже указываются в микроденежных единицах: `7000000000` = `7000 ₽`, `1500000000` = `1500 ₽`.
+
+**Pitfall:** Direct может вернуть warning `10162` / `Дневной бюджет сброшен`. Это ожидаемо: дневной бюджет имеет смысл для ручных стратегий, а максимум конверсий использует недельный бюджет `WeeklySpendLimit`.
+
 ---
 
 ## 11. Yandex Direct read-only facade
