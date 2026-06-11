@@ -429,6 +429,42 @@ PATCH /campaign-drafts/{draft_id}/bids
 }
 ```
 
+### Live Direct: изменить ставки существующих ключей
+
+Для живой кампании Direct v5 используйте `KeywordBids.set`.
+
+Правильная минимальная форма для известных `KeywordId`:
+
+```json
+{
+  "method": "set",
+  "params": {
+    "KeywordBids": [
+      {
+        "KeywordId": 57440007797,
+        "SearchBid": 250000000
+      }
+    ]
+  }
+}
+```
+
+Где `SearchBid` указывается в микроденежных единицах Direct: `250000000` = `250 ₽`.
+
+**Pitfall:** не смешивайте `CampaignId` + `AdGroupId` + `KeywordId` в одном item при массовом обновлении, если обновляете конкретные ключи. На live-проверке Direct вернул `error_code=9300` / `Превышено ограничение на количество объектов в одном запросе` для batch формы с `CampaignId`, `AdGroupId`, `KeywordId`, `SearchBid` на 30 items. Корректный retry по `KeywordId + SearchBid` применился ко всем 30 ключам без per-item ошибок.
+
+Для автотаргетинга добавляйте явный флаг, если задаёте ручную поисковую ставку:
+
+```json
+{
+  "KeywordId": 205759917809,
+  "SearchBid": 250000000,
+  "AutotargetingSearchBidIsAuto": "NO"
+}
+```
+
+Не меняйте `NetworkBid`, если РСЯ должна оставаться выключенной (`Network.BiddingStrategyType=SERVING_OFF`).
+
 ---
 
 ## 11. Yandex Direct read-only facade
