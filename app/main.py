@@ -34,6 +34,8 @@ from app.models import (
     CampaignList,
     GenerateStructureRequest,
     GenerateStructureResult,
+    LiveCreateCampaignRequest,
+    LiveCreateCampaignResult,
     NegativeKeywordsReplace,
     PreviewPayload,
     RecommendationList,
@@ -1660,6 +1662,191 @@ def apply_semantic_change(
             detail={
                 "error_type": "YandexDirectError",
                 "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — safety net
+        # Last-resort safety net: even a non-typed exception from the
+        # store layer (e.g. a stale cache hit, a programming bug, or an
+        # unhandled httpx edge case) must be translated to 502 with a
+        # redacted message. The store already records a
+        # ``semantic_change_apply_failed`` audit event for typed errors;
+        # we add one here too so the operator can correlate the 502.
+        try:
+            store.append_audit(
+                "semantic_change_apply_failed",
+                str(package_id),
+                dry_run=False,
+                details={
+                    "package_id": package_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            # Audit is best-effort; never let it block the safe 502.
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during semantic-change apply: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct live-create campaign
+#
+# ``POST /yandex/campaigns/live-create`` creates a real Yandex Direct
+# campaign from an existing :class:`CampaignDraft` preview. The apply
+# path chains ``campaigns.add`` → ``adgroups.add`` → ``ads.add`` →
+# ``keywords.add``. ``negativekeywordsharedsets.add`` remains explicit
+# ``not_implemented``; group-level negatives are sent through
+# ``adgroups.add`` ``NegativeKeywords.Items``. Each stage is its own v5
+# call so a single failure stops the chain before the next stage.
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/live-create",
+    response_model=LiveCreateCampaignResult,
+)
+def yandex_live_create_campaign(
+    payload: LiveCreateCampaignRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> LiveCreateCampaignResult:
+    """Create a real Yandex Direct campaign from a draft preview.
+
+    Gates (mirrors the rest of the product):
+
+    * ``approved`` must be ``True`` (HTTP 409 otherwise).
+    * ``idempotency_key`` is required.
+    * ``live_readonly`` + ``dry_run=False`` is REJECTED before any
+      network call (HTTP 409).
+    * ``live_write`` + ``approved`` + ``idempotency_key`` + ``dry_run=False``
+      performs the real chain: ``campaigns.add`` → ``adgroups.add`` →
+      ``ads.add`` → ``keywords.add``. ``negativekeywordsharedsets.add``
+      remains in ``not_implemented``; group-level negatives are sent via
+      ``adgroups.add`` ``NegativeKeywords.Items`` (block is OPTIONAL —
+      omitted when the draft has no negatives, included with the items
+      when it does). The chain does not auto-activate or call
+      ``campaigns.resume``; activation/moderation handoff stays a
+      separate approved step.
+
+    Region / geo targeting:
+
+    * ``adgroups.add`` items ALWAYS carry ``RegionIds`` (v5 rejects
+      items without a geo target). The ids are resolved from
+      ``draft.region`` via the explicit local map
+      ``_REGION_NAME_TO_V5_IDS`` in ``app/store.py`` (helper
+      ``_resolve_region_to_ids``). No external lookup, no network
+      call. Supported region names in the Beta: ``Казань`` → ``[43]``,
+      ``Москва`` → ``[213]``, ``Санкт-Петербург`` / ``СПб`` → ``[2]``,
+      ``Россия`` / ``Russia`` → ``[225]``. Trivially extensible.
+    * An unmapped / empty / whitespace region fails closed BEFORE any
+      ``campaigns.add`` network call. The chain raises
+      :class:`YandexDirectError` with a redacted message that names
+      the offending region, the public store method audits
+      ``live_create_campaign_failed`` (no token in the audit), and
+      the endpoint returns HTTP 502. The dry-run preview surfaces the
+      same failure so the operator sees the same mode in both paths.
+    * The ``adgroups.add`` payload does NOT carry a ``Status`` field —
+      lifecycle/moderation state is controlled by Direct and the
+      separate resume endpoint, not by the create chain.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before live-create",
+        )
+    # Mode gate: only ``live_write`` may perform a real apply. The
+    # other three modes (``mock`` / ``sandbox`` / ``live_readonly``)
+    # are REJECTED before any network call so the rejection is
+    # guaranteed to be no-network. ``sandbox`` shares the v5
+    # ``campaigns.add`` write shape with production — a real apply
+    # against a sandbox token would create a real campaign on the
+    # user's sandbox account, which is the same shape of
+    # misconfiguration we are protecting against. ``mock`` has no
+    # live client at all — silently returning ``applied=False`` (a
+    # dry-run shape) would lie to the operator. ``live_readonly`` is
+    # the documented read-only path. ``dry_run=True`` short-circuits
+    # all of this and is allowed in every mode.
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"live-create apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.live_create_campaign(
+            payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        # The store raises ``ValueError`` for in-store gate
+        # violations (e.g. unapproved apply if the endpoint gate is
+        # bypassed by a direct caller). Surface as 409 with the
+        # reason — never as the opaque FastAPI 500 default. A
+        # ``ValueError`` from anywhere else would also be caught by
+        # the generic ``Exception`` safety net below; this explicit
+        # branch ensures the gate-violation case is NEVER mis-coded
+        # as 502.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail="Campaign draft not found"
+        ) from exc
+    except YandexDirectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — safety net
+        # Same last-resort contract as the semantic-change endpoint:
+        # any non-typed exception becomes 502 with a redacted message.
+        try:
+            store.append_audit(
+                "live_create_campaign_failed",
+                payload.draft_id,
+                dry_run=False,
+                details={
+                    "draft_id": payload.draft_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in live-create endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during live-create: "
+                    f"{type(exc).__name__}"
+                ),
             },
         ) from exc
 

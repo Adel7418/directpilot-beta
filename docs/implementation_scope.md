@@ -43,12 +43,46 @@ Only pause/resume-style actions are allowed in this scope. They support dry-run 
 - `POST /yandex/campaigns/{campaign_id}/pause`
 - `POST /yandex/campaigns/{campaign_id}/resume`
 
+### Live-create campaign (staged chain)
+
+`POST /yandex/campaigns/live-create` executes a four-stage Direct API v5 chain:
+
+1. `campaigns.add`
+2. `adgroups.add`
+3. `ads.add`
+4. `keywords.add`
+
+The chain is safe for production use in this scope because each stage is a separate API call; any stage failure stops the chain before any later stage executes.
+
+- `POST /yandex/campaigns/live-create` — stage 1+2+3+4 execution from a draft preview. `dry_run=true` always returns preview payloads without network writes. Real write requires `DIRECTPILOT_MODE=live_write`, `approved=true`, `idempotency_key`, `dry_run=false`.
+  Idempotency cache keys include mode/dry-run, so preview and apply replays are tracked separately.
+
+Failure semantics:
+
+- `live_readonly`, `mock`, and `sandbox` reject write calls before any network access.
+- If any `AddResults.Errors` is present or required IDs are missing in a stage, the method fails closed:
+  - logs `live_create_campaign_failed` in audit log,
+  - skips remaining stages,
+  - returns error (no partial state progression).
+
+Still intentionally excluded from live execution in the chain:
+
+- `negativekeywordsharedsets.add` remains `not_implemented`.
+  - Group-level negatives are sent via `adgroups.add` `NegativeKeywords.Items` (mirrors the confirmed `adgroups.update` shape). The `NegativeKeywords` block is OPTIONAL on v5 `adgroups.add`: when the draft has no negatives the block is omitted entirely; when it has items the block is included with the items. Empty `Items` lists are NOT sent (v5 rejects them on some edge cases).
+  - Campaign-level negative set creation is not part of this path.
+- auto activation (`campaigns.resume`, moderation acceptance, scheduling handoff). `POST /yandex/campaigns/{campaign_id}/resume` is a separate endpoint with its own approval/idempotency gate.
+
+Region / geo targeting:
+
+- `adgroups.add` requires a valid `RegionIds` list on every item (reviewer REQUEST_CHANGES blocker). The draft only stores the human-readable region name (`draft.region`); the chain resolves it to Yandex v5 `RegionIds` via the explicit local map `_REGION_NAME_TO_V5_IDS` in `app/store.py` (helper: `_resolve_region_to_ids`). No external lookup, no network call.
+- Supported region names in the Beta: `Казань` → `[43]`, `Москва` → `[213]`, `Санкт-Петербург` / `СПб` → `[2]`, `Россия` / `Russia` → `[225]`. The map is trivially extensible — add one entry, no other change required.
+- An unmapped / empty / whitespace region fails closed BEFORE any `campaigns.add` network call: `_resolve_region_to_ids` raises `YandexDirectError`, the public `live_create_campaign` method catches it, audits `live_create_campaign_failed` with the offending region name in the message (no token in audit), and re-raises so the endpoint returns HTTP 502 with a redacted message. The dry-run preview surfaces the same failure so the operator sees the same mode in both paths.
+- The `adgroups.add` payload does NOT carry a `Status` field on the v5 items — lifecycle/moderation state is controlled by Direct and the separate `resume` endpoint, not by the create chain.
+
 ## Explicitly excluded now
 
-- Creating live campaigns in Yandex Direct.
-- Updating live campaign settings in Yandex Direct.
-- Applying generated campaign payloads to Yandex Direct.
 - Any endpoint that spends budget or performs write operations without explicit approval, idempotency, and audit.
+- Updating live campaign settings in Yandex Direct is out of live-create scope.
 - Retired demo/UI paths (`/`, `/demo/yandex-status`, `/demo/campaigns`, `/demo/report`, `/demo/recommendations`, `/demo/tools`, `/demo/security-approval`) are not product API endpoints. They are excluded from OpenAPI and kept only as explicit non-product guard handlers returning 404; regression test: `tests/test_demo_ui.py`.
 
 ## Safety rules

@@ -6,5 +6,6 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .hermes/
+graphify-out/
 *.pyc
 .DS_Store

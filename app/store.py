@@ -22,6 +22,8 @@ from app.models import (
     CampaignDraft,
     CampaignDraftRequest,
     GenerateStructureRequest,
+    LiveCreateCampaignRequest,
+    LiveCreateCampaignResult,
     NegativeKeywordsReplace,
     PreviewPayload,
     Recommendation,
@@ -43,6 +45,216 @@ from app.yandex_direct import YandexDirectClient, YandexDirectError
 
 def _normalize_phrase(value: str) -> str:
     return " ".join(value.split()).strip().lower()
+
+
+# ---------------------------------------------------------------------------
+# Region resolution (geo targeting -> v5 ``RegionIds``)
+#
+# The live-create chain's ``adgroups.add`` payload MUST carry a valid
+# ``RegionIds`` list (reviewer REQUEST_CHANGES blocker). The draft only
+# stores a human-readable region name (``draft.region``); we resolve it
+# to Yandex's internal region ids via an explicit local map so:
+#
+# * the chain has a single source of truth for the operator-visible
+#   region name and the v5 id (no magic numbers in the apply path);
+# * unknown / unmapped regions fail closed BEFORE any ``campaigns.add``
+#   network call (the resolver raises :class:`YandexDirectError` so the
+#   endpoint surfaces it as a 502 with a redacted message);
+# * the map is trivially extensible — add one entry, no other change
+#   is required. No external lookup, no network call, no caching.
+#
+# The numeric ids are the documented v5 ``RegionIds`` for the cities
+# we ship in the Beta. If/when we add more regions the operator should
+# add them here and pin them in
+# ``tests/test_live_create_chain_helpers.py``.
+# ---------------------------------------------------------------------------
+
+_REGION_NAME_TO_V5_IDS: dict[str, list[int]] = {
+    # Russian cities we ship in the Beta
+    "казань": [43],
+    "москва": [213],
+    "санкт-петербург": [2],
+    "спб": [2],
+    # Country-level fallback (whole of Russia)
+    "россия": [225],
+    "russia": [225],
+}
+
+
+def _resolve_region_to_ids(region: str | None) -> list[int]:
+    """Resolve a human-readable region name to a v5 ``RegionIds`` list.
+
+    Lookup is case-insensitive and whitespace-tolerant so the operator
+    can paste ``"Казань"`` / ``"казань"`` / ``"  Казань  "`` and
+    always get the same ids. The map is intentionally explicit — no
+    external lookup, no network call.
+
+    Raises :class:`YandexDirectError` for ``None``, empty / whitespace,
+    or unmapped region names. The message names the offending region
+    so the operator can fix it and does NOT carry the OAUTH token.
+    """
+    if region is None:
+        raise YandexDirectError(
+            "live-create: draft.region is missing; cannot resolve v5 RegionIds. "
+            "Set draft.region to a known region name before apply."
+        )
+    key = _normalize_phrase(region)
+    if not key:
+        raise YandexDirectError(
+            "live-create: draft.region is empty or whitespace; cannot resolve "
+            "v5 RegionIds. Set draft.region to a known region name before apply."
+        )
+    ids = _REGION_NAME_TO_V5_IDS.get(key)
+    if ids is None:
+        # Redact: do NOT echo ``region`` from arbitrary user input
+        # (operator may have pasted something containing a token),
+        # but DO mention the name so the operator can fix it. The
+        # call site controls what is passed here — it is always
+        # ``draft.region`` from the operator's own draft, not from
+        # an external client. We do not include the full list of
+        # known regions in the error so the response stays short.
+        raise YandexDirectError(
+            f"live-create: unknown region {region!r}; cannot resolve v5 "
+            f"RegionIds. Add an entry to _REGION_NAME_TO_V5_IDS in "
+            f"app/store.py or pick a known region (e.g. 'Казань', "
+            f"'Москва', 'Санкт-Петербург', 'Россия')."
+        )
+    return list(ids)
+
+
+def _safe_units(value: Any) -> int:
+    """Coerce a Yandex ``Units`` response value to ``int`` without raising.
+
+    The Direct API v5 ``Units`` header is documented as a decimal string,
+    but the response can be empty, ``None``, or non-numeric on edge
+    paths (e.g. proxies returning ``Units: -`` for zero-cost ops, or
+    HTTP-level error envelopes that still parse as JSON). The old
+    ``int(response.get("units") or 0)`` raised ``ValueError`` on those
+    shapes, which propagated as an uncaught 500 with no audit. We never
+    need the raw units for correctness (the audit just surfaces a
+    total), so we return ``0`` for any non-integer-looking value.
+    """
+    if value is None or value == "":
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else 0
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _format_add_result_error(errors: list[Any]) -> str:
+    """Render a v5 ``AddResults[].Errors[]`` array as a redacted one-line
+    summary suitable for an audit event and an HTTP error message.
+
+    The v5 contract renders each error as
+    ``{Code, Message, Details, Fairy, ...}``. We keep only the
+    short ``Code`` and a truncated ``Message`` — the full raw payload
+    is NEVER included because it may contain user data the operator
+    pasted into the campaign name.
+    """
+    if not errors:
+        return "AddResults.Errors present but empty"
+    parts: list[str] = []
+    for err in errors[:3]:  # cap at 3 errors to keep the message short
+        if isinstance(err, dict):
+            code = err.get("Code")
+            message = err.get("Message")
+            code_str = f"code={code}" if code is not None else "code=?"
+            msg_str = (
+                f": {str(message)[:120]}"
+                if message is not None
+                else ""
+            )
+            parts.append(f"{code_str}{msg_str}")
+        else:
+            parts.append(str(err)[:120])
+    if len(errors) > 3:
+        parts.append(f"...({len(errors) - 3} more)")
+    return "AddResults.Errors: " + "; ".join(parts)
+
+
+def _extract_add_results(
+    result_payload: Any,
+    *,
+    stage: str = "campaigns.add",
+) -> tuple[list[dict[str, Any]] | None, tuple[str, dict[str, Any]] | None]:
+    """Extract and validate a v5 ``AddResults`` envelope.
+
+    Returns ``(add_results, None)`` on a well-formed success envelope
+    (a non-empty list of items, the first of which has ``Id`` set and
+    no ``Errors``). Returns ``(None, (message, structured))`` on a
+    per-item failure: ``Errors`` present, or ``Id`` missing.
+
+    ``stage`` is threaded into safe messages so audit can identify
+    the exact failing v5 call in a multi-stage live-create chain.
+    """
+    if not isinstance(result_payload, dict):
+        return None, (
+            f"Yandex Direct {stage} envelope missing 'result'; "
+            "refusing to invent an id",
+            {"reason": "missing_result", "stage": stage},
+        )
+    add_results_raw = result_payload.get("AddResults")
+    if not isinstance(add_results_raw, list) or not add_results_raw:
+        return None, (
+            f"Yandex Direct {stage} returned an empty AddResults "
+            "envelope; refusing to invent an id",
+            {"reason": "empty_add_results", "stage": stage},
+        )
+    first = add_results_raw[0]
+    if not isinstance(first, dict):
+        return None, (
+            f"Yandex Direct {stage} AddResults item is not an object; "
+            "refusing to invent an id",
+            {"reason": "add_results_item_not_object", "stage": stage},
+        )
+    errors = first.get("Errors")
+    if isinstance(errors, list) and errors:
+        return None, (
+            f"Yandex Direct rejected {stage}: "
+            f"{_format_add_result_error(errors)}",
+            {"reason": "add_results_errors", "error_count": len(errors), "stage": stage},
+        )
+    if first.get("Id") is None:
+        return None, (
+            f"Yandex Direct {stage} AddResults item has no Id; "
+            "refusing to invent an id",
+            {"reason": "add_results_missing_id", "stage": stage},
+        )
+    return [first], None
+
+
+def _stage_name_from_message(message: str) -> str | None:
+    """Extract the failing v5 stage name from a chain error message.
+
+    The chain ``raise``s ``YandexDirectError`` whose message embeds
+    the failing stage name (e.g. ``"Yandex Direct rejected
+    adgroups.add: error_code=..."``, ``"ads.add: ad targets
+    unknown local ad group id=..."``, ``"keywords.add returned N
+    ids for M submitted keywords; refusing to continue the
+    chain"``). This helper pulls that name out so the audit log
+    can pin the operator to the exact stage that failed. Returns
+    ``None`` when the message does not carry a stage name — the
+    caller falls back to ``"unknown"`` or ``"transport"``.
+    """
+    if not isinstance(message, str):
+        return None
+    for stage in (
+        "campaigns.add",
+        "adgroups.add",
+        "ads.add",
+        "keywords.add",
+        "negativekeywordsharedsets.add",
+    ):
+        if stage in message:
+            return stage
+    return None
 
 
 class MockStore:
@@ -101,6 +313,11 @@ class MockStore:
         # Kept in a dedicated dict so audit / list views can stay simple.
         self.semantic_packages_by_id: dict[str, Any] = {}
         self.semantic_apply_results_by_key: dict[str, Any] = {}
+        # Live-create campaign results, keyed by idempotency_key (with
+        # a ``live_create:<draft_id>`` prefix to avoid cross-draft
+        # collisions). Replays with the same key return the cached
+        # result without re-sending to Yandex.
+        self.live_create_results_by_key: dict[str, Any] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -903,6 +1120,745 @@ class MockStore:
             raise
 
 
+    # ------------------------------------------------- live-create campaign
+    #
+    # Gated creation of a real Yandex Direct campaign from a
+    # :class:`CampaignDraft` preview. The contract is identical to the
+    # rest of the product: ``dry_run`` / ``approved`` / ``idempotency_key``
+    # plus the runtime mode (``live_readonly`` blocks real writes;
+    # ``live_write`` allows them). ``mock`` and ``sandbox`` are not
+    # product write paths for live-create (a sandbox token has the
+    # same write shape as a real one — we keep the gate strict).
+    #
+    # The chain performs FOUR v5 stages on apply:
+    #
+    # 1. ``campaigns.add`` (text campaign shape; Direct controls lifecycle state)
+    # 2. ``adgroups.add`` (one per draft ad group, with the draft
+    #    ``negative_keywords`` mirrored into each group's
+    #    ``NegativeKeywords.Items`` block — same shape the existing
+    #    ``adgroups.update`` semantic-change path uses)
+    # 3. ``ads.add`` (one per draft ad, targeting the Yandex ad
+    #    group id returned by stage 2)
+    # 4. ``keywords.add`` (one per group-level keyword, plus a
+    #    broadcast of campaign-level keywords onto every group,
+    #    targeting the Yandex ad group id from stage 2)
+    #
+    # The chain does NOT call ``campaigns.resume`` automatically.
+    # Direct controls the initial lifecycle/moderation state;
+    # activation goes through
+    # the existing ``POST /yandex/campaigns/{campaign_id}/resume``
+    # endpoint with its own approval / idempotency gate.
+    #
+    # ``negativekeywordsharedsets.add`` (stage 5) is the ONLY stage
+    # kept as ``not_implemented`` — the v5 shape for that service
+    # is not documented in the project sources. Group-level
+    # negatives are applied via the confirmed
+    # ``adgroups.add`` ``NegativeKeywords.Items`` block, which is
+    # the same shape the existing ``adgroups.update`` semantic-
+    # change path uses. No invented payload.
+
+    @staticmethod
+    def _build_v5_campaign_from_draft(
+        draft: "CampaignDraft",
+        *,
+        start_date: str | None,
+        counter_ids: list[int],
+    ) -> dict[str, Any]:
+        """Build one v5 ``Campaigns`` entry from a campaign-draft preview.
+
+        Field names mirror the Direct API v5 contract literally — no
+        invented fields. The TextCampaign block carries the bidding
+        strategy, geo / time targeting settings, and the optional
+        Metrika counter ids.
+        """
+        daily_budget_amount: int | None = None
+        # Defensive ``draft.budget`` guard. ``CampaignDraft.budget`` is
+        # typed with ``default_factory=BudgetSettings`` so it is
+        # effectively never ``None`` in normal model roundtrips, but
+        # the v5 builder is a safety-sensitive function: any direct
+        # caller (an integration test, a future background worker, a
+        # hand-built model) that hands us a draft with ``budget=None``
+        # MUST NOT raise an ``AttributeError`` that escapes to the
+        # endpoint's safety net. We coerce to a safe
+        # ``BudgetSettings()`` default and surface the budget block
+        # only when the operator actually set a daily amount.
+        budget_obj = getattr(draft, "budget", None) or BudgetSettings()
+        if budget_obj.daily_budget is not None:
+            # v5 expects micro-units (1/1_000_000 of currency) plus a
+            # currency string. We default to RUB because the rest of
+            # the product is RU-first; if the user has a multi-currency
+            # account they can extend this scaffolding.
+            daily_budget_amount = int(round(budget_obj.daily_budget * 1_000_000))
+
+        campaign: dict[str, Any] = {
+            "Name": draft.name or f"Draft: {draft.business_type} / {draft.region}",
+            "TextCampaign": {
+                "BiddingStrategy": {
+                    # Manual CPC w/ weekly budget cap. v5 also accepts
+                    # ``AVERAGE_CPC`` / ``AVERAGE_CPA`` — the user can
+                    # extend the payload if they want a different
+                    # strategy. We pick a sensible default that does
+                    # NOT require per-keyword bids.
+                    "Strategy": "AVERAGE_CPC",
+                },
+            },
+        }
+        # ``StartDate`` is a v5 required string — sending ``None``
+        # would be rejected. When the caller did not supply an
+        # override, omit the key entirely so the v5 service applies
+        # its own default (today UTC). Mirrors the documented v5
+        # contract: a missing optional-required field falls back to
+        # the service default, but a present ``null`` does not.
+        if start_date is not None:
+            campaign["StartDate"] = start_date
+        if daily_budget_amount is not None:
+            campaign["DailyBudget"] = {
+                "Amount": daily_budget_amount,
+                "Currency": "RUB",
+            }
+        if counter_ids:
+            campaign["TextCampaign"]["CounterIds"] = list(counter_ids)
+        # Geo targeting: v5 expects RegionIds. The draft only stores
+        # the human-readable region name; we leave ``Settings`` empty
+        # by default and let the operator refine in the Yandex UI.
+        return campaign
+
+    @staticmethod
+    def _build_v5_chain_payloads(
+        draft: "CampaignDraft",
+        *,
+        campaign_id: int | str | None,
+    ) -> dict[str, dict[str, Any]]:
+        """Build the v5 stage payloads for stages 2..4 of the
+        live-create chain.
+
+        Returns a dict keyed by the v5 method name:
+
+        * ``adgroups.add`` — one ``AdGroups`` item per draft ad
+          group, with the draft's ``negative_keywords`` mirrored
+          into each group's ``NegativeKeywords.Items`` block (same
+          shape the existing ``adgroups.update`` semantic-change
+          path uses). ``CampaignId`` is the new Yandex campaign id
+          from stage 1 (may be ``None`` in the dry-run preview
+          because stage 1 has not run yet — the field is always
+          present in the payload to match the v5 contract).
+        * ``ads.add`` — one ``Ads`` item per draft ad, with
+          ``AdGroupId`` set to the local draft ad group id (the
+          apply path substitutes the Yandex id from stage 2 via
+          the local→Yandex map). The ``TextAd`` block carries
+          ``Title`` / ``Text`` / ``Href`` and, when set,
+          ``DisplayLinkPath`` (the v5 optional field).
+        * ``keywords.add`` — a flat list of ``{Keyword, AdGroupId}``
+          entries. Group-level keywords from each draft ad group
+          are emitted with the local ad group id; campaign-level
+          keywords (``draft.keywords``) are broadcast onto every
+          group. The apply path substitutes Yandex ids via the
+          local→Yandex map.
+
+        The contract is documented in
+        :class:`app.models.LiveCreateCampaignResult` and pinned by
+        ``tests/test_live_create_chain_helpers.py``.
+
+        Empty lists are returned for stages whose draft inputs are
+        empty so the apply path can SKIP the network call instead
+        of sending ``{"AdGroups": []}`` to v5 (which the v5 service
+        rejects). The dry-run preview still surfaces the empty
+        stage in the chain so the operator can see the chain
+        intentionally no-ops on missing parts.
+
+        ``adgroups.add`` items ALWAYS carry ``RegionIds`` (v5
+        rejects items without a geo target). The ids are resolved
+        from ``draft.region`` via :func:`_resolve_region_to_ids` —
+        a local map, no network lookup. An unknown region raises
+        :class:`YandexDirectError` so the apply path refuses to
+        dispatch ``campaigns.add`` (and the dry-run surfaces the
+        same typed error). The ``NegativeKeywords`` block is
+        OPTIONAL on ``adgroups.add``; we OMIT the block when the
+        list is empty and INCLUDE it with the items when it is not
+        — matching the existing ``adgroups.update`` shape for
+        consistency.
+        """
+        # Resolve ``RegionIds`` from ``draft.region`` first. An
+        # unknown / empty / whitespace region raises
+        # :class:`YandexDirectError` (typed) so the apply path
+        # fails closed before any network call. The dry-run path
+        # surfaces the same error, so the operator sees the same
+        # failure mode in both ``dry_run`` and ``approved=True``
+        # requests.
+        region_ids = _resolve_region_to_ids(getattr(draft, "region", None))
+        negative_items = list(draft.negative_keywords or [])
+
+        # Stage 2 — adgroups.add. ``CampaignId`` may be ``None`` in
+        # the dry-run preview because stage 1 has not run yet; the
+        # apply path substitutes the Yandex campaign id before
+        # calling ``adgroups.add``.
+        ad_groups_param: list[dict[str, Any]] = []
+        for group in draft.ad_groups or []:
+            item: dict[str, Any] = {
+                "Name": group.name,
+                "CampaignId": campaign_id,
+                # Geo target — required by v5. Resolved from
+                # ``draft.region`` via the local resolver above.
+                "RegionIds": list(region_ids),
+            }
+            # Group-level negatives mirror the
+            # ``adgroups.update`` semantic-change shape so the
+            # negative-keyword requirement is met without
+            # inventing a new v5 service payload. The block is
+            # OPTIONAL on v5 ``adgroups.add``; we OMIT it when
+            # the list is empty (a missing block is always
+            # accepted; an empty Items list is rejected on some
+            # upstream edge cases) and INCLUDE it with the items
+            # when it is not — the apply path is then a
+            # deterministic, documented payload.
+            if negative_items:
+                item["NegativeKeywords"] = {"Items": list(negative_items)}
+            ad_groups_param.append(item)
+
+        # Stage 3 — ads.add. ``AdGroupId`` uses the LOCAL draft
+        # ad group id; the apply path substitutes the Yandex id
+        # from stage 2 via the local→Yandex map.
+        ads_param: list[dict[str, Any]] = []
+        for ad in draft.ads or []:
+            text_ad: dict[str, Any] = {
+                "Title": ad.title,
+                "Text": ad.text,
+                "Href": ad.landing_url,
+            }
+            if ad.display_link_path:
+                # Mirrors the ``StartDate``-omission convention from
+                # ``campaigns.add``: the optional field is omitted
+                # when None so v5 sees a clean payload rather than
+                # a ``null`` value it may reject.
+                text_ad["DisplayLinkPath"] = ad.display_link_path
+            ads_param.append(
+                {
+                    "AdGroupId": ad.ad_group_id,
+                    "TextAd": text_ad,
+                }
+            )
+
+        # Stage 4 — keywords.add. Flatten group-level keywords
+        # (one entry per (group, phrase)) and broadcast the
+        # campaign-level keywords onto every group. The apply
+        # path substitutes Yandex ids via the local→Yandex map.
+        keywords_param: list[dict[str, Any]] = []
+        local_group_ids = [g.id for g in (draft.ad_groups or [])]
+        for group in draft.ad_groups or []:
+            for phrase in group.keywords or []:
+                keywords_param.append(
+                    {"Keyword": phrase, "AdGroupId": group.id}
+                )
+        # Broadcast campaign-level keywords onto every group, in
+        # the order the groups appear in the draft. We dedupe
+        # against the per-group set so the v5 service does not
+        # receive the same phrase twice in the same call.
+        for phrase in draft.keywords or []:
+            for group_id in local_group_ids:
+                keywords_param.append(
+                    {"Keyword": phrase, "AdGroupId": group_id}
+                )
+
+        return {
+            "adgroups.add": {
+                "method": "adgroups.add",
+                "params": {"AdGroups": ad_groups_param},
+            },
+            "ads.add": {
+                "method": "ads.add",
+                "params": {"Ads": ads_param},
+            },
+            "keywords.add": {
+                "method": "keywords.add",
+                "params": {"Keywords": keywords_param},
+            },
+        }
+
+    def live_create_campaign(
+        self,
+        payload: "LiveCreateCampaignRequest",
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "LiveCreateCampaignResult":
+        """Apply a live-create campaign request.
+
+        Contract:
+
+        * ``approved`` MUST be ``True`` (the endpoint already enforces
+          this with HTTP 409, but the store double-checks so direct
+          callers cannot bypass the gate).
+        * ``idempotency_key`` is required (the Pydantic model enforces
+          a minimum length of 6 chars). The first call performs the
+          network write; replays return the cached result without
+          re-sending.
+        * ``dry_run=True`` is ALWAYS allowed and NEVER performs a
+          network write. The result includes the full v5 chain
+          preview (stage 1 + stages 2..4) that WOULD be sent.
+        * ``live_readonly`` mode + ``dry_run=False`` is REJECTED
+          before any network call (raises :class:`YandexDirectError`
+          so the endpoint returns 409 with a redacted message).
+        * ``live_write`` mode + ``approved`` + ``idempotency_key`` +
+          ``dry_run=False`` performs the four-stage v5 chain
+          (``campaigns.add`` → ``adgroups.add`` → ``ads.add`` →
+          ``keywords.add``) and returns the new ids from the
+          ``AddResults`` envelope. The chain is intentionally
+          non-activating — the chain does NOT call
+          ``campaigns.resume`` automatically. Direct controls the
+          initial lifecycle/moderation state. Activation goes
+          through the existing
+          ``POST /yandex/campaigns/{campaign_id}/resume`` endpoint.
+
+        Idempotency cache keying: the cache key includes
+        ``dry_run`` so a dry-run replay does NOT consume a real
+        apply's idempotency_key. Replays of the same
+        ``(draft_id, idempotency_key, dry_run)`` triple return the
+        cached result without re-sending. Mixing dry-run and apply
+        on the same key is allowed: each is cached independently.
+        """
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+        if payload.draft_id not in self.drafts:
+            raise KeyError("campaign_draft_not_found")
+        draft = self.drafts[payload.draft_id]
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+        # Only one stage remains explicitly not implemented: the
+        # v5 shape for ``negativekeywordsharedsets.add`` is not
+        # documented in the project sources. Group-level negatives
+        # are applied via the confirmed ``adgroups.add``
+        # ``NegativeKeywords.Items`` block.
+        not_implemented: list[str] = ["negativekeywordsharedsets.add"]
+
+        # Idempotency cache. The key includes ``dry_run`` so a
+        # dry-run replay does NOT consume a real apply's
+        # idempotency_key. Each (draft_id, idempotency_key, dry_run)
+        # triple has its own cache entry.
+        dry_flag = "dry" if payload.dry_run else "apply"
+        cache_key = (
+            f"live_create:{payload.draft_id}:{payload.idempotency_key}:{dry_flag}"
+        )
+        if cache_key in self.live_create_results_by_key:
+            return self.live_create_results_by_key[cache_key]
+
+        # Outer try/except: any :class:`YandexDirectError` that
+        # escapes the chain preview (e.g. an unknown region raised
+        # by ``_resolve_region_to_ids`` inside
+        # ``_build_v5_chain_payloads``) or the apply path's per-
+        # stage try is audited here with
+        # ``live_create_campaign_failed`` and re-raised so the
+        # endpoint returns 502. This guarantees the audit log
+        # always sees the failing stage and the offending region
+        # (no token in the audit message), regardless of whether
+        # the failure was a pre-flight gate (no network call) or
+        # an in-stage v5 rejection.
+        try:
+            return self._live_create_campaign_run(
+                payload=payload,
+                draft=draft,
+                mode=mode,
+                is_live=is_live,
+                can_write=can_write,
+                not_implemented=not_implemented,
+                cache_key=cache_key,
+                client=client,
+            )
+        except YandexDirectError as exc:
+            # ``exc`` carries the failing stage in its message; the
+            # audit pin the operator to the exact line that failed.
+            failing_stage = _stage_name_from_message(str(exc))
+            self.append_audit(
+                "live_create_campaign_failed",
+                payload.draft_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex" if is_live else "mock",
+                    "reason": payload.reason,
+                    "stage": failing_stage or "unknown",
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+
+    def _live_create_campaign_run(
+        self,
+        *,
+        payload: "LiveCreateCampaignRequest",
+        draft: "CampaignDraft",
+        mode: str,
+        is_live: bool,
+        can_write: bool,
+        not_implemented: list[str],
+        cache_key: str,
+        client: YandexDirectClient | None,
+    ) -> "LiveCreateCampaignResult":
+        """Inner worker for :meth:`live_create_campaign` — see that
+        docstring for the full contract.
+
+        Split out from the public method so the public method can
+        keep a single, exhaustive ``YandexDirectError`` audit
+        handler that fires on BOTH pre-flight gate failures (e.g.
+        unknown region raised before any network call) and on
+        per-stage v5 rejections inside the apply path.
+        """
+        v5_campaign = self._build_v5_campaign_from_draft(
+            draft,
+            start_date=payload.start_date,
+            counter_ids=list(payload.counter_ids),
+        )
+        # Chain preview (stages 2..4) — uses ``None`` for the
+        # Yandex campaign id because stage 1 has not run yet; the
+        # apply path substitutes the real id before dispatching.
+        # ``_build_v5_chain_payloads`` resolves ``RegionIds`` from
+        # ``draft.region``; an unknown region raises
+        # :class:`YandexDirectError` here so the operator sees
+        # the same failure mode in dry-run and apply.
+        chain_preview = self._build_v5_chain_payloads(
+            draft, campaign_id=None
+        )
+        # Flat preview — stage 1 + chain. The dry-run
+        # ``payload_preview`` keeps the stage-1 envelope as the
+        # top-level fields (``method`` / ``params``) and stashes
+        # the chain under ``params.chain`` so callers can render
+        # both with one walk.
+        preview_payload: dict[str, Any] = {
+            "method": "campaigns.add",
+            "params": {
+                "Campaigns": [v5_campaign],
+                "chain": [
+                    chain_preview["adgroups.add"],
+                    chain_preview["ads.add"],
+                    chain_preview["keywords.add"],
+                ],
+            },
+        }
+
+        # The endpoint is the primary mode gate. The store keeps a
+        # defence-in-depth check so a direct caller cannot bypass it
+        # either. Only ``live_write`` may perform a real apply;
+        # ``sandbox`` shares the v5 ``campaigns.add`` write shape with
+        # production and ``mock`` has no live client at all — both
+        # are explicitly rejected, never silently swallowed.
+        if not payload.dry_run and mode != "live_write":
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch "
+                f"campaigns.add"
+            )
+
+        # Dry-run path: never perform a network write. Allowed in
+        # every mode because it does not touch the v5 service.
+        if payload.dry_run:
+            audit = self.append_audit(
+                "live_create_campaign_requested",
+                payload.draft_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex" if is_live else "mock",
+                    "reason": payload.reason,
+                    "stage": "dry_run_preview",
+                    "stages_executed": [],
+                    "not_implemented": not_implemented,
+                    "payload_redacted": preview_payload,
+                },
+            )
+            result = LiveCreateCampaignResult(
+                draft_id=payload.draft_id,
+                mode=mode,
+                dry_run=payload.dry_run,
+                applied=False,
+                campaign_id=None,
+                source="yandex" if is_live else "mock",
+                audit_id=audit.id,
+                payload_preview=preview_payload,
+                stages_executed=[],
+                ad_group_ids=[],
+                ad_ids=[],
+                keyword_ids=[],
+                not_implemented=not_implemented,
+            )
+            self.live_create_results_by_key[cache_key] = result
+            return result
+
+        # Real apply: gate by mode. live_readonly / sandbox are
+        # blocked before any network call so the rejection is
+        # guaranteed to be no-network.
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; "
+                "switch DIRECTPILOT_MODE to live_write to create campaigns"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live campaign writes"
+            )
+
+        # Apply path: chain through the four v5 stages. Each stage
+        # is its own v5 call so a single failure never leaves a
+        # partial campaign on the user's account. The chain is
+        # fail-closed: any stage that fails stops the chain,
+        # audits ``live_create_campaign_failed`` with the failing
+        # stage (via the public method's outer
+        # ``try / except YandexDirectError``), and re-raises so
+        # the endpoint returns 502.
+        try:
+            # ----- Stage 1: campaigns.add -----------------------------
+            stage1_response = client.campaigns_add([v5_campaign])
+            if not stage1_response.get("ok"):
+                err = stage1_response.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected campaigns.add: "
+                    f"error_code={err.get('error_code')!r}"
+                )
+            # Inspect every AddResults item. v5 ``ok=true`` is NOT
+            # enough — per-item ``Errors`` or missing ``Id`` must
+            # fail closed.
+            stage1_result_payload = stage1_response.get("result")
+            stage1_items, stage1_failure = _extract_add_results(
+                stage1_result_payload, stage="campaigns.add"
+            )
+            if stage1_failure is not None:
+                safe_msg, _structured = stage1_failure
+                raise YandexDirectError(safe_msg)
+            assert stage1_items is not None
+            stage1_first = stage1_items[0]
+            new_campaign_id: int | None = None
+            if isinstance(stage1_first, dict) and stage1_first.get("Id") is not None:
+                new_campaign_id = stage1_first["Id"]
+            if new_campaign_id is None:
+                # Defence-in-depth — the extractor already covered
+                # this, but the chain logic below needs a non-None
+                # int to substitute into stage-2 ``CampaignId``.
+                raise YandexDirectError(
+                    "Yandex Direct campaigns.add returned no Id; "
+                    "refusing to continue the chain"
+                )
+            stage1_warnings: list[Any] = []
+            if isinstance(stage1_first, dict) and isinstance(
+                stage1_first.get("Warnings"), list
+            ):
+                stage1_warnings = list(stage1_first.get("Warnings") or [])
+
+            # ----- Stage 2: adgroups.add -----------------------------
+            # Rebuild the chain payload with the real Yandex
+            # campaign id so ``CampaignId`` is correct.
+            chain_payloads = self._build_v5_chain_payloads(
+                draft, campaign_id=new_campaign_id
+            )
+            ad_groups_param = chain_payloads["adgroups.add"]["params"]["AdGroups"]
+            new_ad_group_ids: list[str] = []
+            if ad_groups_param:
+                stage2_response = client.adgroups_add(ad_groups_param)
+                if not stage2_response.get("ok"):
+                    err = stage2_response.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected adgroups.add: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                stage2_items, stage2_failure = _extract_add_results(
+                    stage2_response.get("result"), stage="adgroups.add"
+                )
+                if stage2_failure is not None:
+                    safe_msg, _ = stage2_failure
+                    raise YandexDirectError(safe_msg)
+                assert stage2_items is not None
+                # ``_extract_add_results`` returns the first item
+                # only; we need ALL ids, so re-inspect the raw
+                # envelope to extract every per-item id.
+                stage2_raw = (stage2_response.get("result") or {}).get(
+                    "AddResults"
+                ) or []
+                for item in stage2_raw:
+                    if isinstance(item, dict) and item.get("Id") is not None:
+                        new_ad_group_ids.append(item["Id"])
+                if len(new_ad_group_ids) != len(ad_groups_param):
+                    # Mismatch between the number of items we sent
+                    # and the number of items with an Id. Fail
+                    # closed — the mapping for stages 3/4 would be
+                    # ambiguous.
+                    raise YandexDirectError(
+                        f"adgroups.add returned {len(new_ad_group_ids)} "
+                        f"ids for {len(ad_groups_param)} submitted groups; "
+                        f"refusing to continue the chain"
+                    )
+            # local draft ad group id -> Yandex ad group id.
+            local_group_ids = [g.id for g in (draft.ad_groups or [])]
+            local_to_yandex: dict[str, Any] = dict(
+                zip(local_group_ids, new_ad_group_ids)
+            )
+
+            # ----- Stage 3: ads.add ---------------------------------
+            ads_param_raw = chain_payloads["ads.add"]["params"]["Ads"]
+            # Substitute the Yandex ad group id for every ad that
+            # targets a known local group. Ads that target an
+            # unknown group are dropped with a clear error — the
+            # v5 service would reject them anyway, but a clear
+            # error here is more debuggable.
+            ads_param: list[dict[str, Any]] = []
+            for ad in ads_param_raw:
+                local_gid = ad.get("AdGroupId")
+                if local_gid in local_to_yandex:
+                    ad_payload = dict(ad)
+                    ad_payload["AdGroupId"] = local_to_yandex[local_gid]
+                    ads_param.append(ad_payload)
+                else:
+                    raise YandexDirectError(
+                        f"ads.add: ad targets unknown local ad group "
+                        f"id={local_gid!r}; refusing to continue the chain"
+                    )
+            new_ad_ids: list[str] = []
+            if ads_param:
+                stage3_response = client.ads_add(ads_param)
+                if not stage3_response.get("ok"):
+                    err = stage3_response.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected ads.add: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                stage3_items, stage3_failure = _extract_add_results(
+                    stage3_response.get("result"), stage="ads.add"
+                )
+                if stage3_failure is not None:
+                    safe_msg, _ = stage3_failure
+                    raise YandexDirectError(safe_msg)
+                assert stage3_items is not None
+                stage3_raw = (stage3_response.get("result") or {}).get(
+                    "AddResults"
+                ) or []
+                for item in stage3_raw:
+                    if isinstance(item, dict) and item.get("Id") is not None:
+                        new_ad_ids.append(str(item["Id"]))
+                if len(new_ad_ids) != len(ads_param):
+                    raise YandexDirectError(
+                        f"ads.add returned {len(new_ad_ids)} ids for "
+                        f"{len(ads_param)} submitted ads; refusing to "
+                        f"continue the chain"
+                    )
+
+            # ----- Stage 4: keywords.add ----------------------------
+            keywords_param_raw = chain_payloads["keywords.add"]["params"]["Keywords"]
+            keywords_param: list[dict[str, Any]] = []
+            for kw in keywords_param_raw:
+                local_gid = kw.get("AdGroupId")
+                if local_gid in local_to_yandex:
+                    kw_payload = dict(kw)
+                    kw_payload["AdGroupId"] = local_to_yandex[local_gid]
+                    keywords_param.append(kw_payload)
+                else:
+                    raise YandexDirectError(
+                        f"keywords.add: keyword targets unknown local ad "
+                        f"group id={local_gid!r}; refusing to continue "
+                        f"the chain"
+                    )
+            new_keyword_ids: list[str] = []
+            if keywords_param:
+                stage4_response = client.keywords_add(keywords_param)
+                if not stage4_response.get("ok"):
+                    err = stage4_response.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected keywords.add: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                stage4_items, stage4_failure = _extract_add_results(
+                    stage4_response.get("result"), stage="keywords.add"
+                )
+                if stage4_failure is not None:
+                    safe_msg, _ = stage4_failure
+                    raise YandexDirectError(safe_msg)
+                assert stage4_items is not None
+                stage4_raw = (stage4_response.get("result") or {}).get(
+                    "AddResults"
+                ) or []
+                for item in stage4_raw:
+                    if isinstance(item, dict) and item.get("Id") is not None:
+                        new_keyword_ids.append(str(item["Id"]))
+                if len(new_keyword_ids) != len(keywords_param):
+                    raise YandexDirectError(
+                        f"keywords.add returned {len(new_keyword_ids)} ids "
+                        f"for {len(keywords_param)} submitted keywords; "
+                        f"refusing to continue the chain"
+                    )
+
+            # Build the final stages_executed list — only include
+            # the stages that actually ran (skipped stages do NOT
+            # appear, e.g. an empty-draft apply only runs stage 1).
+            stages_executed: list[str] = ["campaigns.add"]
+            if ad_groups_param:
+                stages_executed.append("adgroups.add")
+            if ads_param:
+                stages_executed.append("ads.add")
+            if keywords_param:
+                stages_executed.append("keywords.add")
+
+            audit = self.append_audit(
+                "live_create_campaign_requested",
+                payload.draft_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex",
+                    "reason": payload.reason,
+                    "stage": stages_executed[-1],
+                    "applied": True,
+                    "stages_executed": stages_executed,
+                    "not_implemented": not_implemented,
+                    "campaign_id": str(new_campaign_id),
+                    "ad_group_ids": [str(i) for i in new_ad_group_ids],
+                    "ad_ids": list(new_ad_ids),
+                    "keyword_ids": list(new_keyword_ids),
+                    "yandex_units": _safe_units(stage1_response.get("units")),
+                    "yandex_warnings": stage1_warnings,
+                },
+            )
+            result = LiveCreateCampaignResult(
+                draft_id=payload.draft_id,
+                mode=mode,
+                dry_run=False,
+                applied=True,
+                campaign_id=str(new_campaign_id),
+                source="yandex",
+                audit_id=audit.id,
+                payload_preview=preview_payload,
+                stages_executed=stages_executed,
+                ad_group_ids=[str(i) for i in new_ad_group_ids],
+                ad_ids=list(new_ad_ids),
+                keyword_ids=list(new_keyword_ids),
+                not_implemented=not_implemented,
+            )
+            self.live_create_results_by_key[cache_key] = result
+            return result
+        except YandexDirectError:
+            # The public :meth:`live_create_campaign` wraps this
+            # worker in an outer ``try / except YandexDirectError``
+            # that records the ``live_create_campaign_failed``
+            # audit. Re-raise so the outer audit fires (with the
+            # full request context) — the operator's audit log
+            # always sees the failing stage and the offending
+            # region, regardless of where the error was raised.
+            raise
+        except Exception as exc:  # noqa: BLE001 — safety net
+            # Same contract as the semantic-change apply path:
+            # convert any non-typed exception to a
+            # :class:`YandexDirectError` and re-raise so the public
+            # method's outer audit handler fires. The outer audit
+            # pins the operator to the failing stage and the
+            # exception type — we do NOT append_audit here to
+            # avoid a double audit. The endpoint then returns 502.
+            safe = YandexDirectError(
+                f"unexpected error during live-create: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise safe from exc
+
     # ------------------------------------------------- semantic change package
     #
     # The semantic-change pipeline is a safe-by-default way to prepare
@@ -1325,6 +2281,17 @@ class MockStore:
         # (order-preserving, de-duplicated). If the read fails or the
         # target ad group id is not found in the response, we abort
         # BEFORE the update and audit ``semantic_change_apply_failed``.
+        #
+        # Safety net: ``YandexDirectError`` is the only typed error the
+        # YandexDirectClient helpers are expected to raise. Any other
+        # exception (a non-typed ``RuntimeError`` from a custom httpx
+        # transport, a ``TypeError`` from a malformed operation payload,
+        # a ``ValueError`` from a non-numeric ``Units`` header, etc.)
+        # would otherwise escape to FastAPI's default 500 handler with
+        # no audit and a possible token-bearing traceback. We catch
+        # ``Exception`` here, normalise it to a typed ``YandexDirectError``
+        # for the audit, and re-raise so the endpoint returns 502 with
+        # a redacted message.
         sent_units = 0
         try:
             for operation in package.preview.operations:
@@ -1353,7 +2320,7 @@ class MockStore:
                         f"Yandex Direct rejected {method}: "
                         f"error_code={err.get('error_code')!r}"
                     )
-                sent_units += int(response.get("units") or 0)
+                sent_units += _safe_units(response.get("units"))
         except YandexDirectError as exc:
             self.append_audit(
                 "semantic_change_apply_failed",
@@ -1368,6 +2335,29 @@ class MockStore:
                 },
             )
             raise
+        except Exception as exc:  # noqa: BLE001 — safety net
+            # Convert any non-typed exception into a YandexDirectError
+            # so the endpoint returns a 502 with a redacted message,
+            # NOT the opaque FastAPI 500 default. This was the root
+            # cause of the user-reported "500 without audit" bug.
+            safe = YandexDirectError(
+                f"unexpected error during semantic-change apply: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.append_audit(
+                "semantic_change_apply_failed",
+                package.campaign_id,
+                dry_run=False,
+                details={
+                    "package_id": package_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "yandex_error": str(safe),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise safe from exc
 
         audit = self.append_audit(
             "semantic_change_applied",

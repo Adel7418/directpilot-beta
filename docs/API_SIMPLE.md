@@ -309,13 +309,77 @@ POST /campaign-drafts/{draft_id}/validate
 GET /campaign-drafts/{draft_id}/preview
 ```
 
-Показывает JSON, который в будущем мог бы быть отправлен в Yandex Direct.
+Показывает JSON, который может быть отправлен в Yandex Direct по цепочке apply.
 
-Важно: сейчас это только preview, `dry_run=true`, `requires_approval=true`. Live create/update apply не реализован.
+Этот payload служит входом для live-create цепочки: можно вручную проверить структуру перед отправкой.
 
 ---
 
-## 9. Бюджет и ставки
+## 9. Публикация черновика в Yandex Direct (stage chain)
+
+### Применить черновик как живую цепочку
+
+```http
+POST /yandex/campaigns/live-create
+```
+
+```json
+{
+  "draft_id": "draft_123",
+  "approved": true,
+  "idempotency_key": "lc_2026_001",
+  "dry_run": false,
+  "start_date": "2026-06-11",
+  "counter_ids": [123456],
+  "reason": "Подготовка новой кампании после ревью"
+}
+```
+
+Поведение:
+
+- `dry_run=true`: локальный preflight-режим.
+  - сети не вызываются;
+  - в `payload_preview` возвращаются этапы 1–4: `campaigns.add`, `adgroups.add`, `ads.add`, `keywords.add`;
+  - `applied=false`, `campaign_id=null`, `stages_executed=[]`.
+- `dry_run=false` + `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`:
+  - выполняет живую цепочку `campaigns.add` → `adgroups.add` → `ads.add` → `keywords.add`;
+  - возвращает `campaign_id`, `ad_group_ids`, `ad_ids`, `keyword_ids`, `stages_executed`;
+  - `applied=true`.
+- `DIRECTPILOT_MODE=mock/sandbox/live_readonly` + `dry_run=false`: write путь отклоняется **до любого сетевого вызова** (ошибка валидации).
+- `idempotency_key` имеет отдельный кеш для preview и apply (`dry_run` учитывается в ключе).
+
+Что исключено из цепочки:
+
+- `negativekeywordsharedsets.add` остаётся `not_implemented`.
+- Для групповых минус-слов используется `NegativeKeywords.Items` внутри `adgroups.add`.
+  Блок `NegativeKeywords` опционален на v5: если в драфте нет минус-слов — блок опускается,
+  если есть — передаётся с items. Пустой `Items` не отправляется.
+
+Безопасность и ошибки:
+
+- отказоустойчивость fail-closed: на любом `AddResults.Errors`/`Error`/`missing Id` цепочка прерывается;
+- запись `live_create_campaign_failed` в аудит;
+- endpoint не делает автоактивацию/`resume`: запуск кампании после проверки выполняется отдельным вызовом
+  `POST /yandex/campaigns/{campaign_id}/resume` с его собственным `approved` + `idempotency_key` + `dry_run`.
+
+Регион показа (geo targeting):
+
+- `adgroups.add` всегда содержит `RegionIds` — без гео-таргетинга v5 отклоняет запрос.
+  Идентификаторы резолвятся из `draft.region` через локальную карту
+  `_REGION_NAME_TO_V5_IDS` в `app/store.py` (helper `_resolve_region_to_ids`).
+  Никаких внешних вызовов.
+- Поддерживаемые регионы в Beta: `Казань` → `[43]`, `Москва` → `[213]`,
+  `Санкт-Петербург` / `СПб` → `[2]`, `Россия` / `Russia` → `[225]`.
+  Расширение — одна строка в карте.
+- Неизвестный / пустой регион отклоняется **до любого** сетевого вызова
+  `campaigns.add`: helper бросает `YandexDirectError` с именем региона
+  (без токена), в аудит пишется `live_create_campaign_failed`,
+  endpoint возвращает 502. Тот же режим работает и в dry-run — оператор
+  видит ошибку одинаково в обоих сценариях.
+
+---
+
+## 10. Бюджет и ставки
 
 ### Обновить бюджет
 
@@ -358,7 +422,7 @@ PATCH /campaign-drafts/{draft_id}/bids
 
 ---
 
-## 10. Yandex Direct read-only facade
+## 11. Yandex Direct read-only facade
 
 В режиме `live_readonly` эти методы читают реальные production-данные Яндекс Директа и возвращают `source="yandex"`, `read_only=true`. В `mock`/`sandbox` fallback режимах возможен локальный демо-результат (`source="mock"`) для сравнения и отладки.
 
@@ -418,7 +482,7 @@ GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/keywords -> count=32
 
 ---
 
-## 11. Pause / resume
+## 12. Pause / resume
 
 Это ограниченный live-control блок. В текущем `live_readonly` режиме реальные write-вызовы заблокированы; `dry_run=true` доступен для проверки сценария без изменения Директа.
 
@@ -462,7 +526,7 @@ POST /yandex/campaigns/{campaign_id}/resume
 
 ---
 
-## 12. Audit log
+## 13. Audit log
 
 ```http
 GET /audit-log
@@ -478,7 +542,7 @@ GET /audit-log
 
 ---
 
-## 13. Рекомендации и apply flow
+## 14. Рекомендации и apply flow
 
 ```http
 GET  /recommendations
@@ -491,7 +555,7 @@ POST /actions/{action_id}/apply
 
 ---
 
-## 14. Техническое примечание про DELETE
+## 15. Техническое примечание про DELETE
 
 Некоторые DELETE endpoints в MVP принимают JSON body, например:
 
@@ -503,7 +567,7 @@ DELETE /campaign-drafts/{draft_id}/keywords
 
 ---
 
-## 15. Утилиты
+## 16. Утилиты
 
 ### UTM generator
 
@@ -523,12 +587,10 @@ POST /simulations/budget
 
 Пока product-live-first scope не включает:
 
-- создание кампании в Яндекс Директ;
-- полное обновление live-кампаний в Яндекс Директ;
-- отправку preview payload в Direct как apply-флоу;
-- автоматическое расходование бюджета.
+- автоматическое создание `negativekeywordsharedsets.add` через отдельный endpoint;
+- автоматическую автоактивацию/модерационный handoff после live-create.
 
-Это сделано намеренно: текущий этап — real-data read-only (`live_readonly`) с live test в контролируемом режиме. Live writes — отдельный `live_write` этап через approval/policy и аудит.
+Это сделано намеренно: текущий этап — контролируемый live-first с отдельной точкой активации через `POST /yandex/campaigns/{campaign_id}/resume` и отдельным `approved`/`idempotency_key`-гейтами.
 
 
 ### Расширенный read-only/API-first слой Яндекс Директа

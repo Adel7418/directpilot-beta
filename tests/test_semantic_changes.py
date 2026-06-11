@@ -699,6 +699,130 @@ def test_apply_live_write_records_semantic_change_apply_failed_on_yandex_error()
     assert "TOPSECRET-FAIL" not in json.dumps(last.details, ensure_ascii=False)
 
 
+def test_apply_live_write_unexpected_exception_returns_502_and_audits_failed():
+    """Regression test: any non-``YandexDirectError`` exception that leaks
+    from the store apply loop MUST be converted to a typed error, audited
+    as ``semantic_change_apply_failed``, and surfaced as 502 — never as
+    the opaque FastAPI 500 default.
+
+    The user reported that ``POST /semantic-changes/{package_id}/apply``
+    on ``DIRECTPILOT_MODE=live_write`` returned HTTP 500 with no audit
+    ``semantic_change_apply_failed`` event. The most likely root cause
+    is a non-typed exception (e.g. ``RuntimeError`` raised inside a
+    custom httpx transport, a ``TypeError`` from a malformed operation
+    payload, or a ``ValueError`` from a non-numeric ``Units`` header)
+    escaping both the store's ``except YandexDirectError`` and the
+    endpoint's ``except YandexDirectError`` blocks.
+
+    Pin the safe contract: the endpoint translates any unhandled
+    exception into a 502 with a redacted message, AND the store records
+    a ``semantic_change_apply_failed`` audit event with no token in it.
+    """
+    settings = _settings("live_write", token="TOPSECRET-UNEXPECTED")
+    captured: dict[str, Any] = {"calls": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        captured["calls"] += 1
+        # Raise a non-typed exception that the YandexDirectClient._call
+        # wrapper does NOT catch (it only catches httpx.HTTPError). This
+        # simulates a transport-level surprise.
+        raise RuntimeError("upstream transport surprise")
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        prepare = client.post(
+            "/campaigns/710382063/semantic-changes",
+            json=_semantic_payload(
+                add_keywords=["ремонт стиральных машин казань"],
+                ad_group_id=1,
+            ),
+        )
+        package_id = prepare.json()["package_id"]
+        response = client.post(
+            f"/semantic-changes/{package_id}/apply",
+            json={
+                "dry_run": False,
+                "approved": True,
+                "idempotency_key": "smoke-unexpected-001",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    # MUST be 502 — never the opaque 500.
+    assert response.status_code == 502, response.text
+    # MUST NOT echo the token in any form.
+    assert "TOPSECRET-UNEXPECTED" not in response.text
+    # MUST record the failed audit event so the operator can correlate
+    # the failed apply with a redacted error reason.
+    failed_events = [
+        e
+        for e in store.audit_events
+        if e.action == "semantic_change_apply_failed"
+    ]
+    assert failed_events, "expected semantic_change_apply_failed audit event"
+    last = failed_events[-1]
+    assert "TOPSECRET-UNEXPECTED" not in json.dumps(last.details, ensure_ascii=False)
+    # The audit reason must contain a safe description of the failure,
+    # not a raw stack trace and not a token.
+    reason = (last.details or {}).get("yandex_error", "")
+    assert "upstream transport surprise" in reason or "RuntimeError" in reason
+    # The first call hit the network before blowing up.
+    assert captured["calls"] >= 1
+
+
+def test_apply_live_write_unexpected_exception_in_audit_block_does_not_leak_token():
+    """A 502 with a non-empty, redacted ``yandex_error`` message is the
+    safe contract. The token must NEVER appear, and the response body
+    must be JSON-shaped (the standard ``detail.error_type`` envelope),
+    never a raw text traceback.
+    """
+    settings = _settings("live_write", token="TOPSECRET-NOLEAK")
+    captured: dict[str, Any] = {"calls": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        captured["calls"] += 1
+        raise RuntimeError("boom-in-transport")
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        prepare = client.post(
+            "/campaigns/710382063/semantic-changes",
+            json=_semantic_payload(
+                add_keywords=["ремонт стиральных машин казань"],
+                ad_group_id=1,
+            ),
+        )
+        package_id = prepare.json()["package_id"]
+        response = client.post(
+            f"/semantic-changes/{package_id}/apply",
+            json={
+                "dry_run": False,
+                "approved": True,
+                "idempotency_key": "smoke-unexpected-002",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    # The error envelope MUST be the standard ``detail`` shape — not a
+    # raw text dump.
+    detail = body.get("detail")
+    assert isinstance(detail, dict), body
+    assert detail.get("error_type") == "YandexDirectError"
+    message = detail.get("message", "")
+    assert "boom-in-transport" in message
+    assert "TOPSECRET-NOLEAK" not in response.text
+    # No HTTP-500 internal stack trace leaks to the client.
+    assert "Traceback" not in response.text
+
+
 def test_apply_idempotency_key_avoids_duplicate_dry_run_results():
     settings = _settings("live_write", token="TOPSECRET-IDEM")
     captured: dict[str, Any] = {"calls": 0}

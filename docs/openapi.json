@@ -1064,6 +1064,173 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "LiveCreateCampaignRequest": {
+        "description": "Body of ``POST /yandex/campaigns/live-create``.\n\nThe campaign is built from an existing :class:`CampaignDraft` so the\ndraft preview stays the single source of truth for name, business\ntype, region, monthly budget, landing URL and ad group / ad /\nkeyword structure. Direct API v5 ``campaigns.add`` for a text\ncampaign requires the following mandatory fields:\n\n* ``Name`` — campaign name\n* ``StartDate`` — ``YYYY-MM-DD`` (no future date required, but\n  the v5 service rejects very far-future values)\n* ``TextCampaign`` block with at least one of:\n  ``BiddingStrategy`` (``AVERAGE_CPC`` / ``AVERAGE_CPA`` / etc.),\n  ``Settings`` (Geo / Time-targeting), or ``CounterIds``.\n\nThe endpoint accepts an explicit ``counter_ids`` (for Metrika\nconversion attribution) and an explicit ``start_date`` override\n(``YYYY-MM-DD``). Both are optional — sensible defaults are filled\nin below.",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "counter_ids": {
+            "description": "Optional Metrika counter ids for conversion attribution.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Counter Ids",
+            "type": "array"
+          },
+          "draft_id": {
+            "minLength": 1,
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "start_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional YYYY-MM-DD override; defaults to today (UTC).",
+            "title": "Start Date"
+          }
+        },
+        "required": [
+          "draft_id",
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "LiveCreateCampaignRequest",
+        "type": "object"
+      },
+      "LiveCreateCampaignResult": {
+        "description": "Response envelope for live-create.\n\n``dry_run=True`` returns the chained v5 payload preview (one\nentry per stage, plus the stage-1 ``campaigns.add`` envelope)\nthat WOULD be sent, with ``applied=False`` and\n``campaign_id=None``. ``dry_run=False`` (live_write only)\nreturns the new ids from the Yandex ``AddResults`` envelope,\nwith ``applied=True`` and ``source=\"yandex\"``. Both paths record\nan audit event with the request id and the live stages that\nwere actually executed.\n\nLive-create chains four Direct API v5 stages behind one\n``POST /yandex/campaigns/live-create`` call:\n\n1. ``campaigns.add`` — text-campaign family; new campaign id.\n2. ``adgroups.add`` — for each draft ad group; local→Yandex\n   ad group id map is built and used by stages 3 and 4. Each\n   item ALWAYS carries ``RegionIds`` (v5 rejects items without\n   a geo target); ids are resolved from ``draft.region`` via\n   the explicit local map ``_REGION_NAME_TO_V5_IDS`` in\n   ``app/store.py``. The ``NegativeKeywords`` block is OPTIONAL\n   on v5 ``adgroups.add``: omitted when the draft has no\n   negatives, included with the items when it does.\n3. ``ads.add`` — for each draft ad; ``AdGroupId`` is the\n   Yandex id from stage 2.\n4. ``keywords.add`` — for each draft keyword (group-level and\n   campaign-level); ``AdGroupId`` is the Yandex id from stage 2.\n\nEach stage is its own v5 call so a single failure stops the\nchain before the next stage. The chain does NOT call\n``campaigns.resume`` automatically; Direct controls the initial\nlifecycle/moderation state. Activation goes through the existing\n``POST /yandex/campaigns/{campaign_id}/resume`` endpoint with its\nown approval / idempotency gate.\n\n``negativekeywordsharedsets.add`` is the only stage kept as\n``not_implemented`` (the v5 shape is not documented in the\nproject sources and the read-only path for shared sets is\nread-only by design). Group-level negatives are applied via\nthe confirmed ``adgroups.add`` ``NegativeKeywords.Items``\nblock on creation — the same shape the existing\n``adgroups.update`` semantic-change path uses — so the\nnegative-keyword requirement is satisfied without inventing a\npayload shape for an undocumented v5 service.\n\nAn unknown / empty ``draft.region`` raises\n:class:`YandexDirectError` BEFORE any ``campaigns.add`` call\n(audit ``live_create_campaign_failed``); the endpoint returns\nHTTP 502 with a redacted message that names the offending\nregion so the operator can fix it. The dry-run preview surfaces\nthe same failure so the operator sees the same mode in both\npaths.",
+        "properties": {
+          "ad_group_ids": {
+            "description": "Yandex ad group ids returned by adgroups.add, in the order the ad groups were submitted. Empty when stage 2 was skipped or failed.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ad Group Ids",
+            "type": "array"
+          },
+          "ad_ids": {
+            "description": "Yandex ad ids returned by ads.add, in the order the ads were submitted. Empty when stage 3 was skipped or failed.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Ad Ids",
+            "type": "array"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "draft_id": {
+            "title": "Draft Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "keyword_ids": {
+            "description": "Yandex keyword ids returned by keywords.add, in the order the keywords were submitted. Empty when stage 4 was skipped (no keywords on the draft) or failed.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Keyword Ids",
+            "type": "array"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "not_implemented": {
+            "description": "Stages not yet executed by the store-level live-create chain. Currently only ``negativekeywordsharedsets.add`` is kept as ``not_implemented`` (the v5 shape for that service is not documented in the project sources; group-level negatives are applied via the confirmed ``adgroups.add`` / ``adgroups.update`` ``NegativeKeywords.Items`` path instead). Activation is intentionally NOT performed automatically; Direct controls the initial lifecycle/moderation state. The operator can activate it via the existing ``POST /yandex/campaigns/{campaign_id}/resume`` endpoint with its own approval and idempotency gate.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Not Implemented",
+            "type": "array"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "stages_executed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Stages Executed",
+            "type": "array"
+          }
+        },
+        "required": [
+          "draft_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "LiveCreateCampaignResult",
+        "type": "object"
+      },
       "NegativeKeywordsReplace": {
         "properties": {
           "negative_keywords": {
@@ -4783,6 +4950,45 @@
           }
         },
         "summary": "Yandex Campaigns Finance"
+      }
+    },
+    "/yandex/campaigns/live-create": {
+      "post": {
+        "description": "Create a real Yandex Direct campaign from a draft preview.\n\nGates (mirrors the rest of the product):\n\n* ``approved`` must be ``True`` (HTTP 409 otherwise).\n* ``idempotency_key`` is required.\n* ``live_readonly`` + ``dry_run=False`` is REJECTED before any\n  network call (HTTP 409).\n* ``live_write`` + ``approved`` + ``idempotency_key`` + ``dry_run=False``\n  performs the real chain: ``campaigns.add`` → ``adgroups.add`` →\n  ``ads.add`` → ``keywords.add``. ``negativekeywordsharedsets.add``\n  remains in ``not_implemented``; group-level negatives are sent via\n  ``adgroups.add`` ``NegativeKeywords.Items`` (block is OPTIONAL —\n  omitted when the draft has no negatives, included with the items\n  when it does). The chain does not auto-activate or call\n  ``campaigns.resume``; activation/moderation handoff stays a\n  separate approved step.\n\nRegion / geo targeting:\n\n* ``adgroups.add`` items ALWAYS carry ``RegionIds`` (v5 rejects\n  items without a geo target). The ids are resolved from\n  ``draft.region`` via the explicit local map\n  ``_REGION_NAME_TO_V5_IDS`` in ``app/store.py`` (helper\n  ``_resolve_region_to_ids``). No external lookup, no network\n  call. Supported region names in the Beta: ``Казань`` → ``[43]``,\n  ``Москва`` → ``[213]``, ``Санкт-Петербург`` / ``СПб`` → ``[2]``,\n  ``Россия`` / ``Russia`` → ``[225]``. Trivially extensible.\n* An unmapped / empty / whitespace region fails closed BEFORE any\n  ``campaigns.add`` network call. The chain raises\n  :class:`YandexDirectError` with a redacted message that names\n  the offending region, the public store method audits\n  ``live_create_campaign_failed`` (no token in the audit), and\n  the endpoint returns HTTP 502. The dry-run preview surfaces the\n  same failure so the operator sees the same mode in both paths.\n* The ``adgroups.add`` payload does NOT carry a ``Status`` field —\n  lifecycle/moderation state is controlled by Direct and the\n  separate resume endpoint, not by the create chain.",
+        "operationId": "yandex_live_create_campaign_yandex_campaigns_live_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveCreateCampaignRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveCreateCampaignResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Live Create Campaign"
       }
     },
     "/yandex/campaigns/{campaign_id}/ad-groups": {

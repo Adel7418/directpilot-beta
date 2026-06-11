@@ -32,8 +32,10 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC если доступны |
 | Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи |
+| Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
+| Проверить аудит после публикации | `GET /audit-log` | `live_create_campaign_*`, `live_create_campaign_failed`, `yandex_resume_requested` |
+| Активировать после модерации | `POST /yandex/campaigns/{campaign_id}/resume` | отдельный approval/idempotency-гейт; live-create сам по себе кампанию **не** активирует |
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
-| Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
 | Сводка Метрики | `GET /metrika/counters/{counter_id}/summary` | visits/users/pageviews/goals |
@@ -43,6 +45,8 @@ DirectPilot — единая прослойка для маркетолога:
 | Региональный спрос | `GET /wordstat/regions?phrase=...` | где спрос выше |
 | Найти id региона | `GET /wordstat/regions-tree` | region id/name |
 | Быстрые ссылки/визитки/креативы/организации | `GET /yandex/sitelinks`, `/yandex/vcards`, `/yandex/ad-images`, `/yandex/creatives`, `/yandex/businesses` | аудит ассетов и контактной привязки |
+| Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
+
 
 ## Что использовать дополнительно (advanced)
 
@@ -76,6 +80,7 @@ DirectPilot — единая прослойка для маркетолога:
 - Не менять код DirectPilot — это задача `coder`.
 - Не ревьюить код DirectPilot — это задача `reviewer`.
 - Не запускать полноценную техническую проверку сборки/тестов — это задача `verifier`.
+- Не считать, что публикация в live-create автоматически запускает кампанию; требуется отдельный `POST /yandex/campaigns/{campaign_id}/resume` после модерации.
 
 ## Стандартный workflow анализа рекламы
 

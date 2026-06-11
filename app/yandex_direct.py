@@ -51,6 +51,45 @@ class YandexDirectClient:
         return value
 
     # ------------------------------------------------------------------
+    # Live-create (campaigns.add)
+    #
+    # Direct API v5 `campaigns.add` (see
+    # https://yandex.com/dev/direct/doc/ref-v5/campaigns/add.html)
+    # creates a real Yandex Direct campaign. The endpoint is the
+    # single most safety-sensitive write in the product: a single
+    # mis-call here can create a billable campaign on the user's
+    # production account. The `campaigns.add` helper is therefore
+    # kept deliberately small — it accepts a fully-shaped v5
+    # ``Campaigns`` list and forwards it to the v5 service with
+    # ``method=add``. The store / endpoint layer is responsible for
+    # building the input from a campaign-draft preview; the client
+    # never invents field names that the v5 contract does not
+    # document.
+    # ------------------------------------------------------------------
+
+    def campaigns_add(self, campaigns: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create one or more Yandex Direct campaigns via v5 ``campaigns.add``.
+
+        ``campaigns`` must be a list of fully-shaped v5 ``Campaigns``
+        dictionaries (typically built by the store / endpoint from a
+        :class:`CampaignDraft` preview). The helper forwards the
+        payload to the v5 ``campaigns`` service with ``method=add``
+        and returns the same ``{ok, result, error, units}`` envelope
+        used by the rest of the client.
+
+        The helper does NOT call ``adgroups.add`` / ``ads.add`` /
+        ``keywords.add`` — those are separate v5 services and a
+        follow-up campaign-create flow will chain them. Splitting
+        the stages keeps a single failure from leaving a partial
+        campaign on the user's account: each stage can be
+        individually gated and audited.
+        """
+        return self._call(
+            "campaigns",
+            {"method": "add", "params": {"Campaigns": list(campaigns)}},
+        )
+
+    # ------------------------------------------------------------------
     # Read-only child entities (adgroups / ads / keywords)
     #
     # All three are GET methods on Direct API v5. They accept
@@ -277,6 +316,72 @@ class YandexDirectClient:
         service with ``method=add``.
         """
         return self._call("keywords", {"method": "add", "params": {"Keywords": list(items)}})
+
+    # ------------------------------------------------------------------
+    # Live-create chain (stage 2 / stage 3)
+    #
+    # The live-create flow chains four v5 services behind one
+    # endpoint: ``campaigns.add`` → ``adgroups.add`` → ``ads.add`` →
+    # ``keywords.add``. Stage 5 (``negativekeywordsharedsets.add``) is
+    # intentionally NOT implemented here — the v5 shape is not
+    # documented in the project sources and the read-only path for
+    # shared sets is read-only by design. Each new helper is
+    # deliberately small: it accepts a fully-shaped v5 list and
+    # forwards it to the v5 service with ``method=add``. The store /
+    # endpoint layer is responsible for building the input from a
+    # :class:`CampaignDraft` preview; the client never invents
+    # field names that the v5 contract does not document.
+    # ------------------------------------------------------------------
+
+    def adgroups_add(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create one or more Yandex Direct ad groups via v5 ``adgroups.add``.
+
+        ``items`` must be a list of fully-shaped v5 ``AdGroups``
+        dictionaries (typically built by the store / endpoint from a
+        :class:`CampaignDraft` preview). The helper forwards the
+        payload to the v5 ``adgroups`` service with ``method=add`` and
+        returns the same ``{ok, result, error, units}`` envelope used
+        by the rest of the client.
+
+        The Direct API v5 contract:
+
+        .. code-block:: json
+
+            {"method": "add", "params": {"AdGroups": [
+                {"Name": "...", "CampaignId": 123, "RegionIds": [...],
+                 "NegativeKeywords": {"Items": [...]}},
+                ...
+            ]}}
+
+        Each item is added with the v5 service's defaults for any
+        field the caller does not supply (e.g. ``Status`` defaults to
+        ``DRAFT`` for new ad groups).
+        """
+        return self._call(
+            "adgroups", {"method": "add", "params": {"AdGroups": list(items)}}
+        )
+
+    def ads_add(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create one or more Yandex Direct text ads via v5 ``ads.add``.
+
+        ``items`` must be a list of fully-shaped v5 ``Ads`` entries,
+        each carrying the target ``AdGroupId`` and a ``TextAd`` block
+        (``Title`` / ``Text`` / ``Href`` / optional ``DisplayLinkPath``).
+        The helper forwards the payload to the v5 ``ads`` service with
+        ``method=add`` and returns the standard envelope.
+
+        The Direct API v5 contract for a text ad:
+
+        .. code-block:: json
+
+            {"method": "add", "params": {"Ads": [
+                {"AdGroupId": 123,
+                 "TextAd": {"Title": "...", "Text": "...", "Href": "...",
+                            "DisplayLinkPath": "..." /* optional */}},
+                ...
+            ]}}
+        """
+        return self._call("ads", {"method": "add", "params": {"Ads": list(items)}})
 
     def adgroups_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         """Update ad groups, currently used for shared negative keywords.

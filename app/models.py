@@ -657,3 +657,162 @@ class SemanticChangeApplyResult(BaseModel):
     audit_id: str
     source: Literal["mock", "yandex"] = "mock"
     operations_sent: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Live-create campaign (Yandex Direct API v5 `campaigns.add`).
+#
+# Gated by the standard product contract: live_write only, dry_run +
+# approved + idempotency_key. live_readonly blocks real writes before
+# any network call. Stage 1 covers the `TextCampaign` family only
+# (`TEXT_CAMPAIGN` and `MOBILE_APP_CAMPAIGN` are out of scope here; they
+# require additional, model-specific fields). The endpoint is the
+# one-stop "create a real Yandex campaign from a draft" call, but the
+# network write is intentionally split into stages so we never
+# silently skip a failing step. The apply path will be extended with
+# `adgroups.add`, `ads.add`, `keywords.add` in follow-up PRs; the
+# scaffolding is already here so the audit log has stable field names.
+# ---------------------------------------------------------------------------
+
+
+class LiveCreateCampaignRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/live-create``.
+
+    The campaign is built from an existing :class:`CampaignDraft` so the
+    draft preview stays the single source of truth for name, business
+    type, region, monthly budget, landing URL and ad group / ad /
+    keyword structure. Direct API v5 ``campaigns.add`` for a text
+    campaign requires the following mandatory fields:
+
+    * ``Name`` — campaign name
+    * ``StartDate`` — ``YYYY-MM-DD`` (no future date required, but
+      the v5 service rejects very far-future values)
+    * ``TextCampaign`` block with at least one of:
+      ``BiddingStrategy`` (``AVERAGE_CPC`` / ``AVERAGE_CPA`` / etc.),
+      ``Settings`` (Geo / Time-targeting), or ``CounterIds``.
+
+    The endpoint accepts an explicit ``counter_ids`` (for Metrika
+    conversion attribution) and an explicit ``start_date`` override
+    (``YYYY-MM-DD``). Both are optional — sensible defaults are filled
+    in below.
+    """
+
+    draft_id: str = Field(..., min_length=1)
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    start_date: str | None = Field(
+        default=None,
+        description="Optional YYYY-MM-DD override; defaults to today (UTC).",
+    )
+    counter_ids: list[int] = Field(
+        default_factory=list,
+        description="Optional Metrika counter ids for conversion attribution.",
+    )
+    reason: str | None = None
+
+
+class LiveCreateCampaignResult(BaseModel):
+    """Response envelope for live-create.
+
+    ``dry_run=True`` returns the chained v5 payload preview (one
+    entry per stage, plus the stage-1 ``campaigns.add`` envelope)
+    that WOULD be sent, with ``applied=False`` and
+    ``campaign_id=None``. ``dry_run=False`` (live_write only)
+    returns the new ids from the Yandex ``AddResults`` envelope,
+    with ``applied=True`` and ``source="yandex"``. Both paths record
+    an audit event with the request id and the live stages that
+    were actually executed.
+
+    Live-create chains four Direct API v5 stages behind one
+    ``POST /yandex/campaigns/live-create`` call:
+
+    1. ``campaigns.add`` — text-campaign family; new campaign id.
+    2. ``adgroups.add`` — for each draft ad group; local→Yandex
+       ad group id map is built and used by stages 3 and 4. Each
+       item ALWAYS carries ``RegionIds`` (v5 rejects items without
+       a geo target); ids are resolved from ``draft.region`` via
+       the explicit local map ``_REGION_NAME_TO_V5_IDS`` in
+       ``app/store.py``. The ``NegativeKeywords`` block is OPTIONAL
+       on v5 ``adgroups.add``: omitted when the draft has no
+       negatives, included with the items when it does.
+    3. ``ads.add`` — for each draft ad; ``AdGroupId`` is the
+       Yandex id from stage 2.
+    4. ``keywords.add`` — for each draft keyword (group-level and
+       campaign-level); ``AdGroupId`` is the Yandex id from stage 2.
+
+    Each stage is its own v5 call so a single failure stops the
+    chain before the next stage. The chain does NOT call
+    ``campaigns.resume`` automatically; Direct controls the initial
+    lifecycle/moderation state. Activation goes through the existing
+    ``POST /yandex/campaigns/{campaign_id}/resume`` endpoint with its
+    own approval / idempotency gate.
+
+    ``negativekeywordsharedsets.add`` is the only stage kept as
+    ``not_implemented`` (the v5 shape is not documented in the
+    project sources and the read-only path for shared sets is
+    read-only by design). Group-level negatives are applied via
+    the confirmed ``adgroups.add`` ``NegativeKeywords.Items``
+    block on creation — the same shape the existing
+    ``adgroups.update`` semantic-change path uses — so the
+    negative-keyword requirement is satisfied without inventing a
+    payload shape for an undocumented v5 service.
+
+    An unknown / empty ``draft.region`` raises
+    :class:`YandexDirectError` BEFORE any ``campaigns.add`` call
+    (audit ``live_create_campaign_failed``); the endpoint returns
+    HTTP 502 with a redacted message that names the offending
+    region so the operator can fix it. The dry-run preview surfaces
+    the same failure so the operator sees the same mode in both
+    paths.
+    """
+
+    draft_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    campaign_id: str | None = None
+    source: Literal["mock", "yandex"] = "yandex"
+    audit_id: str
+    payload_preview: dict | None = None
+    stages_executed: list[str] = Field(default_factory=list)
+    ad_group_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Yandex ad group ids returned by adgroups.add, in the order "
+            "the ad groups were submitted. Empty when stage 2 was "
+            "skipped or failed."
+        ),
+    )
+    ad_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Yandex ad ids returned by ads.add, in the order the ads "
+            "were submitted. Empty when stage 3 was skipped or failed."
+        ),
+    )
+    keyword_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Yandex keyword ids returned by keywords.add, in the order "
+            "the keywords were submitted. Empty when stage 4 was "
+            "skipped (no keywords on the draft) or failed."
+        ),
+    )
+    not_implemented: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Stages not yet executed by the store-level live-create "
+            "chain. Currently only ``negativekeywordsharedsets.add`` "
+            "is kept as ``not_implemented`` (the v5 shape for that "
+            "service is not documented in the project sources; group-"
+            "level negatives are applied via the confirmed "
+            "``adgroups.add`` / ``adgroups.update`` "
+            "``NegativeKeywords.Items`` path instead). Activation is "
+            "intentionally NOT performed automatically; Direct controls "
+            "the initial lifecycle/moderation state. The operator can "
+            "activate it via the existing "
+            "``POST /yandex/campaigns/{campaign_id}/resume`` endpoint "
+            "with its own approval and idempotency gate."
+        ),
+    )
