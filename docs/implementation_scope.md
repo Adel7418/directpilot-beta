@@ -38,7 +38,7 @@ Safe endpoints that expose real production Yandex Direct data in `live_readonly`
 
 ### Limited live-control facade
 
-Only pause/resume-style actions are allowed in this scope. They support dry-run in `live_readonly`; real Direct writes require `live_write`, approval, idempotency and audit gates.
+Only pause/resume-style actions are allowed in this scope for already-created campaigns. They support dry-run in `live_readonly`; real Direct writes require `live_write`, approval, idempotency and audit gates.
 
 - `POST /yandex/campaigns/{campaign_id}/pause`
 - `POST /yandex/campaigns/{campaign_id}/resume`
@@ -70,14 +70,14 @@ Still intentionally excluded from live execution in the chain:
 - `negativekeywordsharedsets.add` remains `not_implemented`.
   - Group-level negatives are sent via `adgroups.add` `NegativeKeywords.Items` (mirrors the confirmed `adgroups.update` shape). The `NegativeKeywords` block is OPTIONAL on v5 `adgroups.add`: when the draft has no negatives the block is omitted entirely; when it has items the block is included with the items. Empty `Items` lists are NOT sent (v5 rejects them on some edge cases).
   - Campaign-level negative set creation is not part of this path.
-- auto activation (`campaigns.resume`, moderation acceptance, scheduling handoff). `POST /yandex/campaigns/{campaign_id}/resume` is a separate endpoint with its own approval/idempotency gate.
+- auto activation, moderation acceptance, and scheduling handoff. For newly created DRAFT campaigns, the next lifecycle step is Direct `ads.moderate` on the draft `ad_ids`, not `campaigns.resume`. `POST /yandex/campaigns/{campaign_id}/resume` remains a separate endpoint with its own approval/idempotency gate for campaigns that already exist and were stopped/suspended.
 
 Region / geo targeting:
 
 - `adgroups.add` requires a valid `RegionIds` list on every item (reviewer REQUEST_CHANGES blocker). The draft only stores the human-readable region name (`draft.region`); the chain resolves it to Yandex v5 `RegionIds` via the explicit local map `_REGION_NAME_TO_V5_IDS` in `app/store.py` (helper: `_resolve_region_to_ids`). No external lookup, no network call.
 - Supported region names in the Beta: `Казань` → `[43]`, `Москва` → `[213]`, `Санкт-Петербург` / `СПб` → `[2]`, `Россия` / `Russia` → `[225]`. The map is trivially extensible — add one entry, no other change required.
 - An unmapped / empty / whitespace region fails closed BEFORE any `campaigns.add` network call: `_resolve_region_to_ids` raises `YandexDirectError`, the public `live_create_campaign` method catches it, audits `live_create_campaign_failed` with the offending region name in the message (no token in audit), and re-raises so the endpoint returns HTTP 502 with a redacted message. The dry-run preview surfaces the same failure so the operator sees the same mode in both paths.
-- The `adgroups.add` payload does NOT carry a `Status` field on the v5 items — lifecycle/moderation state is controlled by Direct and the separate `resume` endpoint, not by the create chain.
+- The `adgroups.add` payload does NOT carry a `Status` field on the v5 items — lifecycle/moderation state is controlled by Direct. DRAFT-to-moderation uses `ads.moderate`; `resume` is only for already-created stopped/suspended campaigns.
 
 ## Explicitly excluded now
 

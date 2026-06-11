@@ -102,7 +102,7 @@ def get_yandex_client(
 
 app = FastAPI(
     title="DirectPilot Beta API",
-    version="0.2.0",
+    version="0.2.1",
     description="Standalone API-first beta app for safe Yandex Direct automation.",
 )
 

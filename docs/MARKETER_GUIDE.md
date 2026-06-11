@@ -33,8 +33,9 @@ DirectPilot — единая прослойка для маркетолога:
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC если доступны |
 | Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи |
 | Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
-| Проверить аудит после публикации | `GET /audit-log` | `live_create_campaign_*`, `live_create_campaign_failed`, `yandex_resume_requested` |
-| Активировать после модерации | `POST /yandex/campaigns/{campaign_id}/resume` | отдельный approval/idempotency-гейт; live-create сам по себе кампанию **не** активирует |
+| Проверить аудит после публикации | `GET /audit-log` | `live_create_campaign_*`, `live_create_campaign_failed`; для DRAFT-запуска ожидайте отдельный факт отправки ads на модерацию |
+| Отправить DRAFT в модерацию | Direct `ads.moderate` по `ad_ids` | для новой кампании после live-create: **не** `campaigns.resume`; ожидаемый readback: campaign `Status=MODERATION`, ads `Status=MODERATION` |
+| Возобновить остановленную кампанию | `POST /yandex/campaigns/{campaign_id}/resume` | только для уже созданных stopped/suspended кампаний; не для DRAFT-to-moderation |
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
@@ -80,7 +81,7 @@ DirectPilot — единая прослойка для маркетолога:
 - Не менять код DirectPilot — это задача `coder`.
 - Не ревьюить код DirectPilot — это задача `reviewer`.
 - Не запускать полноценную техническую проверку сборки/тестов — это задача `verifier`.
-- Не считать, что публикация в live-create автоматически запускает кампанию; требуется отдельный `POST /yandex/campaigns/{campaign_id}/resume` после модерации.
+- Не считать, что публикация в live-create автоматически запускает кампанию. Для новой `DRAFT`-кампании следующий шаг — `ads.moderate` по созданным `ad_ids`, не `campaigns.resume`. `resume` нужен только для already-created кампаний, которые были остановлены/приостановлены.
 
 ## Стандартный workflow анализа рекламы
 

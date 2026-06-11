@@ -4,6 +4,14 @@ All notable changes to DirectPilot will be documented in this file.
 
 The project follows semantic versioning during beta using `0.x.y` versions. Breaking changes may happen before `1.0.0`, but they should still be documented.
 
+## [0.2.1] - 2026-06-11
+
+### Fixed
+
+- Documented the correct Yandex Direct lifecycle for newly created DRAFT campaigns: do **not** launch DRAFT campaigns with `campaigns.resume`; send draft ads to moderation with `ads.moderate` (`SelectionCriteria.Ids=[ad_ids]`).
+- Added the observed launch result for campaign `710691939`: `campaigns.resume` returned per-item `Code=8300` because the campaign was still a draft; `ads.moderate` for ads `17747346245..17747346249` returned empty per-ad errors and readback showed campaign `Status=MODERATION`, `State=ON`, ads `Status=MODERATION`, `State=OFF` pending moderation.
+- Clarified that `campaigns.resume` remains only for already-created stopped/suspended campaigns, while DRAFT-to-moderation is a separate Direct lifecycle step.
+
 ## [0.2.0] - 2026-06-11
 
 ### Added
@@ -29,9 +37,10 @@ The project follows semantic versioning during beta using `0.x.y` versions. Brea
     cache lines for preview vs apply).
   - `negativekeywordsharedsets.add` remains intentionally not implemented;
     group-level negatives are sent via `adgroups.add` `NegativeKeywords.Items`.
-  - `campaigns.add` does not force lifecycle status; activation is a
-    separate manual step via existing `/yandex/campaigns/{campaign_id}/resume`
-    with its own approval/idempotency gate.
+  - `campaigns.add` does not force lifecycle status; DRAFT-to-moderation is
+    handled outside the live-create chain. See `0.2.1` for the corrected
+    lifecycle note: use `ads.moderate` for newly created DRAFT ads, not
+    `campaigns.resume`.
   - `adgroups.add` items now always carry `RegionIds` (v5 rejects items
     without a geo target). The ids are resolved from `draft.region` via
     the explicit local map `_REGION_NAME_TO_V5_IDS` in `app/store.py`
@@ -48,8 +57,8 @@ The project follows semantic versioning during beta using `0.x.y` versions. Brea
     dry-run preview surfaces the same failure so the operator sees the
     same mode in both paths.
   - The `adgroups.add` payload does NOT carry a `Status` field on the
-    v5 items — lifecycle/moderation state is controlled by Direct and
-    the separate `resume` endpoint, not by the create chain.
+    v5 items — lifecycle/moderation state is controlled by Direct, not
+    by the create chain.
   - The `NegativeKeywords` block on `adgroups.add` is OPTIONAL on v5:
     when the draft has no negatives the block is omitted entirely;
     when it has items the block is included with the items. Empty

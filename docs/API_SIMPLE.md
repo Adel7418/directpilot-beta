@@ -368,8 +368,8 @@ POST /yandex/campaigns/live-create
 
 - отказоустойчивость fail-closed: на любом `AddResults.Errors`/`Error`/`missing Id` цепочка прерывается;
 - запись `live_create_campaign_failed` в аудит;
-- endpoint не делает автоактивацию/`resume`: запуск кампании после проверки выполняется отдельным вызовом
-  `POST /yandex/campaigns/{campaign_id}/resume` с его собственным `approved` + `idempotency_key` + `dry_run`.
+- endpoint не делает автоактивацию: новая Direct-кампания остаётся в `DRAFT`, пока её объявления не отправлены на модерацию;
+- **важно:** DRAFT-кампании нельзя выводить через `campaigns.resume`. Для draft-to-moderation используйте Direct `ads.moderate` с `SelectionCriteria.Ids=[ad_ids]`. `campaigns.resume` остаётся только для уже существующих остановленных/приостановленных кампаний.
 
 Регион показа (geo targeting):
 
@@ -528,6 +528,8 @@ GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/keywords -> count=32
 
 Это ограниченный live-control блок. В текущем `live_readonly` режиме реальные write-вызовы заблокированы; `dry_run=true` доступен для проверки сценария без изменения Директа.
 
+**Не использовать для DRAFT-кампаний.** `POST /yandex/campaigns/{campaign_id}/resume` не переводит новую черновую кампанию в модерацию. Для DRAFT после `live-create` нужно отправить DRAFT-объявления на модерацию через Direct API `ads.moderate` (`params.SelectionCriteria.Ids=[ad_ids]`). После успешного `ModerateResults` кампания переходит в `Status=MODERATION`, `State=ON`, а объявления остаются `Status=MODERATION`, `State=OFF` до решения модерации. Показы начнутся только после принятия модерацией при валидных группах, ключах, бюджете и расписании.
+
 ### Поставить кампанию на паузу
 
 ```http
@@ -560,11 +562,14 @@ POST /yandex/campaigns/{campaign_id}/resume
 
 Правила:
 
+- применимо только к уже созданным и остановленным/приостановленным кампаниям, не к `DRAFT`;
 - без `approved=true` вернётся ошибка;
 - `idempotency_key` обязателен;
 - при `dry_run=true` реальное состояние не меняется;
 - audit log фиксирует запрос;
 - реальные внешние write calls возможны только в отдельном режиме `live_write` при `dry_run=false`.
+
+Reference live launch result: для кампании `710691939` `campaigns.resume` вернул per-item `Code=8300` (`Кампания является черновиком`). Корректный вызов `ads.moderate` для объявлений `17747346245..17747346249` вернул `ModerateResults` без ошибок; readback: campaign `Status=MODERATION`, `State=ON`, ads `Status=MODERATION`, `State=OFF`. Network strategy осталась `SERVING_OFF`.
 
 ---
 
@@ -632,7 +637,7 @@ POST /simulations/budget
 - автоматическое создание `negativekeywordsharedsets.add` через отдельный endpoint;
 - автоматическую автоактивацию/модерационный handoff после live-create.
 
-Это сделано намеренно: текущий этап — контролируемый live-first с отдельной точкой активации через `POST /yandex/campaigns/{campaign_id}/resume` и отдельным `approved`/`idempotency_key`-гейтами.
+Это сделано намеренно: текущий этап — контролируемый live-first. Для новой DRAFT-кампании следующий ручной шаг — отправить объявления на модерацию через `ads.moderate`, а не `campaigns.resume`. `campaigns.resume` используется только позже для already-created кампаний, которые были остановлены/приостановлены.
 
 
 ### Расширенный read-only/API-first слой Яндекс Директа
