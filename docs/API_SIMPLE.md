@@ -1002,7 +1002,7 @@ GET /yandex/businesses     -> businesses.get
 GET /yandex/agency-clients -> agencyclients.get
 ```
 
-Назначение: агрегированный аудит внешнего вида объявлений (`ad-assets`), быстрые ссылки, визитки, BusinessId-привязка, изображения, креативы, фиды, организации и агентские клиенты. `GET /yandex/campaigns/{campaign_id}/ad-assets` — рекомендуемый endpoint для маркетолога: собирает все объявления с расширенными полями (Title, Title2, Text, Href, SitelinkSetId, BusinessId, VCardId, AdExtensionIds), разрешает быстрые ссылки, бизнесы и визитки в одном ответе. `GET /yandex/sitelinks` — низкоуровневый helper для прямого чтения наборов быстрых ссылок.
+Назначение: агрегированный аудит внешнего вида объявлений (`ad-assets`), быстрые ссылки, визитки, BusinessId-привязка, изображения, креативы, фиды, организации и агентские клиенты. `GET /yandex/campaigns/{campaign_id}/ad-assets` — рекомендуемый endpoint для маркетолога: собирает все объявления с расширенными полями (Title, Title2, Text, Href, SitelinkSetId, BusinessId, VCardId, AdExtensions), разрешает быстрые ссылки, бизнесы и визитки в одном ответе. `GET /yandex/sitelinks` — низкоуровневый helper для прямого чтения наборов быстрых ссылок.
 
 Практический контактный маршрут (детально: `docs/YANDEX_BUSINESS_CONTACTS.md`):
 

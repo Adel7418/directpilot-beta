@@ -61,7 +61,7 @@ def _make_client(settings: Settings, handler) -> YandexDirectClient:
 
 def test_sitelinks_get_omits_selection_criteria_when_no_ids_and_includes_field_names():
     """When no ids are passed, SelectionCriteria must be omitted.
-    FieldNames must include Id and Sitelinks; SitelinkFieldNames must
+    FieldNames must include Id; SitelinkFieldNames requests nested links.
     include Title, Href, Description.
     """
     captured: dict[str, Any] = {}
@@ -83,7 +83,7 @@ def test_sitelinks_get_omits_selection_criteria_when_no_ids_and_includes_field_n
     # SelectionCriteria must be absent (not empty dict) when no filter
     assert "SelectionCriteria" not in body["params"]
     assert "Id" in body["params"]["FieldNames"]
-    assert "Sitelinks" in body["params"]["FieldNames"]
+    assert "Sitelinks" not in body["params"]["FieldNames"]
     assert "Title" in body["params"]["SitelinkFieldNames"]
     assert "Href" in body["params"]["SitelinkFieldNames"]
     assert "Description" in body["params"]["SitelinkFieldNames"]
@@ -163,7 +163,7 @@ def test_sitelinks_get_missing_token_raises_before_network():
 def test_ads_get_detailed_includes_extended_text_ad_fields():
     """ads_get_detailed must request additional TextAd fields:
     Title2, DisplayUrlPath, SitelinkSetId, BusinessId, VCardId,
-    PreferVCardOverBusiness, AdExtensionIds.
+    PreferVCardOverBusiness, AdExtensions.
     """
     captured: dict[str, Any] = {}
 
@@ -185,7 +185,7 @@ def test_ads_get_detailed_includes_extended_text_ad_fields():
     tad_fields = body["params"]["TextAdFieldNames"]
     for f in ("Title", "Title2", "Text", "Href", "DisplayUrlPath",
               "SitelinkSetId", "BusinessId", "VCardId",
-              "PreferVCardOverBusiness", "AdExtensionIds"):
+              "PreferVCardOverBusiness", "AdExtensions"):
         assert f in tad_fields, f"Missing {f} in TextAdFieldNames"
     # Campaign filter
     assert body["params"]["SelectionCriteria"]["CampaignIds"] == [710382063]
@@ -351,7 +351,7 @@ def test_ad_assets_endpoint_live_readonly_aggregates_ads_and_sitelinks():
                                 "Href": "https://example.com", "SitelinkSetId": 42,
                                 "BusinessId": 11588384335, "VCardId": 999,
                                 "PreferVCardOverBusiness": "YES",
-                                "AdExtensionIds": [1, 2]}},
+                                "AdExtensions": [1, 2]}},
                 ]}
             })
         if service == "sitelinks":

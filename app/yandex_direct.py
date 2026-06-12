@@ -166,7 +166,7 @@ class YandexDirectClient:
         Returns the same envelope as ``ads_get`` but requests additional
         TextAd fields useful for marketing appearance audits: Title2,
         DisplayUrlPath, SitelinkSetId, BusinessId, VCardId,
-        PreferVCardOverBusiness, and AdExtensionIds.
+        PreferVCardOverBusiness, and AdExtensions.
         """
         campaign_id = self._direct_id(campaign_id)
         payload = {
@@ -191,7 +191,7 @@ class YandexDirectClient:
                     "BusinessId",
                     "VCardId",
                     "PreferVCardOverBusiness",
-                    "AdExtensionIds",
+                    "AdExtensions",
                 ],
             },
         }
@@ -302,7 +302,7 @@ class YandexDirectClient:
         offset: int | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "FieldNames": ["Id", "Sitelinks"],
+            "FieldNames": ["Id"],
             "SitelinkFieldNames": ["Title", "Href", "Description", "TurboPageId"],
         }
         if ids is not None:

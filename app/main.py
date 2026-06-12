@@ -1017,7 +1017,7 @@ def yandex_campaign_ad_assets(
                 business_id=str(biz_id) if biz_id is not None else None,
                 vcard_id=str(vc_id) if vc_id is not None else None,
                 prefer_vcard_over_business=text_ad.get("PreferVCardOverBusiness") if isinstance(text_ad.get("PreferVCardOverBusiness"), str) else None,
-                ad_extension_ids=text_ad.get("AdExtensionIds") if isinstance(text_ad.get("AdExtensionIds"), list) else None,
+                ad_extension_ids=text_ad.get("AdExtensions") if isinstance(text_ad.get("AdExtensions"), list) else None,
             )
             ads.append(ad_item)
 
