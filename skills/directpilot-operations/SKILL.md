@@ -47,6 +47,7 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/ad-groups`
    - `GET /yandex/campaigns/{campaign_id}/ads`
    - `GET /yandex/campaigns/{campaign_id}/keywords`
+   - `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида (заголовки, тексты, быстрые ссылки, организации, визитки)
 4. Read performance:
    - `GET /yandex/reports/summary?campaign_id=...&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`
    - `GET /yandex/reports/search-queries` when available for intent/minus-keyword analysis.

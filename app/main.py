@@ -57,6 +57,10 @@ from app.models import (
     YandexAdGroup,
     YandexAdGroupList,
     YandexAdList,
+    YandexAdAssetItem,
+    YandexAdAssetsMissing,
+    YandexAdAssetsResult,
+    YandexBusinessAssetItem,
     YandexCampaign,
     YandexCampaignFinance,
     YandexCampaignFinanceList,
@@ -70,6 +74,8 @@ from app.models import (
     YandexSearchApiResult,
     YandexSearchQueriesReport,
     YandexSearchQuery,
+    YandexSitelinkItem,
+    YandexSitelinkSetItem,
     YandexTimeTargetingRequest,
     YandexTimeTargetingHourly,
     YandexTimeTargetingReadResult,
@@ -77,6 +83,7 @@ from app.models import (
     YandexTimeTargetingSchedule,
     YandexVCardRequest,
     YandexVCardResult,
+    YandexVCardAssetItem,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError
@@ -929,10 +936,215 @@ def yandex_audience_targets(
 
 @app.get("/yandex/sitelinks", response_model=YandexRawResult)
 def yandex_sitelinks(
+    ids: list[int] | None = Query(default=None),
+    limit: int | None = Query(default=None),
+    offset: int | None = Query(default=None),
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> YandexRawResult:
-    return _call_raw_read(settings, client, "sitelinks", "get", lambda c: c.sitelinks_get())
+    return _call_raw_read(settings, client, "sitelinks", "get", lambda c: c.sitelinks_get(ids=ids, limit=limit, offset=offset))
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/ad-assets",
+    response_model=YandexAdAssetsResult,
+)
+def yandex_campaign_ad_assets(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdAssetsResult:
+    """Read-only campaign ad-assets aggregator for marketing/audit.
+
+    Returns ads with extended TextAd fields, resolved sitelink sets,
+    businesses, vcards, and callouts (not yet implemented).
+    No writes — only get/read methods.
+    """
+    if _is_live_read_mode(settings):
+        if client is None:
+            raise HTTPException(
+                status_code=409,
+                detail="This endpoint requires sandbox, live_readonly, or live_write mode with Yandex credentials",
+            )
+        direct = client
+        try:
+            ads_response = direct.ads_get_detailed(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+
+        if not ads_response.get("ok"):
+            err = ads_response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        f"Yandex Direct rejected ads.get: "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+
+        raw_ads = (ads_response.get("result") or {}).get("Ads") or []
+
+        # Extract ads with extended fields
+        ads: list[YandexAdAssetItem] = []
+        sitelink_set_ids: set[int] = set()
+        business_ids: set[int] = set()
+        vcard_ids: set[int] = set()
+
+        for a in raw_ads:
+            if not isinstance(a, dict):
+                continue
+            text_ad = a.get("TextAd") or {}
+            sl_set_id = text_ad.get("SitelinkSetId")
+            biz_id = text_ad.get("BusinessId")
+            vc_id = text_ad.get("VCardId")
+
+            ad_item = YandexAdAssetItem(
+                id=str(a.get("Id") or ""),
+                ad_group_id=str(a.get("AdGroupId") or ""),
+                campaign_id=str(a.get("CampaignId") or campaign_id),
+                status=str(a.get("Status") or "UNKNOWN"),
+                state=str(a.get("State") or "UNKNOWN"),
+                type=str(a.get("Type") or "TEXT_AD"),
+                title=str(text_ad.get("Title") or ""),
+                title2=text_ad.get("Title2") if isinstance(text_ad.get("Title2"), str) else None,
+                text=str(text_ad.get("Text") or ""),
+                href=str(text_ad.get("Href") or ""),
+                display_url_path=text_ad.get("DisplayUrlPath") if isinstance(text_ad.get("DisplayUrlPath"), str) else None,
+                sitelink_set_id=str(sl_set_id) if sl_set_id is not None else None,
+                business_id=str(biz_id) if biz_id is not None else None,
+                vcard_id=str(vc_id) if vc_id is not None else None,
+                prefer_vcard_over_business=text_ad.get("PreferVCardOverBusiness") if isinstance(text_ad.get("PreferVCardOverBusiness"), str) else None,
+                ad_extension_ids=text_ad.get("AdExtensionIds") if isinstance(text_ad.get("AdExtensionIds"), list) else None,
+            )
+            ads.append(ad_item)
+
+            if isinstance(sl_set_id, int):
+                sitelink_set_ids.add(sl_set_id)
+            if isinstance(biz_id, int):
+                business_ids.add(biz_id)
+            if isinstance(vc_id, int):
+                vcard_ids.add(vc_id)
+
+        # Resolve sitelinks
+        sitelinks_sets: list[YandexSitelinkSetItem] = []
+        if sitelink_set_ids:
+            try:
+                sl_response = direct.sitelinks_get(ids=sorted(sitelink_set_ids))
+            except YandexDirectError:
+                sl_response = None
+            if sl_response and sl_response.get("ok"):
+                sl_result = sl_response.get("result") or {}
+                for sl_set in sl_result.get("SitelinksSets") or []:
+                    sl_items = [
+                        YandexSitelinkItem(
+                            title=str(s.get("Title") or ""),
+                            href=s.get("Href") if isinstance(s.get("Href"), str) else None,
+                            description=s.get("Description") if isinstance(s.get("Description"), str) else None,
+                        )
+                        for s in (sl_set.get("Sitelinks") or [])
+                        if isinstance(s, dict)
+                    ]
+                    sitelinks_sets.append(
+                        YandexSitelinkSetItem(
+                            id=str(sl_set.get("Id") or ""),
+                            sitelinks=sl_items,
+                        )
+                    )
+
+        # Resolve businesses
+        businesses: list[YandexBusinessAssetItem] = []
+        if business_ids:
+            try:
+                biz_response = direct.businesses_get()
+            except YandexDirectError:
+                biz_response = None
+            if biz_response and biz_response.get("ok"):
+                biz_result = biz_response.get("result") or {}
+                for b in biz_result.get("Businesses") or []:
+                    if not isinstance(b, dict):
+                        continue
+                    b_id = b.get("Id")
+                    if b_id in business_ids:
+                        businesses.append(
+                            YandexBusinessAssetItem(
+                                id=str(b_id),
+                                name=str(b.get("Name") or ""),
+                                address=b.get("Address") if isinstance(b.get("Address"), str) else None,
+                            )
+                        )
+
+        # Resolve vcards
+        vcards: list[YandexVCardAssetItem] = []
+        if vcard_ids:
+            try:
+                vc_response = direct.vcards_get()
+            except YandexDirectError:
+                vc_response = None
+            if vc_response and vc_response.get("ok"):
+                vc_result = vc_response.get("result") or {}
+                for v in vc_result.get("VCards") or []:
+                    if not isinstance(v, dict):
+                        continue
+                    v_id = v.get("Id")
+                    if v_id in vcard_ids:
+                        phone_raw = v.get("Phone")
+                        phone_str: str | None = None
+                        if isinstance(phone_raw, dict):
+                            parts = [
+                                str(phone_raw.get("CountryCode") or ""),
+                                str(phone_raw.get("CityCode") or ""),
+                                str(phone_raw.get("PhoneNumber") or ""),
+                            ]
+                            phone_str = " ".join(p for p in parts if p) or None
+                        vcards.append(
+                            YandexVCardAssetItem(
+                                id=str(v_id),
+                                company_name=str(v.get("CompanyName") or ""),
+                                phone=phone_str,
+                            )
+                        )
+
+        return YandexAdAssetsResult(
+            campaign_id=campaign_id,
+            source="yandex",
+            read_only=True,
+            ads=ads,
+            sitelinks_sets=sitelinks_sets,
+            businesses=businesses,
+            vcards=vcards,
+            callouts=[],
+            missing=YandexAdAssetsMissing(),
+        )
+
+    # Mock mode
+    mock_ads = mock_yandex.list_ads(campaign_id)
+    ad_items = [
+        YandexAdAssetItem(
+            id=a.get("id", ""),
+            ad_group_id=a.get("ad_group_id", ""),
+            campaign_id=a.get("campaign_id", campaign_id),
+            status=a.get("status", "active"),
+            state="ON",
+            type="TEXT_AD",
+            title=a.get("title", ""),
+            text="",
+            href="",
+        )
+        for a in mock_ads
+    ]
+    return YandexAdAssetsResult(
+        campaign_id=campaign_id,
+        source="mock",
+        read_only=True,
+        ads=ad_items,
+        sitelinks_sets=[],
+        businesses=[],
+        vcards=[],
+        callouts=[],
+    )
 
 
 @app.get("/yandex/vcards", response_model=YandexRawResult)

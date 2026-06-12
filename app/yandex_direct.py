@@ -160,6 +160,43 @@ class YandexDirectClient:
         }
         return self._call("ads", payload)
 
+    def ads_get_detailed(self, campaign_id: int | str) -> dict[str, Any]:
+        """Read ads with extended TextAd fields for campaign asset audit.
+
+        Returns the same envelope as ``ads_get`` but requests additional
+        TextAd fields useful for marketing appearance audits: Title2,
+        DisplayUrlPath, SitelinkSetId, BusinessId, VCardId,
+        PreferVCardOverBusiness, and AdExtensionIds.
+        """
+        campaign_id = self._direct_id(campaign_id)
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {"CampaignIds": [campaign_id]},
+                "FieldNames": [
+                    "Id",
+                    "AdGroupId",
+                    "CampaignId",
+                    "Status",
+                    "State",
+                    "Type",
+                ],
+                "TextAdFieldNames": [
+                    "Title",
+                    "Title2",
+                    "Text",
+                    "Href",
+                    "DisplayUrlPath",
+                    "SitelinkSetId",
+                    "BusinessId",
+                    "VCardId",
+                    "PreferVCardOverBusiness",
+                    "AdExtensionIds",
+                ],
+            },
+        }
+        return self._call("ads", payload)
+
     def keywords_get(self, campaign_id: int | str) -> dict[str, Any]:
         campaign_id = self._direct_id(campaign_id)
         payload = {
@@ -258,8 +295,26 @@ class YandexDirectClient:
             {"method": "get", "params": {"SelectionCriteria": self._selection_by_campaign(campaign_id)}},
         )
 
-    def sitelinks_get(self) -> dict[str, Any]:
-        return self._call("sitelinks", {"method": "get", "params": {"SelectionCriteria": {}}})
+    def sitelinks_get(
+        self,
+        ids: list[int] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "FieldNames": ["Id", "Sitelinks"],
+            "SitelinkFieldNames": ["Title", "Href", "Description", "TurboPageId"],
+        }
+        if ids is not None:
+            params["SelectionCriteria"] = {"Ids": ids}
+        if limit is not None or offset is not None:
+            page: dict[str, int] = {}
+            if limit is not None:
+                page["Limit"] = limit
+            if offset is not None:
+                page["Offset"] = offset
+            params["Page"] = page
+        return self._call("sitelinks", {"method": "get", "params": params})
 
     def vcards_get(self) -> dict[str, Any]:
         return self._call(

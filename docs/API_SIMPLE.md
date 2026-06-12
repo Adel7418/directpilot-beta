@@ -990,7 +990,8 @@ GET /wordstat/regions-tree
 #### Расширения объявлений и ассеты
 
 ```text
-GET /yandex/sitelinks      -> sitelinks.get
+GET /yandex/campaigns/{campaign_id}/ad-assets  -> ads.get (detailed) + sitelinks.get + businesses.get + vcards.get — агрегированный аудит внешнего вида кампании (read-only)
+GET /yandex/sitelinks      -> sitelinks.get (низкоуровневый helper; для аудита внешнего вида используйте /yandex/campaigns/{campaign_id}/ad-assets)
 GET  /yandex/vcards        -> vcards.get
 POST /yandex/vcards        -> vcards.add (dry-run по умолчанию; live-write только через approved + idempotency_key + dry_run=false; для реальной записи Direct требует campaign_id)
 POST /yandex/ads/business  -> ads.update для привязки опубликованной организации BusinessId к TextAd (dry-run по умолчанию; live-write только через approved + idempotency_key + dry_run=false)
@@ -1001,7 +1002,7 @@ GET /yandex/businesses     -> businesses.get
 GET /yandex/agency-clients -> agencyclients.get
 ```
 
-Назначение: быстрые ссылки, визитки, BusinessId-привязка, изображения, креативы, фиды, организации и агентские клиенты. Эти endpoints нужны, чтобы программа могла строить полную карту аккаунта Директа, а не только кампании/ключи.
+Назначение: агрегированный аудит внешнего вида объявлений (`ad-assets`), быстрые ссылки, визитки, BusinessId-привязка, изображения, креативы, фиды, организации и агентские клиенты. `GET /yandex/campaigns/{campaign_id}/ad-assets` — рекомендуемый endpoint для маркетолога: собирает все объявления с расширенными полями (Title, Title2, Text, Href, SitelinkSetId, BusinessId, VCardId, AdExtensionIds), разрешает быстрые ссылки, бизнесы и визитки в одном ответе. `GET /yandex/sitelinks` — низкоуровневый helper для прямого чтения наборов быстрых ссылок.
 
 Практический контактный маршрут (детально: `docs/YANDEX_BUSINESS_CONTACTS.md`):
 

@@ -384,6 +384,86 @@ class YandexRawResult(BaseModel):
     read_only: bool = True
 
 
+# ---------------------------------------------------------------------------
+# Campaign ad-assets models (read-only, marketing/audit)
+# ---------------------------------------------------------------------------
+
+
+class YandexAdAssetItem(BaseModel):
+    """Single ad with extended marketing/asset fields."""
+
+    id: str
+    ad_group_id: str
+    campaign_id: str = ""
+    status: str = "UNKNOWN"
+    state: str = "UNKNOWN"
+    type: str = "TEXT_AD"
+    title: str = ""
+    title2: str | None = None
+    text: str = ""
+    href: str = ""
+    display_url_path: str | None = None
+    sitelink_set_id: str | None = None
+    business_id: str | None = None
+    vcard_id: str | None = None
+    prefer_vcard_over_business: str | None = None
+    ad_extension_ids: list[int] | None = None
+
+
+class YandexSitelinkItem(BaseModel):
+    """Individual sitelink within a sitelink set."""
+
+    title: str
+    href: str | None = None
+    description: str | None = None
+
+
+class YandexSitelinkSetItem(BaseModel):
+    """Sitelink set resolved from Direct."""
+
+    id: str
+    sitelinks: list[YandexSitelinkItem] = []
+
+
+class YandexBusinessAssetItem(BaseModel):
+    """Business profile asset."""
+
+    id: str
+    name: str = ""
+    address: str | None = None
+
+
+class YandexVCardAssetItem(BaseModel):
+    """VCard asset."""
+
+    id: str
+    company_name: str = ""
+    phone: str | None = None
+
+
+class YandexAdAssetsMissing(BaseModel):
+    """Explicit gaps for features not yet implemented."""
+
+    callouts: str = "not_implemented: Direct API v5 callouts (AdExtensions) read method is not yet mapped"
+
+
+class YandexAdAssetsResult(BaseModel):
+    """Aggregated campaign ad-assets response."""
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "mock"
+    read_only: bool = True
+    ads: list[YandexAdAssetItem] = []
+    sitelinks_sets: list[YandexSitelinkSetItem] = []
+    businesses: list[YandexBusinessAssetItem] = []
+    vcards: list[YandexVCardAssetItem] = []
+    callouts: list[Any] = []
+    missing: YandexAdAssetsMissing = YandexAdAssetsMissing()
+
+
+# ---------------------------------------------------------------------------
+
+
 class YandexVCardPhone(BaseModel):
     country_code: str = Field(default="7", min_length=1)
     city_code: str = Field(..., min_length=2)

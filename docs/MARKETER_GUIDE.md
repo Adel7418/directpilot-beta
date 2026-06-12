@@ -47,7 +47,9 @@ DirectPilot — единая прослойка для маркетолога:
 | Динамика спроса | `GET /wordstat/dynamics?phrase=...&regions=...&date_from=...&date_to=...&period=...` | сезонность/тренд |
 | Региональный спрос | `GET /wordstat/regions?phrase=...` | где спрос выше |
 | Найти id региона | `GET /wordstat/regions-tree` | region id/name |
-| Быстрые ссылки/визитки/креативы/организации | `GET /yandex/sitelinks`, `/yandex/vcards`, `/yandex/ad-images`, `/yandex/creatives`, `/yandex/businesses` | аудит ассетов и контактной привязки |
+| Аудит внешнего вида объявлений | `GET /yandex/campaigns/{campaign_id}/ad-assets` | заголовки, тексты, быстрые ссылки, визитки, организации, уточнения — всё для оценки внешнего вида кампании |
+| Быстрые ссылки (низкоуровневый helper) | `GET /yandex/sitelinks` | только чтение наборов быстрых ссылок — для аудита внешнего вида используйте `ad-assets` |
+| Визитки/креативы/организации | `GET /yandex/vcards`, `/yandex/ad-images`, `/yandex/creatives`, `/yandex/businesses` | аудит контактной привязки и креативов |
 | Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
 
 Важно по `GET /yandex/reports/summary`:
@@ -88,6 +90,7 @@ DirectPilot — единая прослойка для маркетолога:
 - `/yandex/retargeting-lists`, `/yandex/campaigns/{campaign_id}/audience-targets`
 - `/yandex/keywords-research/has-search-volume`, `/yandex/keywords-research/deduplicate`
 - `/yandex/reports/live/{report_type}`, `/yandex/reports/search-queries-live`
+- `/yandex/campaigns/{campaign_id}/ad-assets` — аудит внешнего вида объявлений (заголовки, тексты, быстрые ссылки, визитки, организации)
 - `/yandex/account/balance`, `/yandex/campaigns/finance`
 - `/metrika/counters`, `/metrika/counters/{counter_id}/goals`, `/metrika/counters/{counter_id}/summary`, `/metrika/counters/{counter_id}/traffic-sources`
 - `/wordstat/top`, `/wordstat/dynamics`, `/wordstat/regions`, `/wordstat/regions-tree`
@@ -117,7 +120,7 @@ DirectPilot — единая прослойка для маркетолога:
 
 1. `GET /health` и `GET /integrations/yandex/direct/status`.
 2. `GET /yandex/campaigns` — выбрать кампанию.
-3. Для кампании: ad-groups, ads, keywords.
+3. Для кампании: ad-groups, ads, keywords, **ad-assets (аудит внешнего вида)**.
 4. Отчеты: summary + search-queries.
 5. Финансы: account balance + campaigns finance.
 6. Метрика: counters → goals → summary → traffic-sources.
@@ -144,7 +147,8 @@ DirectPilot — единая прослойка для маркетолога:
 
 - `GET /yandex/vcards` — посмотреть визитки;
 - `GET /yandex/businesses` — посмотреть организации/BusinessId;
-- `GET /yandex/campaigns/{campaign_id}/ads` — проверить привязки `BusinessId`/`PreferVCardOverBusiness`/`VCardId`, если они есть в ответе.
+- `GET /yandex/campaigns/{campaign_id}/ads` — проверить привязки `BusinessId`/`PreferVCardOverBusiness`/`VCardId`, если они есть в ответе;
+- `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида: все объявления, разрешённые быстрые ссылки, бизнесы/организации и визитки в одном ответе.
 - Для сценария `error_code=3500` после `POST /yandex/vcards` используйте специальный runbook: `docs/YANDEX_BUSINESS_CONTACTS.md`.
 
 Если DirectPilot показывает, что создание визиток не поддерживается для кампании, маршрут — через организацию/Яндекс Бизнес, а не повторные попытки `vCards.add`.
