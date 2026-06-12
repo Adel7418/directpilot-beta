@@ -3411,6 +3411,94 @@
         }
       }
     },
+    "/yandex/campaigns/{campaign_id}/autotargeting": {
+      "get": {
+        "summary": "Yandex Autotargeting Read",
+        "description": "Read autotargeting settings for all ad groups in a campaign.\n\nPure read-only — no write gate. Available in all modes.\nReturns per-ad-group autotargeting categories and brand options\nfrom the ``---autotargeting`` keyword rows.",
+        "operationId": "yandex_autotargeting_read_yandex_campaigns__campaign_id__autotargeting_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAutotargetingReadResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Yandex Autotargeting Update",
+        "description": "Update autotargeting settings for ad groups in a campaign.\n\nStandard product gate contract:\n``dry_run=True`` (default) is preview-only and never performs a network\nwrite; the response includes the exact v5 ``keywords.update`` payload\nthat WOULD be sent, with ``applied=False``.\n\n``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,\n``approved=True`` and a valid ``idempotency_key``.\n\nCategories are always sent with all five booleans explicitly (``YES``\nor ``NO``) to avoid the Direct API pitfall where missing categories\ndefault to ``YES``.\n\nDefault preset for local service-search campaigns: ``exact_narrow``\n(Exact=YES, Narrow=YES, Alternative=NO, Accessory=NO, Broader=NO).\nBrand options default: WithoutBrands=YES, WithAdvertiserBrand=YES,\nWithCompetitorsBrand=NO.",
+        "operationId": "yandex_autotargeting_update_yandex_campaigns__campaign_id__autotargeting_post",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexAutotargetingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAutotargetingResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/metrika/counters": {
       "get": {
         "summary": "Metrika Counters",
@@ -4262,6 +4350,68 @@
           "items"
         ],
         "title": "AuditLog"
+      },
+      "AutotargetingBrandOptions": {
+        "properties": {
+          "without_brands": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "Without Brands",
+            "default": "YES"
+          },
+          "with_advertiser_brand": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "With Advertiser Brand",
+            "default": "YES"
+          },
+          "with_competitors_brand": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "With Competitors Brand",
+            "default": "NO"
+          }
+        },
+        "type": "object",
+        "title": "AutotargetingBrandOptions",
+        "description": "Yandex Direct v5 ``AutotargetingSettings.BrandOptions`` block."
+      },
+      "AutotargetingCategories": {
+        "properties": {
+          "exact": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "Exact",
+            "default": "YES"
+          },
+          "narrow": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "Narrow",
+            "default": "YES"
+          },
+          "alternative": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "Alternative",
+            "default": "NO"
+          },
+          "accessory": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "Accessory",
+            "default": "NO"
+          },
+          "broader": {
+            "type": "string",
+            "pattern": "^(YES|NO)$",
+            "title": "Broader",
+            "default": "NO"
+          }
+        },
+        "type": "object",
+        "title": "AutotargetingCategories",
+        "description": "Yandex Direct v5 ``AutotargetingSettings.Categories`` block.\n\nEvery category must be explicitly ``YES`` or ``NO`` to avoid the\nDirect API pitfall where missing categories silently default to\n``YES`` (all categories enabled)."
       },
       "BidSettings": {
         "properties": {
@@ -5470,6 +5620,35 @@
         ],
         "title": "PreviewPayload"
       },
+      "PriorityGoal": {
+        "properties": {
+          "goal_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Goal Id",
+            "description": "Metrika goal id."
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value",
+            "description": "Conversion value in RUBLES. Defaults to 1.0 when omitted."
+          }
+        },
+        "type": "object",
+        "required": [
+          "goal_id"
+        ],
+        "title": "PriorityGoal",
+        "description": "Single priority goal with optional conversion value.\n\n``value`` is in RUBLES (public REST convention).  The store\nconverts to Direct micros (× 1 000 000).  When ``value`` is\n``None`` or omitted, a default of 1.0 RUB is used (equal-weight\nmulti-goal convenience path)."
+      },
       "ProviderWarning": {
         "properties": {
           "code": {
@@ -6648,6 +6827,382 @@
         "title": "YandexAdsBusinessAttachSkipped",
         "description": "One ad the store decided NOT to attach the BusinessId to.\n\nThe most common reason is ``not_text_ad`` (e.g. an ``IMAGE_AD``\nwas returned by ``ads.get`` for the same campaign). The list is\nalways returned — empty when every target ad was a TextAd — so\nthe operator can see exactly which ads were excluded and why."
       },
+      "YandexAutotargetingReadItem": {
+        "properties": {
+          "ad_group_id": {
+            "type": "string",
+            "title": "Ad Group Id"
+          },
+          "ad_group_name": {
+            "type": "string",
+            "title": "Ad Group Name"
+          },
+          "autotargeting_keyword_id": {
+            "type": "string",
+            "title": "Autotargeting Keyword Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "serving_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serving Status"
+          },
+          "categories": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories"
+          },
+          "brand_options": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand Options"
+          },
+          "raw_provider": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Provider",
+            "description": "Raw keyword row from Direct API v5 keywords.get. Redacted in public responses — never contains tokens. Provided for debugging/support."
+          }
+        },
+        "type": "object",
+        "required": [
+          "ad_group_id",
+          "ad_group_name",
+          "autotargeting_keyword_id",
+          "status"
+        ],
+        "title": "YandexAutotargetingReadItem",
+        "description": "One ad group's autotargeting row from ``keywords.get``."
+      },
+      "YandexAutotargetingReadResult": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "yandex"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          },
+          "ad_groups": {
+            "items": {
+              "$ref": "#/components/schemas/YandexAutotargetingReadItem"
+            },
+            "type": "array",
+            "title": "Ad Groups"
+          },
+          "default_preset": {
+            "type": "string",
+            "title": "Default Preset",
+            "default": "exact_narrow"
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_id"
+        ],
+        "title": "YandexAutotargetingReadResult",
+        "description": "Response envelope for ``GET /yandex/campaigns/{campaign_id}/autotargeting``."
+      },
+      "YandexAutotargetingRequest": {
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 6,
+            "title": "Idempotency Key"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "create_missing": {
+            "type": "boolean",
+            "title": "Create Missing",
+            "description": "If ``True``, create new ``---autotargeting`` rows for ad groups that lack one via ``keywords.add``. Default ``False`` means the endpoint will skip or report ad groups without autotargeting rows in ``skipped_ad_group_ids``.  ``create_missing=True`` is gated by the same ``dry_run`` / ``live_write`` / ``approved`` / ``idempotency_key`` contract: dry-run previews the add payload alongside the update payload; apply dispatches real writes.",
+            "default": false
+          },
+          "preset": {
+            "type": "string",
+            "enum": [
+              "exact_narrow",
+              "exact_narrow_broader",
+              "custom"
+            ],
+            "title": "Preset",
+            "description": "Named autotargeting preset. ``exact_narrow`` is the safe default for local service-search campaigns. ``exact_narrow_broader`` adds Broader category. ``custom`` means the caller provides explicit ``categories`` and/or ``brand_options``.",
+            "default": "exact_narrow"
+          },
+          "ad_group_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Ids",
+            "description": "List of ad group ids to target. Omit to target ALL ad groups in the campaign that have autotargeting rows."
+          },
+          "categories": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutotargetingCategories"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit category configuration. Required only when ``preset=custom``. Every category must be explicitly ``YES`` or ``NO`` — missing categories are NOT defaulted to ``NO`` by this model."
+          },
+          "brand_options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutotargetingBrandOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit brand-option configuration. Defaults to own-brand + no-brand yes, competitors no when omitted."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "YandexAutotargetingRequest",
+        "description": "Body of ``POST /yandex/campaigns/{campaign_id}/autotargeting``.\n\nStandard product gate contract applies:\n``dry_run=True`` (default) is preview-only;\n``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,\n``approved=True`` and a valid ``idempotency_key``.\n\nOne of ``preset``, ``categories``, or ``ad_group_overrides``\ndetermines the autotargeting settings to apply. When a\n``preset`` is used it defines the fallback categories and\nbrand options."
+      },
+      "YandexAutotargetingResult": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "yandex"
+          },
+          "audit_id": {
+            "type": "string",
+            "title": "Audit Id"
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset"
+          },
+          "categories_applied": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories Applied"
+          },
+          "brand_options_applied": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brand Options Applied"
+          },
+          "targeted_ad_group_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Targeted Ad Group Ids"
+          },
+          "skipped_ad_group_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Skipped Ad Group Ids",
+            "description": "Ad groups without autotargeting rows (skipped)."
+          },
+          "updated_keyword_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Updated Keyword Ids"
+          },
+          "created_keyword_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Created Keyword Ids",
+            "description": "Yandex keyword ids returned by ``keywords.add`` for newly-created ``---autotargeting`` rows. Present only when ``create_missing=True`` was used."
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview",
+            "description": "The v5 ``keywords.update`` payload that WOULD be sent. Present on dry-run; ``None`` on a successful live apply."
+          },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "type": "array",
+            "title": "Provider Warnings"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "YandexAutotargetingResult",
+        "description": "Response envelope for ``POST /yandex/campaigns/{campaign_id}/autotargeting``.\n\n* ``dry_run=True`` returns ``applied=False`` with ``payload_preview``\n  (exact ``keywords.update`` payload that WOULD be sent).\n* ``dry_run=False`` + ``live_write`` returns ``applied=True``."
+      },
       "YandexBusinessAssetItem": {
         "properties": {
           "id": {
@@ -7343,6 +7898,19 @@
             "title": "Counter Ids",
             "description": "CounterIds attached to the campaign in Direct v5, if any."
           },
+          "priority_goals": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority Goals",
+            "description": "Raw ``TextCampaign.PriorityGoals`` block as returned by v5 ``campaigns.get``. Contains ``Items`` list with ``GoalId`` and ``Value`` (in Direct micros). Only present for multi-goal WB_MAXIMUM_CONVERSION_RATE (GoalId=13)."
+          },
           "strategy": {
             "anyOf": [
               {
@@ -7367,7 +7935,7 @@
               }
             ],
             "title": "Strategy Summary",
-            "description": "Normalized human-readable strategy summary. Example: {search: {type: 'WB_MAXIMUM_CONVERSION_RATE', goal_id: 567732835, weekly_spend_limit_rub: 7000.0, bid_ceiling_rub: 1500.0}, network: {type: 'SERVING_OFF'}}."
+            "description": "Normalized human-readable strategy summary. Example: {search: {type: 'WB_MAXIMUM_CONVERSION_RATE', goal_id: 567732835, weekly_spend_limit_rub: 7000.0, bid_ceiling_rub: 1500.0}, network: {type: 'SERVING_OFF'}, priority_goals: [{goal_id: 1, value_rub: 10.0}, ...]}."
           }
         },
         "type": "object",
@@ -7375,7 +7943,7 @@
           "campaign_id"
         ],
         "title": "YandexStrategyReadResult",
-        "description": "Response envelope for ``GET /yandex/campaigns/{campaign_id}/strategy``.\n\nRead-only in all modes — no ``approved``, no ``idempotency_key``,\nno network write call. Returns the current campaign type, strategy\nblock, CounterIds (if available), DailyBudget (if relevant),\nState, Status, and Name from Yandex Direct v5 ``campaigns.get``."
+        "description": "Response envelope for ``GET /yandex/campaigns/{campaign_id}/strategy``.\n\nRead-only in all modes — no ``approved``, no ``idempotency_key``,\nno network write call. Returns the current campaign type, strategy\nblock, CounterIds (if available), DailyBudget (if relevant),\nState, Status, Name, and PriorityGoals (if any) from\nYandex Direct v5 ``campaigns.get``."
       },
       "YandexStrategyRequest": {
         "properties": {
@@ -7401,10 +7969,47 @@
             "default": "WB_MAXIMUM_CONVERSION_RATE"
           },
           "goal_id": {
-            "type": "integer",
-            "minimum": 1.0,
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Goal Id",
-            "description": "Metrika goal id for WB_MAXIMUM_CONVERSION_RATE."
+            "description": "Metrika goal id for WB_MAXIMUM_CONVERSION_RATE (single-goal mode)."
+          },
+          "goal_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal Ids",
+            "description": "Multiple Metrika goal ids for equal-weight multi-goal optimization. Max 30 items, unique, positive. Sets ``GoalId=13`` on the strategy and populates ``PriorityGoals.Items`` with equal 1.0 RUB values."
+          },
+          "priority_goals": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/PriorityGoal"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority Goals",
+            "description": "Explicit priority goals with per-goal conversion values in RUBLES. Max 30 items, unique positive goal ids. Sets ``GoalId=13`` on the strategy and populates ``PriorityGoals.Items``."
           },
           "weekly_spend_limit": {
             "type": "number",
@@ -7454,11 +8059,10 @@
         "required": [
           "approved",
           "idempotency_key",
-          "goal_id",
           "weekly_spend_limit"
         ],
         "title": "YandexStrategyRequest",
-        "description": "Body of ``POST /yandex/campaigns/{campaign_id}/strategy``.\n\nUpdates the search TextCampaign.BiddingStrategy for an existing\ncampaign. Currently supports switching the search channel to\n``WB_MAXIMUM_CONVERSION_RATE``. The standard product gate contract\napplies: ``dry_run=True`` is preview-only (default); real apply\nrequires ``DIRECTPILOT_MODE=live_write``, ``approved=True``,\n``idempotency_key``, and ``dry_run=False``.\n\n``weekly_spend_limit`` and ``bid_ceiling`` are in RUBLES\n(public REST convention). The store converts to Direct micros\n(multiply by 1_000_000) before building the v5 payload. The\nconversion is exact and documented."
+        "description": "Body of ``POST /yandex/campaigns/{campaign_id}/strategy``.\n\nUpdates the search TextCampaign.BiddingStrategy for an existing\ncampaign. Currently supports switching the search channel to\n``WB_MAXIMUM_CONVERSION_RATE``. The standard product gate contract\napplies: ``dry_run=True`` is preview-only (default); real apply\nrequires ``DIRECTPILOT_MODE=live_write``, ``approved=True``,\n``idempotency_key``, and ``dry_run=False``.\n\nThe caller MUST choose exactly ONE goal-selection mode:\n\n* **Single goal** (backward-compatible): set ``goal_id``.\n* **Multi-goal equal weight**: set ``goal_ids`` (list of goal ids,\n  default conversion value 1.0 RUB each).\n* **Multi-goal explicit values**: set ``priority_goals`` (list of\n  ``{goal_id, value}`` objects with values in RUBLES).\n\n``weekly_spend_limit`` and ``bid_ceiling`` are in RUBLES\n(public REST convention). The store converts to Direct micros\n(multiply by 1_000_000) before building the v5 payload. The\nconversion is exact and documented."
       },
       "YandexStrategyResult": {
         "properties": {

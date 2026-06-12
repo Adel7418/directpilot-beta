@@ -55,6 +55,14 @@ from app.models import (
     YandexStrategyReadResult,
     YandexStrategyRequest,
     YandexStrategyResult,
+    MULTI_GOAL_STRATEGY_ID,
+    # Autotargeting
+    AUTOTARGETING_CATEGORIES,
+    AUTOTARGETING_BRAND_OPTIONS,
+    YandexAutotargetingReadItem,
+    YandexAutotargetingReadResult,
+    YandexAutotargetingRequest,
+    YandexAutotargetingResult,
 )
 from app.yandex_direct import YandexDirectClient, YandexDirectError
 
@@ -373,6 +381,9 @@ class MockStore:
         # Strategy update results, keyed by (campaign_id, idempotency_key).
         # Mirrors time_targeting_results_by_key contract.
         self._strategy_results_by_key: dict[str, Any] = {}
+        # Autotargeting update results, keyed by (campaign_id, idempotency_key).
+        # Mirrors time_targeting_results_by_key / _strategy_results_by_key contract.
+        self._autotargeting_results_by_key: dict[str, Any] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -1816,7 +1827,13 @@ class MockStore:
         settings: Settings | None = None,
         client: YandexDirectClient | None = None,
     ) -> "YandexStrategyResult":
-        """Apply a strategy update for an existing campaign."""
+        """Apply a strategy update for an existing campaign.
+
+        Supports single-goal (``goal_id``) and multi-goal modes
+        (``goal_ids`` / ``priority_goals``).  Multi-goal sets
+        ``WbMaximumConversionRate.GoalId=13`` and populates
+        ``TextCampaign.PriorityGoals.Items``.
+        """
 
         if not payload.approved:
             raise ValueError("Action requires explicit approval")
@@ -1824,6 +1841,39 @@ class MockStore:
         mode = settings.directpilot_mode if settings is not None else "mock"
         is_live = mode in ("sandbox", "live_readonly", "live_write")
         can_write = mode == "live_write"
+
+        # --- Resolve goal mode --------------------------------------------------
+        _DEFAULT_PRIORITY_VALUE_RUB = 1.0  # equal-weight convenience default
+
+        single_goal_id: int | None = payload.goal_id
+        priority_goals_items: list[dict[str, Any]] | None = None
+
+        if payload.goal_ids is not None:
+            # Equal-weight multi-goal: GoalId=13, equal value 1.0 RUB each
+            priority_goals_items = [
+                {
+                    "GoalId": gid,
+                    "Value": int(_DEFAULT_PRIORITY_VALUE_RUB * self._MICROS_PER_RUBLE),
+                }
+                for gid in payload.goal_ids
+            ]
+        elif payload.priority_goals is not None:
+            # Explicit priority goals: GoalId=13, caller-provided RUB values
+            priority_goals_items = [
+                {
+                    "GoalId": pg.goal_id,
+                    "Value": int(
+                        (pg.value if pg.value is not None else _DEFAULT_PRIORITY_VALUE_RUB)
+                        * self._MICROS_PER_RUBLE
+                    ),
+                }
+                for pg in payload.priority_goals
+            ]
+
+        resolved_goal_id: int = (
+            single_goal_id if single_goal_id is not None else MULTI_GOAL_STRATEGY_ID
+        )
+        is_multi_goal = single_goal_id is None
 
         # Idempotency cache check (mirrors time-targeting).
         cache_key = f"strategy:{campaign_id}:{payload.idempotency_key}"
@@ -1892,7 +1942,7 @@ class MockStore:
         # Build the Search strategy from request.
         # Values in RUBLES → convert to micros for Direct.
         search_wb: dict[str, Any] = {
-            "GoalId": payload.goal_id,
+            "GoalId": resolved_goal_id,
             "WeeklySpendLimit": int(
                 payload.weekly_spend_limit * self._MICROS_PER_RUBLE
             ),
@@ -1938,6 +1988,18 @@ class MockStore:
             "BiddingStrategy": new_strategy,
         }
 
+        # PriorityGoals: always explicit to avoid ambiguous Direct API
+        # semantics.  Single-goal mode clears any previously-set
+        # PriorityGoals with Items=[].  Multi-goal mode populates
+        # Items with the resolved priority goals.
+        text_campaign_block["PriorityGoals"] = {
+            "Items": (
+                list(priority_goals_items)
+                if priority_goals_items is not None
+                else []
+            ),
+        }
+
         # Build the campaigns.update payload entry.
         campaign_entry: dict[str, Any] = {
             "Id": YandexDirectClient._direct_id(campaign_id),
@@ -1955,7 +2017,7 @@ class MockStore:
         strategy_applied: dict[str, Any] = {
             "search": {
                 "type": payload.strategy_type,
-                "goal_id": payload.goal_id,
+                "goal_id": resolved_goal_id,
                 "weekly_spend_limit_rub": payload.weekly_spend_limit,
                 "weekly_spend_limit_micros": int(
                     payload.weekly_spend_limit * self._MICROS_PER_RUBLE
@@ -1965,6 +2027,14 @@ class MockStore:
                 "type": new_network.get("BiddingStrategyType", "UNKNOWN"),
             },
         }
+        if is_multi_goal and priority_goals_items is not None:
+            strategy_applied["priority_goals"] = [
+                {
+                    "goal_id": pg["GoalId"],
+                    "value_rub": pg["Value"] / self._MICROS_PER_RUBLE,
+                }
+                for pg in priority_goals_items
+            ]
         if payload.bid_ceiling is not None:
             strategy_applied["search"]["bid_ceiling_rub"] = payload.bid_ceiling
             strategy_applied["search"]["bid_ceiling_micros"] = int(
@@ -4236,6 +4306,450 @@ class MockStore:
                     "idempotency_key": payload.idempotency_key,
                     "mode": mode,
                     "ad_ids": payload.ad_ids,
+                    "yandex_error": str(safe),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise safe from exc
+
+    # ------------------------------------------------------------------
+    # Autotargeting settings read / update
+    # ------------------------------------------------------------------
+
+    def yandex_autotargeting_read(
+        self,
+        campaign_id: str,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "YandexAutotargetingReadResult":
+        """Read autotargeting settings for all ad groups in a campaign.
+
+        Uses ``keywords.get`` with ``AutotargetingSettingsCategoriesFieldNames``
+        and ``AutotargetingSettingsBrandOptionsFieldNames`` to extract the
+        current autotargeting configuration from each ``---autotargeting`` row.
+        """
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+
+        if is_live and client is not None:
+            try:
+                kw_response = client.keywords_get_autotargeting(campaign_id)
+            except YandexDirectError as exc:
+                raise exc
+            if not kw_response.get("ok"):
+                err = kw_response.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected keywords.get (autotargeting): "
+                    f"error_code={err.get('error_code')!r}"
+                )
+
+            kw_result = kw_response.get("result") or {}
+            raw_keywords = kw_result.get("Keywords") or []
+
+            # Also read ad groups for names
+            try:
+                ag_response = client.adgroups_get(campaign_id)
+            except YandexDirectError:
+                ag_response = None
+
+            raw_adgroups = (
+                (ag_response.get("result") or {}).get("AdGroups") or []
+                if ag_response and ag_response.get("ok")
+                else []
+            )
+
+            ag_name_by_id: dict[str, str] = {}
+            for ag in raw_adgroups:
+                if isinstance(ag, dict):
+                    agid = str(ag.get("Id") or ag.get("id") or "")
+                    ag_name_by_id[agid] = str(
+                        ag.get("Name") or ag.get("name") or ""
+                    )
+
+            read_items: list[YandexAutotargetingReadItem] = []
+            for kw in raw_keywords:
+                if not isinstance(kw, dict):
+                    continue
+                keyword_text = str(kw.get("Keyword") or "")
+                if keyword_text != "---autotargeting":
+                    continue
+
+                kw_id = str(kw.get("Id") or kw.get("id") or "")
+                ag_id = str(kw.get("AdGroupId") or kw.get("adGroupId") or "")
+
+                # Extract categories from the keyword row
+                raw_cats = kw.get("AutotargetingSettingsCategories")
+                categories: dict[str, str] | None = None
+                if isinstance(raw_cats, dict):
+                    categories = {
+                        k: str(raw_cats[k]) if k in raw_cats else "NO"
+                        for k in AUTOTARGETING_CATEGORIES
+                    }
+
+                raw_brands = kw.get("AutotargetingSettingsBrandOptions")
+                brand_options: dict[str, str] | None = None
+                if isinstance(raw_brands, dict):
+                    brand_options = {
+                        k: str(raw_brands[k]) if k in raw_brands else "NO"
+                        for k in AUTOTARGETING_BRAND_OPTIONS
+                    }
+
+                read_items.append(
+                    YandexAutotargetingReadItem(
+                        ad_group_id=ag_id,
+                        ad_group_name=ag_name_by_id.get(ag_id, ""),
+                        autotargeting_keyword_id=kw_id,
+                        status=str(kw.get("Status") or kw.get("status") or "UNKNOWN"),
+                        state=str(kw.get("State") or kw.get("state") or None) if kw.get("State") is not None else None,
+                        serving_status=str(kw.get("ServingStatus") or kw.get("servingStatus") or None) if kw.get("ServingStatus") is not None else None,
+                        categories=categories,
+                        brand_options=brand_options,
+                        raw_provider=dict(kw),
+                    )
+                )
+
+            return YandexAutotargetingReadResult(
+                campaign_id=campaign_id,
+                source="yandex",
+                read_only=True,
+                ad_groups=read_items,
+                default_preset="exact_narrow",
+            )
+
+        # Mock fallback
+        from app.yandex_facade import mock_yandex
+        mock_data = mock_yandex.list_autotargeting(campaign_id)
+        return YandexAutotargetingReadResult(
+            campaign_id=campaign_id,
+            source="mock",
+            read_only=True,
+            ad_groups=[
+                YandexAutotargetingReadItem(**item)
+                for item in mock_data
+            ],
+            default_preset="exact_narrow",
+        )
+
+    def yandex_autotargeting_update(
+        self,
+        campaign_id: str,
+        payload: "YandexAutotargetingRequest",
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "YandexAutotargetingResult":
+        """Apply autotargeting settings to an existing campaign via v5 ``keywords.update``.
+
+        Dry-run returns the exact ``keywords.update`` payload preview without
+        touching the network. Live apply reads current autotargeting rows
+        via ``keywords.get``, builds the update payload with all five
+        category booleans + all three brand booleans explicitly, and
+        dispatches ``keywords.update``.
+        """
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # Resolve effective settings
+        categories = payload.resolve_categories()
+        brand_options = payload.resolve_brand_options()
+
+        # Idempotency cache check (mirrors strategy/time-targeting).
+        cache_key = f"autotargeting:{campaign_id}:{payload.idempotency_key}"
+        if cache_key in self._autotargeting_results_by_key:
+            cached = self._autotargeting_results_by_key[cache_key]
+            if cached.dry_run != payload.dry_run:
+                raise YandexDirectError(
+                    f"Idempotency key {payload.idempotency_key!r} was "
+                    f"previously used with dry_run={cached.dry_run}; "
+                    f"replay with dry_run={payload.dry_run} is not allowed"
+                )
+            return cached
+
+        # Read current autotargeting rows
+        if is_live and client is not None:
+            try:
+                kw_response = client.keywords_get_autotargeting(campaign_id)
+            except YandexDirectError as exc:
+                raise exc
+            if not kw_response.get("ok"):
+                err = kw_response.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected keywords.get (autotargeting): "
+                    f"error_code={err.get('error_code')!r}"
+                )
+            kw_result = kw_response.get("result") or {}
+            raw_keywords = kw_result.get("Keywords") or []
+        elif not is_live:
+            # Mock fallback for dry-run preview in mock mode
+            from app.yandex_facade import mock_yandex
+            mock_data = mock_yandex.list_autotargeting(campaign_id)
+            raw_keywords = [
+                {"Id": item["autotargeting_keyword_id"],
+                 "AdGroupId": item["ad_group_id"],
+                 "Keyword": "---autotargeting",
+                 "State": item.get("state", "ON"),
+                 "Status": item.get("status", "ACCEPTED"),
+                 "ServingStatus": item.get("serving_status", "ELIGIBLE")}
+                for item in mock_data
+            ]
+        else:
+            raw_keywords = []
+
+        # Filter to autotargeting rows
+        autotargeting_rows: list[dict[str, Any]] = []
+        for kw in raw_keywords:
+            if not isinstance(kw, dict):
+                continue
+            if str(kw.get("Keyword") or "") == "---autotargeting":
+                autotargeting_rows.append(kw)
+
+        # Build a map of ad_group_id -> autotargeting row
+        autotargeting_by_ag: dict[str, dict] = {}
+        for row in autotargeting_rows:
+            ag_id = str(row.get("AdGroupId") or row.get("adGroupId") or "")
+            if ag_id:
+                autotargeting_by_ag[ag_id] = row
+
+        # Determine which ad groups to target
+        if payload.ad_group_ids is not None:
+            target_ag_ids = list(payload.ad_group_ids)
+        else:
+            target_ag_ids = list(autotargeting_by_ag.keys())
+
+        # Build keywords.update payload for existing rows AND (optionally)
+        # keywords.add payload for ad groups that lack autotargeting rows.
+        update_items: list[dict[str, Any]] = []
+        add_items: list[dict[str, Any]] = []
+        targeted_ids: list[str] = []
+        skipped_ad_group_ids: list[str] = []
+        add_targeted_ids: list[str] = []
+
+        for ag_id in target_ag_ids:
+            row = autotargeting_by_ag.get(ag_id)
+            if row is not None:
+                kw_id = row.get("Id") or row.get("id")
+                if kw_id is not None:
+                    update_items.append({
+                        "Id": int(kw_id) if isinstance(kw_id, (int, str)) and str(kw_id).isdigit() else kw_id,
+                        "AutotargetingSettings": {
+                            "Categories": dict(categories),
+                            "BrandOptions": dict(brand_options),
+                        },
+                    })
+                    targeted_ids.append(ag_id)
+                else:
+                    skipped_ad_group_ids.append(ag_id)
+            elif payload.create_missing:
+                # Build a keywords.add item with explicit autotargeting settings
+                add_items.append({
+                    "Keyword": "---autotargeting",
+                    "AdGroupId": int(ag_id) if ag_id.isdigit() else ag_id,
+                    "AutotargetingSettings": {
+                        "Categories": dict(categories),
+                        "BrandOptions": dict(brand_options),
+                    },
+                })
+                add_targeted_ids.append(ag_id)
+            else:
+                skipped_ad_group_ids.append(ag_id)
+
+        # Fail closed if nothing to do
+        if not update_items and not add_items:
+            raise YandexDirectError(
+                "No autotargeting rows found for the specified campaign/ad groups. "
+                "Set create_missing=true to create new ---autotargeting rows via "
+                "keywords.add, or provide ad_group_ids with existing autotargeting rows."
+            )
+
+        payload_preview: dict[str, Any] = {
+            "update": {
+                "method": "update",
+                "params": {"Keywords": update_items},
+            },
+        }
+        if add_items:
+            payload_preview["add"] = {
+                "method": "add",
+                "params": {"Keywords": add_items},
+            }
+
+        # Dry-run preview
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_autotargeting_requested",
+                campaign_id,
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex" if is_live else "mock",
+                    "reason": payload.reason,
+                    "preset": payload.preset,
+                    "categories_sent": categories,
+                    "brand_options_sent": brand_options,
+                    "targeted_ad_group_ids": targeted_ids,
+                    "add_targeted_ad_group_ids": add_targeted_ids,
+                    "skipped_ad_group_ids": skipped_ad_group_ids,
+                    "updated_keyword_ids": [
+                        str(item["Id"]) for item in update_items
+                    ],
+                    "add_items_count": len(add_items),
+                    "create_missing": payload.create_missing,
+                    "stage": "dry_run_preview",
+                },
+            )
+            result = YandexAutotargetingResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                source="yandex" if is_live else "mock",
+                audit_id=audit.id,
+                preset=payload.preset,
+                categories_applied=categories,
+                brand_options_applied=brand_options,
+                targeted_ad_group_ids=targeted_ids + add_targeted_ids,
+                skipped_ad_group_ids=skipped_ad_group_ids,
+                updated_keyword_ids=[str(item["Id"]) for item in update_items],
+                created_keyword_ids=[],
+                payload_preview=payload_preview,
+            )
+            self._autotargeting_results_by_key[cache_key] = result
+            return result
+
+        # Apply gate
+        if not can_write:
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch autotargeting mutations"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live autotargeting writes"
+            )
+
+        try:
+            total_units = 0
+            provider_warnings: list[Any] = []
+            created_kw_ids: list[str] = []
+
+            # Create new autotargeting rows via keywords.add (if create_missing=true)
+            if add_items:
+                yandex_result = client.keywords_add(add_items)
+                if not yandex_result.get("ok"):
+                    err = yandex_result.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected keywords.add (autotargeting): "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                total_units += _safe_units(yandex_result.get("units"))
+                provider_warnings.extend(_provider_warnings_from_result(yandex_result))
+                # Extract ids from AddResults
+                add_result = yandex_result.get("result") or {}
+                add_results_list = add_result.get("AddResults") or []
+                for ar in add_results_list:
+                    if isinstance(ar, dict) and ar.get("Id") is not None:
+                        created_kw_ids.append(str(ar["Id"]))
+
+            # Update existing autotargeting rows
+            if update_items:
+                yandex_result = client.keywords_update(update_items)
+                if not yandex_result.get("ok"):
+                    err = yandex_result.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected keywords.update: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                total_units += _safe_units(yandex_result.get("units"))
+                provider_warnings.extend(_provider_warnings_from_result(yandex_result))
+
+            sent_units = total_units
+
+            stages = []
+            if add_items:
+                stages.append("keywords.add")
+            if update_items:
+                stages.append("keywords.update")
+
+            audit = self.append_audit(
+                "yandex_autotargeting_applied",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex",
+                    "reason": payload.reason,
+                    "preset": payload.preset,
+                    "categories_sent": categories,
+                    "brand_options_sent": brand_options,
+                    "targeted_ad_group_ids": targeted_ids,
+                    "add_targeted_ad_group_ids": add_targeted_ids,
+                    "skipped_ad_group_ids": skipped_ad_group_ids,
+                    "updated_keyword_ids": [
+                        str(item["Id"]) for item in update_items
+                    ],
+                    "created_keyword_ids": created_kw_ids,
+                    "create_missing": payload.create_missing,
+                    "add_items_count": len(add_items),
+                    "yandex_units": sent_units,
+                    "provider_warnings": [pw.model_dump() for pw in provider_warnings],
+                    "stage": "+".join(stages) if stages else "none",
+                    "applied": True,
+                },
+            )
+            result = YandexAutotargetingResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                audit_id=audit.id,
+                preset=payload.preset,
+                categories_applied=categories,
+                brand_options_applied=brand_options,
+                targeted_ad_group_ids=targeted_ids + add_targeted_ids,
+                skipped_ad_group_ids=skipped_ad_group_ids,
+                updated_keyword_ids=[str(item["Id"]) for item in update_items],
+                created_keyword_ids=created_kw_ids,
+                provider_warnings=provider_warnings,
+                yandex_units=sent_units,
+            )
+            self._autotargeting_results_by_key[cache_key] = result
+            return result
+        except YandexDirectError as exc:
+            self.append_audit(
+                "yandex_autotargeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+        except Exception as exc:
+            safe = YandexDirectError(
+                f"unexpected error during autotargeting update: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.append_audit(
+                "yandex_autotargeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
                     "yandex_error": str(safe),
                     "exception_type": type(exc).__name__,
                 },

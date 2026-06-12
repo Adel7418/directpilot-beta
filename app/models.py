@@ -1484,7 +1484,8 @@ class YandexStrategyReadResult(BaseModel):
     Read-only in all modes — no ``approved``, no ``idempotency_key``,
     no network write call. Returns the current campaign type, strategy
     block, CounterIds (if available), DailyBudget (if relevant),
-    State, Status, and Name from Yandex Direct v5 ``campaigns.get``.
+    State, Status, Name, and PriorityGoals (if any) from
+    Yandex Direct v5 ``campaigns.get``.
     """
 
     campaign_id: str
@@ -1518,6 +1519,15 @@ class YandexStrategyReadResult(BaseModel):
         default=None,
         description="CounterIds attached to the campaign in Direct v5, if any.",
     )
+    priority_goals: dict | None = Field(
+        default=None,
+        description=(
+            "Raw ``TextCampaign.PriorityGoals`` block as returned by v5 "
+            "``campaigns.get``. Contains ``Items`` list with ``GoalId`` "
+            "and ``Value`` (in Direct micros). Only present for multi-goal "
+            "WB_MAXIMUM_CONVERSION_RATE (GoalId=13)."
+        ),
+    )
     strategy: dict | None = Field(
         default=None,
         description=(
@@ -1532,8 +1542,39 @@ class YandexStrategyReadResult(BaseModel):
             "Normalized human-readable strategy summary. "
             "Example: {search: {type: 'WB_MAXIMUM_CONVERSION_RATE', "
             "goal_id: 567732835, weekly_spend_limit_rub: 7000.0, "
-            "bid_ceiling_rub: 1500.0}, network: {type: 'SERVING_OFF'}}."
+            "bid_ceiling_rub: 1500.0}, network: {type: 'SERVING_OFF'}, "
+            "priority_goals: [{goal_id: 1, value_rub: 10.0}, ...]}."
         ),
+    )
+
+
+MULTI_GOAL_STRATEGY_ID = 13
+"""GoalId used in WbMaximumConversionRate when PriorityGoals are present.
+
+Yandex Direct changelog mentions GoalId=13 for priority-goal-based
+WB_MAXIMUM_CONVERSION_RATE on TEXT_CAMPAIGN.  When the caller provides
+``goal_ids`` or ``priority_goals``, the store sets ``GoalId=13`` and
+populates ``PriorityGoals.Items`` in the TextCampaign block.
+"""
+
+GOAL_IDS_MAX = 30
+"""Direct API maximum for PriorityGoals.Items."""
+
+
+class PriorityGoal(BaseModel):
+    """Single priority goal with optional conversion value.
+
+    ``value`` is in RUBLES (public REST convention).  The store
+    converts to Direct micros (× 1 000 000).  When ``value`` is
+    ``None`` or omitted, a default of 1.0 RUB is used (equal-weight
+    multi-goal convenience path).
+    """
+
+    goal_id: int = Field(..., ge=1, description="Metrika goal id.")
+    value: float | None = Field(
+        default=None,
+        gt=0,
+        description="Conversion value in RUBLES. Defaults to 1.0 when omitted.",
     )
 
 
@@ -1546,6 +1587,14 @@ class YandexStrategyRequest(BaseModel):
     applies: ``dry_run=True`` is preview-only (default); real apply
     requires ``DIRECTPILOT_MODE=live_write``, ``approved=True``,
     ``idempotency_key``, and ``dry_run=False``.
+
+    The caller MUST choose exactly ONE goal-selection mode:
+
+    * **Single goal** (backward-compatible): set ``goal_id``.
+    * **Multi-goal equal weight**: set ``goal_ids`` (list of goal ids,
+      default conversion value 1.0 RUB each).
+    * **Multi-goal explicit values**: set ``priority_goals`` (list of
+      ``{goal_id, value}`` objects with values in RUBLES).
 
     ``weekly_spend_limit`` and ``bid_ceiling`` are in RUBLES
     (public REST convention). The store converts to Direct micros
@@ -1560,10 +1609,26 @@ class YandexStrategyRequest(BaseModel):
         default="WB_MAXIMUM_CONVERSION_RATE",
         description="Search bidding strategy type to set.",
     )
-    goal_id: int = Field(
-        ...,
+    goal_id: int | None = Field(
+        default=None,
         ge=1,
-        description="Metrika goal id for WB_MAXIMUM_CONVERSION_RATE.",
+        description="Metrika goal id for WB_MAXIMUM_CONVERSION_RATE (single-goal mode).",
+    )
+    goal_ids: list[int] | None = Field(
+        default=None,
+        description=(
+            "Multiple Metrika goal ids for equal-weight multi-goal optimization. "
+            "Max 30 items, unique, positive. Sets ``GoalId=13`` on the strategy "
+            "and populates ``PriorityGoals.Items`` with equal 1.0 RUB values."
+        ),
+    )
+    priority_goals: list[PriorityGoal] | None = Field(
+        default=None,
+        description=(
+            "Explicit priority goals with per-goal conversion values in RUBLES. "
+            "Max 30 items, unique positive goal ids. Sets ``GoalId=13`` on the "
+            "strategy and populates ``PriorityGoals.Items``."
+        ),
     )
     weekly_spend_limit: float = Field(
         ...,
@@ -1585,6 +1650,53 @@ class YandexStrategyRequest(BaseModel):
         ),
     )
     reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_goal_mode(self) -> "YandexStrategyRequest":
+        """Ensure exactly one goal-selection mode is used.
+
+        Modes are mutually exclusive:
+        ``goal_id`` OR ``goal_ids`` OR ``priority_goals``.
+        """
+        modes = [
+            self.goal_id is not None,
+            self.goal_ids is not None,
+            self.priority_goals is not None,
+        ]
+        active = sum(modes)
+        if active == 0:
+            raise ValueError(
+                "One of goal_id, goal_ids, or priority_goals is required"
+            )
+        if active > 1:
+            raise ValueError(
+                "goal_id, goal_ids, and priority_goals are mutually exclusive"
+            )
+        # Validate goal_ids list
+        if self.goal_ids is not None:
+            if len(self.goal_ids) == 0:
+                raise ValueError("goal_ids must not be empty")
+            if len(self.goal_ids) > GOAL_IDS_MAX:
+                raise ValueError(
+                    f"goal_ids: max {GOAL_IDS_MAX} items, got {len(self.goal_ids)}"
+                )
+            if len(set(self.goal_ids)) != len(self.goal_ids):
+                raise ValueError("goal_ids contains duplicates")
+            if any(g < 1 for g in self.goal_ids):
+                raise ValueError("goal_ids must contain positive integers only")
+        # Validate priority_goals list
+        if self.priority_goals is not None:
+            if len(self.priority_goals) == 0:
+                raise ValueError("priority_goals must not be empty")
+            if len(self.priority_goals) > GOAL_IDS_MAX:
+                raise ValueError(
+                    f"priority_goals: max {GOAL_IDS_MAX} items, "
+                    f"got {len(self.priority_goals)}"
+                )
+            gids = [pg.goal_id for pg in self.priority_goals]
+            if len(set(gids)) != len(gids):
+                raise ValueError("priority_goals contains duplicate goal_id values")
+        return self
 
 
 class YandexStrategyResult(BaseModel):
@@ -1616,6 +1728,271 @@ class YandexStrategyResult(BaseModel):
     readback: dict | None = Field(
         default=None,
         description="Post-apply readback of the strategy block from Direct. ``None`` on dry-run.",
+    )
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Autotargeting settings read / update
+# ---------------------------------------------------------------------------
+
+
+AUTOTARGETING_CATEGORIES = ("Exact", "Narrow", "Alternative", "Accessory", "Broader")
+"""Ordered autotargeting category names as documented by Direct API v5.
+
+Used for building deterministic ``AutotargetingSettings.Categories``
+payloads where every category must be explicitly ``YES`` or ``NO``.
+"""
+
+AUTOTARGETING_BRAND_OPTIONS = ("WithoutBrands", "WithAdvertiserBrand", "WithCompetitorsBrand")
+"""Ordered brand-option names as documented by Direct API v5."""
+
+_AUTOTARGETING_CATEGORY_PRESETS: dict[str, dict[str, str]] = {
+    "exact_narrow": {
+        "Exact": "YES",
+        "Narrow": "YES",
+        "Alternative": "NO",
+        "Accessory": "NO",
+        "Broader": "NO",
+    },
+    "exact_narrow_broader": {
+        "Exact": "YES",
+        "Narrow": "YES",
+        "Alternative": "NO",
+        "Accessory": "NO",
+        "Broader": "YES",
+    },
+}
+"""Safe autotargeting category presets.
+
+* ``exact_narrow`` — default for local service-search campaigns.
+* ``exact_narrow_broader`` — optional wider reach when explicitly approved.
+"""
+
+_AUTOTARGETING_BRAND_PRESETS: dict[str, dict[str, str]] = {
+    "own_no_competitors": {
+        "WithoutBrands": "YES",
+        "WithAdvertiserBrand": "YES",
+        "WithCompetitorsBrand": "NO",
+    },
+}
+"""Safe autotargeting brand-option presets.
+
+* ``own_no_competitors`` — own-brand + no-brand yes, competitors no (default).
+"""
+
+
+class AutotargetingCategories(BaseModel):
+    """Yandex Direct v5 ``AutotargetingSettings.Categories`` block.
+
+    Every category must be explicitly ``YES`` or ``NO`` to avoid the
+    Direct API pitfall where missing categories silently default to
+    ``YES`` (all categories enabled).
+    """
+
+    exact: str = Field(default="YES", pattern="^(YES|NO)$")
+    narrow: str = Field(default="YES", pattern="^(YES|NO)$")
+    alternative: str = Field(default="NO", pattern="^(YES|NO)$")
+    accessory: str = Field(default="NO", pattern="^(YES|NO)$")
+    broader: str = Field(default="NO", pattern="^(YES|NO)$")
+
+    def to_direct_dict(self) -> dict[str, str]:
+        return {
+            "Exact": self.exact,
+            "Narrow": self.narrow,
+            "Alternative": self.alternative,
+            "Accessory": self.accessory,
+            "Broader": self.broader,
+        }
+
+
+class AutotargetingBrandOptions(BaseModel):
+    """Yandex Direct v5 ``AutotargetingSettings.BrandOptions`` block."""
+
+    without_brands: str = Field(default="YES", pattern="^(YES|NO)$")
+    with_advertiser_brand: str = Field(default="YES", pattern="^(YES|NO)$")
+    with_competitors_brand: str = Field(default="NO", pattern="^(YES|NO)$")
+
+    def to_direct_dict(self) -> dict[str, str]:
+        return {
+            "WithoutBrands": self.without_brands,
+            "WithAdvertiserBrand": self.with_advertiser_brand,
+            "WithCompetitorsBrand": self.with_competitors_brand,
+        }
+
+
+class YandexAutotargetingReadItem(BaseModel):
+    """One ad group's autotargeting row from ``keywords.get``."""
+
+    ad_group_id: str
+    ad_group_name: str
+    autotargeting_keyword_id: str
+    status: str
+    state: str | None = None
+    serving_status: str | None = None
+    categories: dict[str, str] | None = None
+    brand_options: dict[str, str] | None = None
+    raw_provider: dict | None = Field(
+        default=None,
+        description=(
+            "Raw keyword row from Direct API v5 keywords.get. "
+            "Redacted in public responses — never contains tokens. "
+            "Provided for debugging/support."
+        ),
+    )
+
+
+class YandexAutotargetingReadResult(BaseModel):
+    """Response envelope for ``GET /yandex/campaigns/{campaign_id}/autotargeting``."""
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = True
+    ad_groups: list[YandexAutotargetingReadItem] = Field(default_factory=list)
+    default_preset: str = "exact_narrow"
+
+
+class YandexAutotargetingRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/{campaign_id}/autotargeting``.
+
+    Standard product gate contract applies:
+    ``dry_run=True`` (default) is preview-only;
+    ``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,
+    ``approved=True`` and a valid ``idempotency_key``.
+
+    One of ``preset``, ``categories``, or ``ad_group_overrides``
+    determines the autotargeting settings to apply. When a
+    ``preset`` is used it defines the fallback categories and
+    brand options.
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+
+    create_missing: bool = Field(
+        default=False,
+        description=(
+            "If ``True``, create new ``---autotargeting`` rows for ad groups "
+            "that lack one via ``keywords.add``. Default ``False`` means the "
+            "endpoint will skip or report ad groups without autotargeting rows "
+            "in ``skipped_ad_group_ids``.  ``create_missing=True`` is gated by "
+            "the same ``dry_run`` / ``live_write`` / ``approved`` / "
+            "``idempotency_key`` contract: dry-run previews the add payload "
+            "alongside the update payload; apply dispatches real writes."
+        ),
+    )
+
+    preset: Literal["exact_narrow", "exact_narrow_broader", "custom"] = Field(
+        default="exact_narrow",
+        description=(
+            "Named autotargeting preset. ``exact_narrow`` is the safe default "
+            "for local service-search campaigns. ``exact_narrow_broader`` adds "
+            "Broader category. ``custom`` means the caller provides explicit "
+            "``categories`` and/or ``brand_options``."
+        ),
+    )
+
+    ad_group_ids: list[str] | None = Field(
+        default=None,
+        description=(
+            "List of ad group ids to target. Omit to target ALL ad groups "
+            "in the campaign that have autotargeting rows."
+        ),
+    )
+
+    categories: AutotargetingCategories | None = Field(
+        default=None,
+        description=(
+            "Explicit category configuration. Required only when "
+            "``preset=custom``. Every category must be explicitly "
+            "``YES`` or ``NO`` — missing categories are NOT defaulted "
+            "to ``NO`` by this model."
+        ),
+    )
+
+    brand_options: AutotargetingBrandOptions | None = Field(
+        default=None,
+        description=(
+            "Explicit brand-option configuration. "
+            "Defaults to own-brand + no-brand yes, competitors no "
+            "when omitted."
+        ),
+    )
+
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_custom_preset_has_categories(self) -> "YandexAutotargetingRequest":
+        if self.preset == "custom" and self.categories is None:
+            raise ValueError(
+                "categories is required when preset=custom; "
+                "otherwise use a named preset like exact_narrow or exact_narrow_broader"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_ad_group_ids_non_empty(self) -> "YandexAutotargetingRequest":
+        if self.ad_group_ids is not None and len(self.ad_group_ids) == 0:
+            raise ValueError("ad_group_ids must not be empty when provided")
+        return self
+
+    def resolve_categories(self) -> dict[str, str]:
+        """Return the effective categories dict."""
+        if self.preset != "custom":
+            return dict(_AUTOTARGETING_CATEGORY_PRESETS[self.preset])
+        assert self.categories is not None  # guarded by _validate_custom_preset_has_categories
+        return self.categories.to_direct_dict()
+
+    def resolve_brand_options(self) -> dict[str, str]:
+        """Return the effective brand-options dict."""
+        if self.brand_options is not None:
+            return self.brand_options.to_direct_dict()
+        return dict(_AUTOTARGETING_BRAND_PRESETS["own_no_competitors"])
+
+
+class YandexAutotargetingResult(BaseModel):
+    """Response envelope for ``POST /yandex/campaigns/{campaign_id}/autotargeting``.
+
+    * ``dry_run=True`` returns ``applied=False`` with ``payload_preview``
+      (exact ``keywords.update`` payload that WOULD be sent).
+    * ``dry_run=False`` + ``live_write`` returns ``applied=True``.
+    """
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    audit_id: str
+
+    preset: str | None = None
+    categories_applied: dict[str, str] | None = None
+    brand_options_applied: dict[str, str] | None = None
+
+    targeted_ad_group_ids: list[str] = Field(default_factory=list)
+    skipped_ad_group_ids: list[str] = Field(
+        default_factory=list,
+        description="Ad groups without autotargeting rows (skipped).",
+    )
+    updated_keyword_ids: list[str] = Field(default_factory=list)
+    created_keyword_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Yandex keyword ids returned by ``keywords.add`` for newly-created "
+            "``---autotargeting`` rows. Present only when ``create_missing=True`` "
+            "was used."
+        ),
+    )
+
+    payload_preview: dict | None = Field(
+        default=None,
+        description=(
+            "The v5 ``keywords.update`` payload that WOULD be sent. "
+            "Present on dry-run; ``None`` on a successful live apply."
+        ),
     )
     provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
     yandex_units: int | None = None

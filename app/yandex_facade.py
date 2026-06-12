@@ -219,6 +219,109 @@ class MockYandexCatalog:
             },
         }
 
+    # --- autotargeting -------------------------------------------------------
+
+    def list_autotargeting(self, campaign_id: str) -> list[dict]:
+        """Deterministic mock autotargeting rows for a campaign.
+
+        Each dict matches the shape of ``YandexAutotargetingReadItem``.
+        Default preset: exact_narrow (Exact=YES, Narrow=YES,
+        Alternative=NO, Accessory=NO, Broader=NO).
+        Brand options: WithoutBrands=YES, WithAdvertiserBrand=YES,
+        WithCompetitorsBrand=NO.
+        """
+        autotargeting_by_campaign: dict[str, list[dict]] = {
+            "cmp_mock_local_services": [
+                {
+                    "ad_group_id": "adg_mock_1001",
+                    "ad_group_name": "Услуги сантехника",
+                    "autotargeting_keyword_id": "kw_auto_1001",
+                    "status": "ACCEPTED",
+                    "state": "ON",
+                    "serving_status": "ELIGIBLE",
+                    "categories": {
+                        "Exact": "YES",
+                        "Narrow": "YES",
+                        "Alternative": "NO",
+                        "Accessory": "NO",
+                        "Broader": "NO",
+                    },
+                    "brand_options": {
+                        "WithoutBrands": "YES",
+                        "WithAdvertiserBrand": "YES",
+                        "WithCompetitorsBrand": "NO",
+                    },
+                    "raw_provider": {"Id": "kw_auto_1001", "Keyword": "---autotargeting"},
+                },
+                {
+                    "ad_group_id": "adg_mock_1002",
+                    "ad_group_name": "Услуги электрика",
+                    "autotargeting_keyword_id": "kw_auto_1002",
+                    "status": "ACCEPTED",
+                    "state": "ON",
+                    "serving_status": "ELIGIBLE",
+                    "categories": {
+                        "Exact": "YES",
+                        "Narrow": "YES",
+                        "Alternative": "NO",
+                        "Accessory": "NO",
+                        "Broader": "NO",
+                    },
+                    "brand_options": {
+                        "WithoutBrands": "YES",
+                        "WithAdvertiserBrand": "YES",
+                        "WithCompetitorsBrand": "NO",
+                    },
+                    "raw_provider": {"Id": "kw_auto_1002", "Keyword": "---autotargeting"},
+                },
+            ],
+            "cmp_mock_remont_kazan": [
+                {
+                    "ad_group_id": "adg_mock_2001",
+                    "ad_group_name": "Ремонт квартир",
+                    "autotargeting_keyword_id": "kw_auto_2001",
+                    "status": "ACCEPTED",
+                    "state": "ON",
+                    "serving_status": "ELIGIBLE",
+                    "categories": {
+                        "Exact": "YES",
+                        "Narrow": "YES",
+                        "Alternative": "NO",
+                        "Accessory": "NO",
+                        "Broader": "NO",
+                    },
+                    "brand_options": {
+                        "WithoutBrands": "YES",
+                        "WithAdvertiserBrand": "YES",
+                        "WithCompetitorsBrand": "NO",
+                    },
+                    "raw_provider": {"Id": "kw_auto_2001", "Keyword": "---autotargeting"},
+                },
+                {
+                    "ad_group_id": "adg_mock_2002",
+                    "ad_group_name": "Ремонт офисов",
+                    "autotargeting_keyword_id": "kw_auto_2002",
+                    "status": "ACCEPTED",
+                    "state": "ON",
+                    "serving_status": "ELIGIBLE",
+                    "categories": {
+                        "Exact": "YES",
+                        "Narrow": "YES",
+                        "Alternative": "NO",
+                        "Accessory": "NO",
+                        "Broader": "NO",
+                    },
+                    "brand_options": {
+                        "WithoutBrands": "YES",
+                        "WithAdvertiserBrand": "YES",
+                        "WithCompetitorsBrand": "NO",
+                    },
+                    "raw_provider": {"Id": "kw_auto_2002", "Keyword": "---autotargeting"},
+                },
+            ],
+        }
+        return autotargeting_by_campaign.get(campaign_id, [])
+
 
 mock_yandex = MockYandexCatalog()
 

@@ -92,6 +92,10 @@ from app.models import (
     AdsModerateRequest,
     AdsModerateResult,
     ProviderWarning,
+    # Autotargeting
+    YandexAutotargetingReadResult,
+    YandexAutotargetingRequest,
+    YandexAutotargetingResult,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError
@@ -2754,8 +2758,14 @@ def yandex_time_targeting(
 
 def _build_strategy_summary(
     strategy: dict | None,
+    priority_goals: dict | None = None,
 ) -> dict | None:
-    """Build a human-readable strategy summary from a raw BiddingStrategy block."""
+    """Build a human-readable strategy summary from a raw BiddingStrategy block.
+
+    ``priority_goals`` is the optional raw ``TextCampaign.PriorityGoals``
+    dict (``{\"Items\": [{GoalId, Value}, ...]}`` as returned by v5 readback).
+    Values are converted from Direct micros to RUBLES.
+    """
     import re
 
     if not isinstance(strategy, dict):
@@ -2793,6 +2803,21 @@ def _build_strategy_summary(
         summary["network"] = {
             "type": network.get("BiddingStrategyType", "UNKNOWN"),
         }
+
+    # Add PriorityGoals summary if present
+    if priority_goals is not None and isinstance(priority_goals, dict):
+        items = priority_goals.get("Items")
+        if isinstance(items, list) and items:
+            summary["priority_goals"] = []
+            for item in items:
+                if isinstance(item, dict) and "GoalId" in item:
+                    pg: dict[str, Any] = {"goal_id": item["GoalId"]}
+                    if "Value" in item:
+                        try:
+                            pg["value_rub"] = float(item["Value"]) / 1_000_000
+                        except (TypeError, ValueError):
+                            pg["value"] = item["Value"]
+                    summary["priority_goals"].append(pg)
 
     return summary if summary else None
 
@@ -2839,6 +2864,7 @@ def yandex_strategy_read(
             tc = camp.get("TextCampaign")
             raw_counter_ids = tc.get("CounterIds") if isinstance(tc, dict) else None
             raw_strategy = tc.get("BiddingStrategy") if isinstance(tc, dict) else None
+            raw_priority_goals = tc.get("PriorityGoals") if isinstance(tc, dict) else None
         else:
             campaign_name = None
             campaign_type = None
@@ -2847,6 +2873,7 @@ def yandex_strategy_read(
             raw_daily_budget = None
             raw_counter_ids = None
             raw_strategy = None
+            raw_priority_goals = None
 
         daily_budget = (
             dict(raw_daily_budget)
@@ -2861,7 +2888,9 @@ def yandex_strategy_read(
         strategy = (
             dict(raw_strategy) if isinstance(raw_strategy, dict) else None
         )
-        strategy_summary = _build_strategy_summary(strategy)
+        strategy_summary = _build_strategy_summary(
+            strategy, priority_goals=raw_priority_goals
+        )
 
         return YandexStrategyReadResult(
             campaign_id=campaign_id,
@@ -2873,6 +2902,7 @@ def yandex_strategy_read(
             status=str(status) if status else None,
             daily_budget=daily_budget,
             counter_ids=counter_ids,
+            priority_goals=raw_priority_goals,
             strategy=strategy,
             strategy_summary=strategy_summary,
         )
@@ -2888,6 +2918,7 @@ def yandex_strategy_read(
         status=mock.get("status"),
         daily_budget=mock.get("daily_budget"),
         counter_ids=mock.get("counter_ids"),
+        priority_goals=mock.get("priority_goals"),
         strategy=mock.get("strategy"),
         strategy_summary=mock.get("strategy_summary"),
     )
@@ -2973,6 +3004,129 @@ def yandex_strategy_update(
                 "error_type": "YandexDirectError",
                 "message": (
                     f"unexpected error during strategy update: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Autotargeting settings read (GET) / update (POST)
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/autotargeting",
+    response_model=YandexAutotargetingReadResult,
+)
+def yandex_autotargeting_read(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAutotargetingReadResult:
+    """Read autotargeting settings for all ad groups in a campaign.
+
+    Pure read-only — no write gate. Available in all modes.
+    Returns per-ad-group autotargeting categories and brand options
+    from the ``---autotargeting`` keyword rows.
+    """
+    try:
+        return store.yandex_autotargeting_read(
+            campaign_id, settings=settings, client=client
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/autotargeting",
+    response_model=YandexAutotargetingResult,
+)
+def yandex_autotargeting_update(
+    campaign_id: str,
+    payload: YandexAutotargetingRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAutotargetingResult:
+    """Update autotargeting settings for ad groups in a campaign.
+
+    Standard product gate contract:
+    ``dry_run=True`` (default) is preview-only and never performs a network
+    write; the response includes the exact v5 ``keywords.update`` payload
+    that WOULD be sent, with ``applied=False``.
+
+    ``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,
+    ``approved=True`` and a valid ``idempotency_key``.
+
+    Categories are always sent with all five booleans explicitly (``YES``
+    or ``NO``) to avoid the Direct API pitfall where missing categories
+    default to ``YES``.
+
+    Default preset for local service-search campaigns: ``exact_narrow``
+    (Exact=YES, Narrow=YES, Alternative=NO, Accessory=NO, Broader=NO).
+    Brand options default: WithoutBrands=YES, WithAdvertiserBrand=YES,
+    WithCompetitorsBrand=NO.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before autotargeting update",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"autotargeting apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_autotargeting_update(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        try:
+            store.append_audit(
+                "yandex_autotargeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in autotargeting endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during autotargeting update: "
                     f"{type(exc).__name__}"
                 ),
             },

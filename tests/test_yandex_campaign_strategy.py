@@ -804,6 +804,397 @@ class TestStrategyUpdate:
 
 
 # ---------------------------------------------------------------------------
+# Multi-goal strategy tests
+# ---------------------------------------------------------------------------
+
+
+class TestMultiGoalStrategy:
+    """Tests for goal_ids / priority_goals multi-goal optimization."""
+
+    BASE_PAYLOAD: dict[str, Any] = {
+        "approved": True,
+        "idempotency_key": "multi-goal-001",
+        "dry_run": True,
+        "strategy_type": "WB_MAXIMUM_CONVERSION_RATE",
+        "weekly_spend_limit": 7000.0,
+        "bid_ceiling": 1500.0,
+    }
+
+    def _override(self, mode: str) -> None:
+        settings = _settings(mode)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: None
+
+    def teardown_method(self):
+        app.dependency_overrides.clear()
+        store._strategy_results_by_key.clear()
+
+    # --- validation: mutual exclusion -------------------------------------
+
+    def test_goal_ids_and_goal_id_conflict_is_422(self):
+        """goal_id + goal_ids together is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_id"] = 123
+        payload["goal_ids"] = [1, 2, 3]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    def test_goal_ids_and_priority_goals_conflict_is_422(self):
+        """goal_ids + priority_goals together is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [1, 2, 3]
+        payload["priority_goals"] = [
+            {"goal_id": 1, "value": 5.0},
+            {"goal_id": 2, "value": 3.0},
+        ]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    def test_no_goal_mode_is_422(self):
+        """No goal_id, goal_ids, or priority_goals is rejected."""
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy",
+            json=self.BASE_PAYLOAD,
+        )
+        assert resp.status_code == 422
+
+    def test_goal_id_alone_still_works(self):
+        """Single goal_id (backward-compatible) still works."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_id"] = 567732835
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["applied"] is False  # dry_run
+        preview = body["payload_preview"]
+        campaigns = preview["params"]["Campaigns"]
+        wb = campaigns[0]["TextCampaign"]["BiddingStrategy"]["Search"][
+            "WbMaximumConversionRate"
+        ]
+        assert wb["GoalId"] == 567732835
+        # Single-goal mode explicitly clears PriorityGoals to avoid
+        # ambiguous omission semantics on Direct API v5.
+        tc = campaigns[0]["TextCampaign"]
+        assert "PriorityGoals" in tc
+        assert tc["PriorityGoals"]["Items"] == []
+
+    # --- validation: goal_ids ---------------------------------------------
+
+    def test_empty_goal_ids_is_422(self):
+        """Empty goal_ids list is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = []
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    def test_goal_ids_duplicates_is_422(self):
+        """Duplicate goal ids in goal_ids list is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [1, 2, 2]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    def test_goal_ids_exceeds_30_is_422(self):
+        """More than 30 goal_ids is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = list(range(1, 32))
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    def test_goal_ids_negative_is_422(self):
+        """Negative goal_id in goal_ids is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [1, -2, 3]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    # --- validation: priority_goals ---------------------------------------
+
+    def test_empty_priority_goals_is_422(self):
+        """Empty priority_goals list is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["priority_goals"] = []
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    def test_priority_goals_duplicates_is_422(self):
+        """Duplicate goal_id in priority_goals is rejected."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["priority_goals"] = [
+            {"goal_id": 1, "value": 5.0},
+            {"goal_id": 1, "value": 3.0},
+        ]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 422
+
+    # --- dry-run: goal_ids → GoalId=13 + PriorityGoals --------------------
+
+    def test_dry_run_goal_ids_produces_priority_goals_payload(self):
+        """goal_ids produces GoalId=13 + PriorityGoals.Items with equal 1.0 RUB."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [10, 20, 30]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        preview = body["payload_preview"]
+        campaigns = preview["params"]["Campaigns"]
+        entry = campaigns[0]
+        tc = entry["TextCampaign"]
+
+        # PriorityGoals present
+        assert "PriorityGoals" in tc
+        pg = tc["PriorityGoals"]
+        assert "Items" in pg
+        assert len(pg["Items"]) == 3
+
+        # Each item has GoalId and Value (in micros = 1.0 RUB × 1_000_000)
+        for item, gid in zip(pg["Items"], [10, 20, 30]):
+            assert item["GoalId"] == gid
+            assert item["Value"] == 1_000_000  # 1.0 RUB in micros
+
+        # GoalId=13 in WbMaximumConversionRate
+        wb = tc["BiddingStrategy"]["Search"]["WbMaximumConversionRate"]
+        assert wb["GoalId"] == 13
+
+        # strategy_applied includes priority_goals in rubles
+        sa = body["strategy_applied"]
+        assert sa["search"]["goal_id"] == 13
+        assert "priority_goals" in sa
+        assert sa["priority_goals"] == [
+            {"goal_id": 10, "value_rub": 1.0},
+            {"goal_id": 20, "value_rub": 1.0},
+            {"goal_id": 30, "value_rub": 1.0},
+        ]
+
+    def test_dry_run_priority_goals_explicit_values(self):
+        """priority_goals with explicit RUB values → micros in payload."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["priority_goals"] = [
+            {"goal_id": 100, "value": 10.0},
+            {"goal_id": 200, "value": 5.0},
+        ]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        preview = body["payload_preview"]
+        tc = preview["params"]["Campaigns"][0]["TextCampaign"]
+        items = tc["PriorityGoals"]["Items"]
+        assert items[0]["GoalId"] == 100
+        assert items[0]["Value"] == 10_000_000  # 10 RUB
+        assert items[1]["GoalId"] == 200
+        assert items[1]["Value"] == 5_000_000  # 5 RUB
+
+        sa = body["strategy_applied"]
+        assert sa["priority_goals"] == [
+            {"goal_id": 100, "value_rub": 10.0},
+            {"goal_id": 200, "value_rub": 5.0},
+        ]
+
+    def test_dry_run_priority_goals_none_value_uses_default(self):
+        """priority_goals with None value falls back to 1.0 RUB."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["priority_goals"] = [
+            {"goal_id": 300},
+            {"goal_id": 400, "value": 7.0},
+        ]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        items = body["payload_preview"]["params"]["Campaigns"][0][
+            "TextCampaign"
+        ]["PriorityGoals"]["Items"]
+        assert items[0]["Value"] == 1_000_000  # default 1.0 RUB
+        assert items[1]["Value"] == 7_000_000  # explicit 7 RUB
+
+    # --- no token leakage -------------------------------------------------
+
+    def test_multi_goal_no_token_leakage(self):
+        """Multi-goal mode never leaks the token."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [10, 20, 30]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200
+        body_text = json.dumps(resp.json())
+        assert SECRET_TOKEN not in body_text
+
+    def test_priority_goals_no_token_leakage(self):
+        """Explicit priority_goals mode never leaks the token."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["priority_goals"] = [
+            {"goal_id": 100, "value": 10.0},
+        ]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200
+        body_text = json.dumps(resp.json())
+        assert SECRET_TOKEN not in body_text
+
+    # --- Network / BudgetType preserved in multi-goal ---------------------
+
+    def test_multi_goal_network_preserved(self):
+        """Network strategy is preserved in multi-goal mode."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [10, 20]
+        payload["network"] = "SERVING_OFF"
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        bs = body["payload_preview"]["params"]["Campaigns"][0][
+            "TextCampaign"
+        ]["BiddingStrategy"]
+        assert bs["Network"]["BiddingStrategyType"] == "SERVING_OFF"
+        assert body["strategy_applied"]["network"]["type"] == "SERVING_OFF"
+
+    # --- Idempotency still works in multi-goal ----------------------------
+
+    def test_multi_goal_idempotency_replay(self):
+        """Idempotency replay with multi-goal returns cached result."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [10, 20]
+        self._override("mock")
+        resp1 = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp1.status_code == 200
+        resp2 = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp2.status_code == 200
+        assert resp1.json() == resp2.json()
+
+    # --- Audit event recorded ---------------------------------------------
+
+    def test_multi_goal_audit_event_recorded(self):
+        """Multi-goal request records an audit event."""
+        self._override("mock")
+        before = len(store.audit_events)
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [10, 20]
+        client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        after = len(store.audit_events)
+        assert after > before
+
+    # --- PriorityGoals explicit clearing / preservation --------------------
+
+    def test_single_goal_clears_priority_goals_explicitly(self):
+        """Single-goal mode includes PriorityGoals.Items=[] to
+        explicitly clear any previously-set multi-goal PriorityGoals.
+
+        Omission semantics are ambiguous on Direct API v5 — the
+        payload must be explicit to guarantee clearing.
+        """
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_id"] = 567732835
+        payload["priority_goals"] = None  # explicit single-goal intent
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        tc = body["payload_preview"]["params"]["Campaigns"][0]["TextCampaign"]
+
+        # PriorityGoals MUST be present with Items=[]
+        assert "PriorityGoals" in tc, (
+            "Single-goal payload must include PriorityGoals to"
+            " explicitly clear multi-goal state"
+        )
+        pg = tc["PriorityGoals"]
+        assert "Items" in pg
+        assert pg["Items"] == [], (
+            "Single-goal PriorityGoals.Items must be empty list,"
+            " not absent — omission semantics are ambiguous"
+        )
+
+        # Verify the goal_id is the user's, not the multi-goal constant
+        wb = tc["BiddingStrategy"]["Search"]["WbMaximumConversionRate"]
+        assert wb["GoalId"] == 567732835
+
+    def test_single_goal_no_token_leakage_with_empty_priority_goals(self):
+        """Single-goal with explicit PriorityGoals clearing never
+        leaks the token."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_id"] = 567732835
+        payload["priority_goals"] = None
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200
+        body_text = json.dumps(resp.json())
+        assert SECRET_TOKEN not in body_text
+
+    def test_multi_goal_preserves_priority_goals_items(self):
+        """Multi-goal mode MUST include PriorityGoals.Items with
+        real goals — not an empty list."""
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_ids"] = [10, 20]
+        self._override("mock")
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        tc = body["payload_preview"]["params"]["Campaigns"][0]["TextCampaign"]
+
+        assert "PriorityGoals" in tc
+        items = tc["PriorityGoals"]["Items"]
+        assert len(items) == 2, (
+            "Multi-goal PriorityGoals.Items must contain the goals,"
+            " not be empty"
+        )
+        assert items[0]["GoalId"] == 10
+        assert items[1]["GoalId"] == 20
+
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 

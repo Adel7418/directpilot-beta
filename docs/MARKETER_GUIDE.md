@@ -41,7 +41,9 @@ DirectPilot — единая прослойка для маркетолога:
 | Обновить почасовое расписание показов | `POST /yandex/campaigns/{campaign_id}/time-targeting` | v5 `campaigns.update TimeTargeting`; endpoint читает текущий `DailyBudget` (нормализация `SpendMode`→`Mode`) и, если `DailyBudget: null` у smart-стратегии (`TEXT_CAMPAIGN`), дополнительно читает `TextCampaign.BiddingStrategy` и включает её в payload; отсутствие необходимых полей в таком кейсе приводит к fail-closed с 502 до `campaigns.update`; `dry_run=true` доступен в любом режиме; `dry_run=false` + apply только в `live_write`; `readback` после apply — v5 `campaigns.get TimeTargeting`; payload preview в ответе |
 | Посмотреть текущее расписание показов | `GET /yandex/campaigns/{campaign_id}/time-targeting` | read-only; возвращает текущий `TimeTargeting` блок (v5 `campaigns.get`) + нормализованное 7×24 расписание; без write-гейтов; доступен во всех режимах (`mock`/`sandbox`/`live_readonly`/`live_write`) |
 | Посмотреть стратегию кампании | `GET /yandex/campaigns/{campaign_id}/strategy` | тип, статус, бюджет, цели, BiddingStrategy; read-only |
-| Обновить стратегию кампании | `POST /yandex/campaigns/{campaign_id}/strategy` | `dry_run=true` для preview (рубли); для live-apply нужны `approved=true`, `idempotency_key`; выбрать один `goal_id` из `GET /metrika/counters/{counter_id}/goals` (counter_id берется из `GET /yandex/campaigns/{campaign_id}/strategy -> counter_ids`). Повторный update с другим `goal_id` заменяет текущую цель стратегии, а не добавляет цель в список |
+| Обновить стратегию кампании | `POST /yandex/campaigns/{campaign_id}/strategy` | `dry_run=true` для preview (рубли); для live-apply нужны `approved=true`, `idempotency_key`; выбрать один `goal_id` ИЛИ `goal_ids` (равновесные цели) ИЛИ `priority_goals` (явные ценности) из `GET /metrika/counters/{counter_id}/goals` (counter_id берется из `GET /yandex/campaigns/{campaign_id}/strategy -> counter_ids`). Одна цель заменяет текущую; `goal_ids`/`priority_goals` используют Direct API `PriorityGoals` + `GoalId=13` |
+| Посмотреть автотаргетинг | `GET /yandex/campaigns/{campaign_id}/autotargeting` | категории и бренд-опции автотаргетинга по группам; read-only |
+| Настроить автотаргетинг | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; дефолтный пресет `exact_narrow` (Exact+Narrow only); `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key`; не включать все категории по умолчанию — спрашивать пользователя |
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
@@ -55,6 +57,8 @@ DirectPilot — единая прослойка для маркетолога:
 | Быстрые ссылки (низкоуровневый helper) | `GET /yandex/sitelinks` | только чтение наборов быстрых ссылок — для аудита внешнего вида используйте `ad-assets` |
 | Визитки/креативы/организации | `GET /yandex/vcards`, `/yandex/ad-images`, `/yandex/creatives`, `/yandex/businesses` | аудит контактной привязки и креативов |
 | Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
+| Посмотреть настройки автотаргетинга | `GET /yandex/campaigns/{campaign_id}/autotargeting` | категории и brand-опции автотаргетинга для каждой группы; read-only |
+| Обновить настройки автотаргетинга | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; apply — `live_write` + `approved` + `idempotency_key`; default preset `exact_narrow` |
 
 Важно по `GET /yandex/reports/summary`:
 
@@ -134,6 +138,8 @@ DirectPilot — единая прослойка для маркетолога:
 - Не применять `POST /yandex/campaigns/{campaign_id}/time-targeting` с `dry_run=false` без явного `approved=true` + `idempotency_key` и подтверждения пользователя. В `live_readonly` реальный apply заблокирован с HTTP 409 до любого сетевого вызова; реально применить можно только в `live_write`. Используйте `dry_run=true` для проверки payload preview перед apply.
 
   Для smart-кампаний `TEXT_CAMPAIGN` эндпойнт дополнительно читает `TextCampaign.BiddingStrategy` и, если у кампании есть дневной бюджет, применяет `SpendMode→Mode` нормализацию: если `DailyBudget` есть, включается `DailyBudget` с `Mode`; если `DailyBudget: null`, включается сохранённая стратегия (`Search`/`Network`). Если прочитать обязательные поля не удалось (нет бюджета при `live`-режиме или отсутствует `BiddingStrategy` для smart-strategy), apply отклоняется с 502 (fail-closed). `BudgetType` из read-side **сохраняется** в write-side payload — удаление `BudgetType` вызывает error_code=8000.
+
+- Не включать все категории автотаргетинга по умолчанию для локальных сервисных поисковых кампаний. Default preset `exact_narrow` (Exact=YES, Narrow=YES, Alternative=NO, Accessory=NO, Broader=NO) — безопасный минимум. Broader включается только по явному запросу пользователя с осознанием trade-off по охвату. При создании/настройке кампании или группы явно спрашивайте пользователя о желаемых настройках автотаргетинга, не принимайте молча все категории. Brand-опции по умолчанию: WithoutBrands=YES, WithAdvertiserBrand=YES, WithCompetitorsBrand=NO.
 
 ## Правила для добавления объявлений в существующую кампанию/группу
 

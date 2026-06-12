@@ -50,6 +50,8 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида (заголовки, тексты, быстрые ссылки, организации, визитки)
    - `POST /yandex/ad-groups/{ad_group_id}/ads` — добавить объявления в существующую группу (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
    - `POST /yandex/ads/moderate` — отправить объявления на модерацию (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
+   - `GET /yandex/campaigns/{campaign_id}/autotargeting` — посмотреть настройки автотаргетинга (категории + brand-опции) каждой группы; read-only
+   - `POST /yandex/campaigns/{campaign_id}/autotargeting` — обновить автотаргетинг (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
 
 Scope rule for operators/agents:
 
@@ -129,14 +131,18 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 
 ### Strategy management (BiddingStrategy)
 
-- Current strategy can be read via `GET /yandex/campaigns/{campaign_id}/strategy` — read-only, no write gate, available in all modes. Returns `Type`, `State`, `Status`, `DailyBudget`, `CounterIds`, `TextCampaign.BiddingStrategy` (raw) and `strategy_summary` (normalized with micros→rubles conversion).
+- Current strategy can be read via `GET /yandex/campaigns/{campaign_id}/strategy` — read-only, no write gate, available in all modes. Returns `Type`, `State`, `Status`, `DailyBudget`, `CounterIds`, `PriorityGoals`, `TextCampaign.BiddingStrategy` (raw) and `strategy_summary` (normalized with micros→rubles conversion).
 - To update strategy, use `POST /yandex/campaigns/{campaign_id}/strategy` — gate contract identical to time-targeting: `approved` + `idempotency_key` + `dry_run`; `live_readonly` blocks real writes with HTTP 409; real apply only in `live_write`.
 - Live apply first reads campaign `DailyBudget` from `campaigns.get` and requires an unambiguous read for mode-dependent shape mapping. If `DailyBudget` cannot be reliably extracted in a supported shape, the request is rejected before `campaigns.update` with fail-closed 502 (no invented budget block).
-- Currently supports switching search to `WB_MAXIMUM_CONVERSION_RATE` with a single `goal_id`, `weekly_spend_limit` (RUBLES, converted to micros × 1 000 000), optional `bid_ceiling` (RUBLES). This is a **replacement** of the strategy's current `GoalId`, not an append/add-to-list operation.
-- The current DirectPilot endpoint does not accept `goal_ids: []` or “optimize for all goals”. If callers need multiple optimization goals, treat that as a product/API investigation first; do not imply that repeated calls accumulate goals.
+- Supports three mutually exclusive goal selection modes:
+  - **Single goal**: `goal_id` (int, backward-compatible) — replaces the strategy's current `GoalId`.
+  - **Multi-goal equal weight**: `goal_ids` (list[int], max 30, unique positive ids) — sets `WbMaximumConversionRate.GoalId=13` and populates `TextCampaign.PriorityGoals.Items` with equal default value 1.0 RUB per goal.
+  - **Multi-goal explicit values**: `priority_goals` (list[`{goal_id:int, value:float|None}`], max 30, unique ids, values in RUBLES) — same Direct shape as `goal_ids` but with caller-specified per-goal conversion values. `value=None` defaults to 1.0 RUB.
+- `goal_id`, `goal_ids`, and `priority_goals` are mutually exclusive. Exactly one mode must be chosen.
+- `weekly_spend_limit` and `bid_ceiling` are in RUBLES (public REST convention). The store converts to Direct micros (× 1 000 000).
 - `BudgetType` (e.g. `WEEKLY_BUDGET`) is preserved from readback strategy block. Direct requires it on update; stripping it caused live `error_code=8000`.
 - Network strategy defaults to preserve-from-readback. Explicit `network="SERVING_OFF"` is supported. Endpoint never silently turns networks ON.
-- Before applying, read current campaign state via the GET endpoint to verify the single selected `goal_id` against `/metrika/counters/{counter_id}/goals`.
+- Before applying, read current campaign state via the GET endpoint to verify the selected goal(s) against `/metrika/counters/{counter_id}/goals`.
 
 - For live bid updates through Direct v5 `keywordbids.set`, concrete known keywords should use the minimal item shape:
   ```json
@@ -152,6 +158,23 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Direct can return warning `10165` / `Параметр не будет применен`: one of the request fields was ignored by the API. The `details` field names the specific parameter. Check `provider_warnings` in the DirectPilot response to find which parameter was dropped.
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
+
+### Autotargeting settings
+
+### Autotargeting settings (mandatory for search ad groups)
+
+- Search / Search+YAN `TEXT_AD_GROUPs` require autotargeting (`---autotargeting` keyword row). Deleting or fully disabling it can be invalid — configure categories and brand options instead.
+- Use `GET /yandex/campaigns/{campaign_id}/autotargeting` to read current settings (per ad group: categories, brand options, status).
+- Use `POST /yandex/campaigns/{campaign_id}/autotargeting` to update settings (standard gate: dry_run default, live_write for apply).
+- **Default preset for local service-search campaigns:** `exact_narrow` (Exact=YES, Narrow=YES, Alternative=NO, Accessory=NO, Broader=NO).
+- **Default brand options:** WithoutBrands=YES, WithAdvertiserBrand=YES, WithCompetitorsBrand=NO.
+- **Do not enable all autotargeting categories by default.** Agents must explicitly ask the user or select the `exact_narrow` preset before committing.
+- `Broader=YES` is optional only by explicit reach trade-off. Alternative and Accessory should not be enabled by default.
+- In `keywords.add`, categories not explicitly YES/NO are treated as enabled by Direct API. DirectPilot always sends all five category booleans + all three brand booleans explicitly.
+- The endpoint uses `AutotargetingSettings` (with `Categories` + `BrandOptions`), NOT the deprecated `AutotargetingCategories`.
+- Endpoint does read-before-write: `keywords.get` → find `---autotargeting` rows → build `keywords.update` by keyword `Id`.
+- If an ad group lacks an autotargeting row, the endpoint skips it (reports in `skipped_ad_group_ids`) when `create_missing=False`. Set `create_missing=True` to create new `---autotargeting` rows via `keywords.add` (gated: requires dry-run preview, then `live_write` + `approved` + `idempotency_key`).
+- See `docs/API_SIMPLE.md` section 13 and `docs/MARKETER_GUIDE.md` for full marketing guidance.
 
 ## Verification checklist
 

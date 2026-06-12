@@ -219,6 +219,52 @@ class YandexDirectClient:
         }
         return self._call("keywords", payload)
 
+    def keywords_get_autotargeting(self, campaign_id: int | str) -> dict[str, Any]:
+        """Read keywords with autotargeting category/brand-option fields.
+
+        Requests the extended ``FieldNames`` needed to inspect autotargeting
+        rows (``Keyword == \"---autotargeting\"``). The fields
+        ``AutotargetingSettingsCategoriesFieldNames`` and
+        ``AutotargetingSettingsBrandOptionsFieldNames`` are requested
+        explicitly so the caller can build a full settings view.
+
+        Direct API v5 contract: these FieldNames are available on
+        ``keywords.get`` when the keyword row is an autotargeting row.
+        For non-autotargeting rows these fields are omitted/null.
+        """
+        campaign_id = self._direct_id(campaign_id)
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {"CampaignIds": [campaign_id]},
+                "FieldNames": [
+                    "Id",
+                    "AdGroupId",
+                    "CampaignId",
+                    "Keyword",
+                    "Bid",
+                    "ContextBid",
+                    "StrategyPriority",
+                    "State",
+                    "Status",
+                    "ServingStatus",
+                ],
+                "AutotargetingSettingsCategoriesFieldNames": [
+                    "Exact",
+                    "Narrow",
+                    "Alternative",
+                    "Accessory",
+                    "Broader",
+                ],
+                "AutotargetingSettingsBrandOptionsFieldNames": [
+                    "WithoutBrands",
+                    "WithAdvertiserBrand",
+                    "WithCompetitorsBrand",
+                ],
+            },
+        }
+        return self._call("keywords", payload)
+
     # ------------------------------------------------------------------
     # Extended read-only coverage for DirectPilot's "everything" layer.
     # These wrappers intentionally expose raw Direct API results. The app
@@ -454,6 +500,22 @@ class YandexDirectClient:
         service with ``method=add``.
         """
         return self._call("keywords", {"method": "add", "params": {"Keywords": list(items)}})
+
+    def keywords_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update existing keywords via v5 ``keywords.update``.
+
+        Each item must include ``Id`` (keyword id) and the fields to
+        change (e.g. ``Bid``, ``AutotargetingSettings``). The payload
+        is sent to the v5 ``keywords`` service with ``method=update``.
+
+        Direct API v5 contract: ``keywords.update`` is REPLACE-shaped —
+        every field the caller wants to keep must be re-sent. The caller
+        is responsible for reading current values and building a complete
+        update item.
+        """
+        return self._call(
+            "keywords", {"method": "update", "params": {"Keywords": list(items)}}
+        )
 
     # ------------------------------------------------------------------
     # Live-create chain (stage 2 / stage 3)
@@ -832,7 +894,7 @@ class YandexDirectClient:
     _STRATEGY_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "Type", "DailyBudget")
     _STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES: tuple[str, ...] = ("BiddingStrategy",)
     _STRATEGY_FULL_TEXT_CAMPAIGN_FIELD_NAMES: tuple[str, ...] = (
-        "BiddingStrategy", "CounterIds",
+        "BiddingStrategy", "CounterIds", "PriorityGoals",
     )
     _STRATEGY_FULL_FIELD_NAMES: tuple[str, ...] = (
         "Id", "Name", "Type", "State", "Status", "DailyBudget",
@@ -919,6 +981,7 @@ class YandexDirectClient:
         text_campaign: dict[str, Any],
         *,
         daily_budget: dict[str, Any] | None = None,
+        priority_goals: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Update ``TextCampaign.BiddingStrategy`` on one campaign.
 
@@ -930,6 +993,11 @@ class YandexDirectClient:
         ``daily_budget`` is an optional ``DailyBudget`` block to
         include in the payload. For campaigns switching to a weekly
         conversion strategy this is typically ``None`` (no daily budget).
+
+        ``priority_goals`` is an optional list of ``{GoalId, Value}``
+        dicts (Value in Direct micros) added as
+        ``TextCampaign.PriorityGoals.Items`` for multi-goal
+        WB_MAXIMUM_CONVERSION_RATE (GoalId=13).
         """
         if not isinstance(text_campaign, dict):
             raise YandexDirectError(
@@ -943,6 +1011,10 @@ class YandexDirectClient:
         }
         if daily_budget is not None:
             campaign_entry["DailyBudget"] = dict(daily_budget)
+        if priority_goals is not None:
+            campaign_entry["TextCampaign"]["PriorityGoals"] = {
+                "Items": list(priority_goals),
+            }
         payload = {
             "method": "update",
             "params": {

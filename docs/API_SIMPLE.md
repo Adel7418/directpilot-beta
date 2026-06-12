@@ -877,6 +877,7 @@ GET /yandex/campaigns/{campaign_id}/strategy
   "status": "ACCEPTED",
   "daily_budget": {"Amount": 5000000000, "SpendMode": "STANDARD"},
   "counter_ids": [123456],
+  "priority_goals": null,
   "strategy": {
     "Search": {
       "BiddingStrategyType": "WB_MAXIMUM_CONVERSION_RATE",
@@ -909,16 +910,19 @@ GET /yandex/campaigns/{campaign_id}/strategy
 Поля:
 - `strategy` — сырой блок `BiddingStrategy` из v5 `campaigns.get`;
 - `strategy_summary` — нормализованный human-readable summary с микро→рубли конверсией;
+- `priority_goals` — сырой `TextCampaign.PriorityGoals` блок (если есть multi-goal стратегия); включает `Items` с `{GoalId, Value}` в микроединицах;
 - `source` — `"yandex"` в live-режимах, `"mock"` в mock-режиме;
 - `read_only` — всегда `true`.
 
 ### Обновление стратегии (write)
 
-Безопасный write-эндпоинт для обновления `TextCampaign.BiddingStrategy` существующей кампании через v5 `campaigns.update`. Поддерживает переключение поисковой стратегии на `WB_MAXIMUM_CONVERSION_RATE` (максимум конверсий).
+Безопасный write-эндпоинт для обновления `TextCampaign.BiddingStrategy` существующей кампании через v5 `campaigns.update`. Поддерживает переключение поисковой стратегии на `WB_MAXIMUM_CONVERSION_RATE` (максимум конверсий) с одной или несколькими целями Метрики.
 
 ```http
 POST /yandex/campaigns/{campaign_id}/strategy
 ```
+
+#### Режим одной цели (backward-compatible)
 
 Тело запроса:
 
@@ -937,26 +941,104 @@ POST /yandex/campaigns/{campaign_id}/strategy
 ```
 
 Поля:
-- `approved` (bool, required) — должно быть `true`;
-- `idempotency_key` (str, required, min 6 символов);
-- `dry_run` (bool, default `true`) — preview-only без мутации;
-- `strategy_type` — `"WB_MAXIMUM_CONVERSION_RATE"`;
-- `goal_id` (int, required) — ID одной цели Метрики, которая станет текущим `GoalId` стратегии;
-- `weekly_spend_limit` (float, required) — недельный бюджет в **рублях** (конвертируется в микроединицы × 1 000 000);
-- `bid_ceiling` (float, optional) — максимальная ставка в **рублях**;
-- `network` (str, optional) — `"SERVING_OFF"` для явного выключения сетей. Когда опущено, текущая Network-стратегия сохраняется из readback. Endpoint никогда молча не включает сети;
-- `reason` (str, optional) — причина для аудита.
+- `goal_id` (int, required exactly one of `goal_id`/`goal_ids`/`priority_goals`) — ID одной цели Метрики, которая станет текущим `GoalId` стратегии.
 
-Правила:
+#### Режим нескольких целей (multi-goal optimization)
+
+Оптимизация по нескольким целям одновременно. DirectPilot использует контракт Yandex Direct `TextCampaign.PriorityGoals` + `WbMaximumConversionRate.GoalId=13` (priority-goal strategy).
+
+##### Равновесные цели (convenience path)
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "multi-goal-001",
+  "dry_run": true,
+  "strategy_type": "WB_MAXIMUM_CONVERSION_RATE",
+  "goal_ids": [567732835, 567732836, 567732837],
+  "weekly_spend_limit": 7000.0,
+  "bid_ceiling": 1500.0,
+  "network": null,
+  "reason": "Optimize for all three goals equally"
+}
+```
+
+Поля:
+- `goal_ids` (list[int], max 30, уникальные, положительные) — список id целей с равной ценностью конверсии по умолчанию 1.0 RUB за каждую.
+
+##### Явные ценности конверсий
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "priority-goals-001",
+  "dry_run": true,
+  "strategy_type": "WB_MAXIMUM_CONVERSION_RATE",
+  "priority_goals": [
+    {"goal_id": 567732835, "value": 1000.0},
+    {"goal_id": 567732836, "value": 500.0}
+  ],
+  "weekly_spend_limit": 7000.0,
+  "bid_ceiling": 1500.0,
+  "network": null,
+  "reason": "Primary and secondary conversion goals"
+}
+```
+
+Поля:
+- `priority_goals` (list[{goal_id, value?}], max 30, уникальные goal_id) — список целей с явной ценностью конверсии в **рублях**. Если `value` не указан, используется 1.0 RUB.
+
+#### V5 contract для multi-goal
+
+```json
+{
+  "method": "campaigns.update",
+  "params": {
+    "Campaigns": [
+      {
+        "Id": 710691939,
+        "TextCampaign": {
+          "BiddingStrategy": {
+            "Search": {
+              "BiddingStrategyType": "WB_MAXIMUM_CONVERSION_RATE",
+              "WbMaximumConversionRate": {
+                "GoalId": 13,
+                "WeeklySpendLimit": 7000000000,
+                "BidCeiling": 1500000000,
+                "BudgetType": "WEEKLY_BUDGET"
+              }
+            },
+            "Network": {
+              "BiddingStrategyType": "SERVING_OFF"
+            }
+          },
+          "PriorityGoals": {
+            "Items": [
+              {"GoalId": 567732835, "Value": 1000000000},
+              {"GoalId": 567732836, "Value": 500000000}
+            ]
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+`WbMaximumConversionRate.GoalId=13` — специальный маркер v5 для приоритетных целей на TEXT_CAMPAIGN. `PriorityGoals.Items` содержит до 30 целей с `Value` в микроединицах Direct (рубли × 1 000 000).
+
+#### Правила
+
 - `dry_run=true` — preview payload без сетевого вызова. Доступен во всех режимах;
 - `dry_run=false` в `live_readonly`/`sandbox`/`mock` — **отклоняется с HTTP 409 до сетевого вызова**;
 - реальный apply возможен только в `live_write` с `approved=true` + `idempotency_key` + `dry_run=false`;
 - `weekly_spend_limit` и `bid_ceiling` — в **рублях** (публичное REST-соглашение). Конвертируются в Direct-микроединицы (× 1 000 000) строго в store-слое;
 - `goal_id` **заменяет** текущий `GoalId` в стратегии кампании. Это не добавление цели в список: повторный вызов с другим `goal_id` переключит стратегию на новую цель;
-- текущий endpoint не поддерживает `goal_ids: []` или «добавить все цели». Если нужна оптимизация по нескольким целям, сначала нужно подтвердить поддержку и payload-формат в Yandex Direct API и доработать DirectPilot;
+- `goal_ids` и `priority_goals` используют `GoalId=13` и `PriorityGoals.Items` — Direct API v5 shape для мультицелевой оптимизации TEXT_CAMPAIGN;
+- `goal_id`, `goal_ids`, и `priority_goals` **взаимоисключающие** — нужно выбрать ровно один режим;
 - `BudgetType` (например `WEEKLY_BUDGET`) сохраняется из readback-блока стратегии. Direct требует его при update; удаление `BudgetType` вызывает `error_code=8000`;
 - Network-стратегия по умолчанию сохраняется из текущего состояния кампании. Endpoint не включает РСЯ молча;
-- Для live-применения endpoint сначала делает readback кампании. Если `DailyBudget` нельзя надежно прочитать из `campaigns.get` (отсутствует или невалидная форма), apply отклоняется с `502` (fail-closed) до `campaigns.update`.
+- Для live-применения endpoint сначала делает readback кампании. Если `DailyBudget` нельзя надежно прочитать из `campaigns.get` (отсутствует или невалидная форма), apply отклоняется с `502` (fail-closed) до `campaigns.update`;
 - после apply выполняется readback через `campaigns_get_full_strategy` для верификации;
 - ответ включает `strategy_applied` (нормализованная конфигурация), `payload_preview` (на dry-run), `readback` (после apply), `provider_warnings`, `yandex_units`.
 
@@ -972,7 +1054,185 @@ GET /metrika/counters/{counter_id}/goals
 
 ---
 
-## 13. Audit log
+## 13. Autotargeting settings (автотаргетинг)
+
+Поисковые кампании Яндекс Директа (`TEXT_AD_GROUP` для Search / Search+YAN)
+обязательно содержат автотаргетинг-строку (`---autotargeting`) на каждую
+группу объявлений. Удалять или полностью выключать эту строку нельзя —
+вместо этого настраиваются категории и brand-опции.
+
+### Прочитать автотаргетинг кампании
+
+```http
+GET /yandex/campaigns/{campaign_id}/autotargeting
+```
+
+Read-only, доступен во всех режимах. Возвращает для каждой группы объявлений:
+
+- `ad_group_id`, `ad_group_name`
+- `autotargeting_keyword_id` — ID ключевой фразы `---autotargeting` в Yandex Direct
+- `status`, `state`, `serving_status`
+- `categories` — включённые категории автотаргетинга:
+  `Exact`, `Narrow`, `Alternative`, `Accessory`, `Broader`
+- `brand_options` — brand-опции:
+  `WithoutBrands`, `WithAdvertiserBrand`, `WithCompetitorsBrand`
+- `raw_provider` — сырой ответ Direct v5 `keywords.get` для отладки (redacted)
+
+Пример ответа:
+
+```json
+{
+  "campaign_id": "710691939",
+  "source": "yandex",
+  "read_only": true,
+  "default_preset": "exact_narrow",
+  "ad_groups": [
+    {
+      "ad_group_id": "12345",
+      "ad_group_name": "Ремонт кондиционеров",
+      "autotargeting_keyword_id": "67890",
+      "status": "ACCEPTED",
+      "state": "ON",
+      "serving_status": "ELIGIBLE",
+      "categories": {
+        "Exact": "YES",
+        "Narrow": "YES",
+        "Alternative": "NO",
+        "Accessory": "NO",
+        "Broader": "NO"
+      },
+      "brand_options": {
+        "WithoutBrands": "YES",
+        "WithAdvertiserBrand": "YES",
+        "WithCompetitorsBrand": "NO"
+      },
+      "raw_provider": {"Id": 67890, "Keyword": "---autotargeting"}
+    }
+  ]
+}
+```
+
+### Обновить автотаргетинг кампании
+
+```http
+POST /yandex/campaigns/{campaign_id}/autotargeting
+```
+
+Стандартный write-gate контракт:
+- `dry_run=true` (по умолчанию) — preview-only, показывает payload `keywords.update`
+  (и `keywords.add`, если `create_missing=true`), `applied=false`, без сетевого вызова.
+- `dry_run=false` требует `DIRECTPILOT_MODE=live_write`, `approved=true`
+  и `idempotency_key`.
+
+**Presets категорий:**
+
+| Preset | Exact | Narrow | Alternative | Accessory | Broader |
+|---|---|---|---|---|---|
+| `exact_narrow` (default) | YES | YES | NO | NO | NO |
+| `exact_narrow_broader` | YES | YES | NO | NO | YES |
+| `custom` | caller-defined | | | | |
+
+**Brand-option пресеты (по умолчанию):**
+- `WithoutBrands=YES`, `WithAdvertiserBrand=YES`, `WithCompetitorsBrand=NO`
+  (own-brand + no-brand — да; competitors — нет)
+
+**Важное правило Direct API:** в `keywords.add` категории, не переданные явно,
+Direct трактует как `YES` (все категории включены). DirectPilot всегда
+отправляет все пять категорий и все три brand-опции явно (`YES` или `NO`),
+чтобы избежать случайной активации всех категорий.
+
+Пример запроса (dry-run, default preset):
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "auto_001",
+  "dry_run": true,
+  "preset": "exact_narrow",
+  "ad_group_ids": ["12345"],
+  "reason": "Оставляем только Exact + Narrow для локальных услуг"
+}
+```
+
+Пример запроса (custom categories):
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "auto_002",
+  "dry_run": true,
+  "preset": "custom",
+  "categories": {
+    "exact": "YES",
+    "narrow": "YES",
+    "alternative": "YES",
+    "accessory": "NO",
+    "broader": "NO"
+  },
+  "brand_options": {
+    "without_brands": "YES",
+    "with_advertiser_brand": "YES",
+    "with_competitors_brand": "NO"
+  }
+}
+```
+
+Минимальный Direct v5 payload для `keywords.update`:
+
+```json
+{
+  "method": "update",
+  "params": {
+    "Keywords": [
+      {
+        "Id": 123,
+        "AutotargetingSettings": {
+          "Categories": {
+            "Exact": "YES",
+            "Narrow": "YES",
+            "Alternative": "NO",
+            "Accessory": "NO",
+            "Broader": "NO"
+          },
+          "BrandOptions": {
+            "WithoutBrands": "YES",
+            "WithAdvertiserBrand": "YES",
+            "WithCompetitorsBrand": "NO"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+Поведение apply:
+
+- Endpoint читает текущие `---autotargeting` строки через `keywords.get`,
+  фильтрует по `ad_group_ids` (если указаны), строит `keywords.update`
+  и отправляет.
+- По умолчанию `create_missing=False`: если у группы нет автотаргетинг-строки —
+  пропускается, пишется в `skipped_ad_group_ids`. Если ни одной строки
+  не найдено — fail-closed (502) с подсказкой использовать
+  `create_missing=true`.
+- При `create_missing=True`: для групп без автотаргетинг-строк формируется
+  `keywords.add` c `Keyword="---autotargeting"`, `AdGroupId` и явными
+  `AutotargetingSettings` (все пять категорий + три бренд-опции).
+  Dry-run показывает оба payload'а (`update` и `add`); apply вызывает
+  `keywords.add` и `keywords.update`. Повтор с тем же `idempotency_key`
+  возвращает кэшированный результат без дублирования вызовов.
+  `create_missing=True` опасен — требует dry-run preview и apply gate
+  (`live_write` + `approved` + `idempotency_key`).
+- Используется `AutotargetingSettings`, **не** deprecated `AutotargetingCategories`.
+
+**Маркетинговое правило:** для локальных сервисных поисковых кампаний
+НЕ включайте все категории автотаргетинга по умолчанию. Default preset
+`exact_narrow` безопасен. Broader — только по явному запросу пользователя
+с осознанием trade-off по охвату.
+
+---
+
+## 14. Audit log
 
 ```http
 GET /audit-log
@@ -1255,3 +1515,172 @@ POST /yandex/ads/moderate
 - **Не** используйте `campaigns.resume` для новых DRAFT-кампаний — это только для already-created stopped/suspended кампаний.
 - Нет автоматической модерации внутри `ads.add` — moderate вызывается отдельно и явно.
 - Ответ содержит `provider_warnings` с предупреждениями от Яндекс Директа (аналогично `ads.add`) — проверяйте на нефатальные отклонения.
+
+
+---
+
+## 13. Автотаргетинг (autotargeting) — чтение и обновление
+
+Автотаргетинг — обязательный компонент для поисковых (`Search`) и поисково-сетевых (`Search+YAN`) текстовых групп объявлений (`TEXT_AD_GROUPs`). Прямое удаление/полное отключение автотаргетинга может быть невалидным — вместо этого настраиваются категории и бренд-опции.
+
+DirectPilot не принимает настройки автотаргетинга молча. При создании/настройке кампании или группы объявлений агенты/воркфлоу должны явно спрашивать/выбирать настройки автотаргетинга.
+
+### Default preset: exact_narrow
+
+Для локальных сервисных поисковых кампаний (например, «сантехник», «электрик», «ремонт») дефолтный пресет:
+
+- **Категории:** `Exact=YES`, `Narrow=YES`, `Alternative=NO`, `Accessory=NO`, `Broader=NO`
+- **Бренд-опции:** `WithoutBrands=YES`, `WithAdvertiserBrand=YES`, `WithCompetitorsBrand=NO`
+
+Это означает: автотаргетинг работает только по точным и узким запросам, без альтернатив и сопутствующих товаров. Бренд-поиск включён для своего бренда и безбрендовых запросов, но исключены запросы конкурентов.
+
+`Broader=YES` допустим только при явном решении о расширении охвата (trade-off).
+
+### Прочитать текущие настройки автотаргетинга
+
+```http
+GET /yandex/campaigns/{campaign_id}/autotargeting
+```
+
+Read-only, доступен во всех режимах. Возвращает для каждой группы объявлений:
+
+- `ad_group_id`, `ad_group_name`
+- `autotargeting_keyword_id` — ID строки `---autotargeting`
+- `status`, `state`, `serving_status` (если доступны)
+- `categories` — все пять категорий (`Exact`, `Narrow`, `Alternative`, `Accessory`, `Broader`)
+- `brand_options` — все три бренд-опции (`WithoutBrands`, `WithAdvertiserBrand`, `WithCompetitorsBrand`)
+- `raw_provider` — сырой блок для отладки/саппорта (токены отредактированы)
+
+Пример ответа:
+
+```json
+{
+  "campaign_id": "710691939",
+  "source": "yandex",
+  "read_only": true,
+  "default_preset": "exact_narrow",
+  "ad_groups": [
+    {
+      "ad_group_id": "456",
+      "ad_group_name": "Ремонт кондиционеров",
+      "autotargeting_keyword_id": "123",
+      "status": "ACCEPTED",
+      "state": "ON",
+      "serving_status": "ELIGIBLE",
+      "categories": {
+        "Exact": "YES",
+        "Narrow": "YES",
+        "Alternative": "NO",
+        "Accessory": "NO",
+        "Broader": "NO"
+      },
+      "brand_options": {
+        "WithoutBrands": "YES",
+        "WithAdvertiserBrand": "YES",
+        "WithCompetitorsBrand": "NO"
+      }
+    }
+  ]
+}
+```
+
+### Обновить настройки автотаргетинга
+
+```http
+POST /yandex/campaigns/{campaign_id}/autotargeting
+```
+
+Стандартный контракт гейтов продукта:
+
+- `dry_run=true` (дефолт) — preview-only, возвращает точный `keywords.update` payload, без сетевого вызова.
+- `dry_run=false` требует `DIRECTPILOT_MODE=live_write`, `approved=true` и валидный `idempotency_key`.
+
+Пример: установить дефолтный пресет `exact_narrow`:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "auto_2026_001",
+  "dry_run": true,
+  "preset": "exact_narrow",
+  "reason": "Устанавливаем дефолтный автотаргетинг для сервисной кампании"
+}
+```
+
+Пример с явными категориями:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "auto_2026_002",
+  "dry_run": true,
+  "preset": "custom",
+  "categories": {
+    "exact": "YES",
+    "narrow": "YES",
+    "alternative": "YES",
+    "accessory": "NO",
+    "broader": "NO"
+  },
+  "brand_options": {
+    "without_brands": "YES",
+    "with_advertiser_brand": "YES",
+    "with_competitors_brand": "NO"
+  }
+}
+```
+
+### Пресеты категорий
+
+| Пресет | Exact | Narrow | Alternative | Accessory | Broader |
+|--------|-------|--------|-------------|-----------|---------|
+| `exact_narrow` (дефолт) | YES | YES | NO | NO | NO |
+| `exact_narrow_broader` | YES | YES | NO | NO | YES |
+| `custom` | явно указаны | явно указаны | явно указаны | явно указаны | явно указаны |
+
+### Пресеты бренд-опций
+
+| Пресет (в коде) | WithoutBrands | WithAdvertiserBrand | WithCompetitorsBrand |
+|-----------------|---------------|---------------------|----------------------|
+| `own_no_competitors` (дефолт) | YES | YES | NO |
+
+### Dry-run payload
+
+Dry-run (и apply) всегда отправляет все пять категорий и все три бренд-опции **явно** (`YES` или `NO`). Это предотвращает pitfall Direct API: в `keywords.add` категории, не указанные явно, трактуются как включённые (`YES`).
+
+Минимальный Direct payload для `keywords.update`:
+
+```json
+{
+  "method": "update",
+  "params": {
+    "Keywords": [
+      {
+        "Id": 123,
+        "AutotargetingSettings": {
+          "Categories": {
+            "Exact": "YES",
+            "Narrow": "YES",
+            "Alternative": "NO",
+            "Accessory": "NO",
+            "Broader": "NO"
+          },
+          "BrandOptions": {
+            "WithoutBrands": "YES",
+            "WithAdvertiserBrand": "YES",
+            "WithCompetitorsBrand": "NO"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+### Важные правила
+
+1. Endpoint делает read-before-write: читает текущие строки `---autotargeting` через `keywords.get` и строит `keywords.update` по `Id`.
+2. Если группа не имеет автотаргетинг-строки, эндпойнт **пропускает** её (пишет в `skipped_ad_group_ids`) при `create_missing=False`. Если ни одной строки не найдено — fail-closed (502) с подсказкой использовать `create_missing=true`. При `create_missing=True` создаются новые строки через `keywords.add` (явные категории + бренд-опции, dry-run/apply gate).
+3. **Не использует** deprecated поле `AutotargetingCategories` — только `AutotargetingSettings` с `Categories` + `BrandOptions`.
+4. `ad_group_ids` (опционально) — список ID групп для таргетинга. Если не указан — обрабатываются все группы кампании с автотаргетинг-строками.
+5. Пустой `ad_group_ids` отклоняется валидацией (HTTP 422).
