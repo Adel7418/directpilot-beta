@@ -71,6 +71,10 @@ def _strategy_get_handler(
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert body["method"] == "get"
+        params = body.get("params") or {}
+        if "State" in params.get("FieldNames", []):
+            assert "CounterIds" not in params.get("FieldNames", [])
+            assert "CounterIds" in params.get("TextCampaignFieldNames", [])
         # Build the TextCampaign block
         search_block: dict[str, Any] = {
             "BiddingStrategyType": search_type,
@@ -101,9 +105,9 @@ def _strategy_get_handler(
                 "Amount": 5000000000,
                 "SpendMode": "STANDARD",
             },
-            "CounterIds": [123456],
             "TextCampaign": {
                 "BiddingStrategy": strategy,
+                "CounterIds": [123456],
             },
         }
         return httpx.Response(

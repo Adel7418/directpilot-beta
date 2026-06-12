@@ -2836,8 +2836,8 @@ def yandex_strategy_read(
             state = camp.get("State")
             status = camp.get("Status")
             raw_daily_budget = camp.get("DailyBudget")
-            raw_counter_ids = camp.get("CounterIds")
             tc = camp.get("TextCampaign")
+            raw_counter_ids = tc.get("CounterIds") if isinstance(tc, dict) else None
             raw_strategy = tc.get("BiddingStrategy") if isinstance(tc, dict) else None
         else:
             campaign_name = None

@@ -831,8 +831,11 @@ class YandexDirectClient:
     _DAILY_BUDGET_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "DailyBudget")
     _STRATEGY_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "Type", "DailyBudget")
     _STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES: tuple[str, ...] = ("BiddingStrategy",)
+    _STRATEGY_FULL_TEXT_CAMPAIGN_FIELD_NAMES: tuple[str, ...] = (
+        "BiddingStrategy", "CounterIds",
+    )
     _STRATEGY_FULL_FIELD_NAMES: tuple[str, ...] = (
-        "Id", "Name", "Type", "State", "Status", "DailyBudget", "CounterIds",
+        "Id", "Name", "Type", "State", "Status", "DailyBudget",
     )
 
     def campaigns_get_daily_budget(
@@ -892,8 +895,9 @@ class YandexDirectClient:
 
         Returns the standard ``{ok, result, units, error}`` envelope.
         The ``result.Campaigns[0]`` carries ``Id``, ``Name``, ``Type``,
-        ``State``, ``Status``, ``DailyBudget``, ``CounterIds``, and
-        ``TextCampaign.BiddingStrategy`` (via ``TextCampaignFieldNames``).
+        ``State``, ``Status``, ``DailyBudget``, and
+        ``TextCampaign.BiddingStrategy`` / ``TextCampaign.CounterIds``
+        (via ``TextCampaignFieldNames``).
         Used by ``GET /yandex/campaigns/{campaign_id}/strategy``.
         """
         campaign_id = self._direct_id(campaign_id)
@@ -903,7 +907,7 @@ class YandexDirectClient:
                 "SelectionCriteria": {"Ids": [campaign_id]},
                 "FieldNames": list(self._STRATEGY_FULL_FIELD_NAMES),
                 "TextCampaignFieldNames": list(
-                    self._STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES
+                    self._STRATEGY_FULL_TEXT_CAMPAIGN_FIELD_NAMES
                 ),
             },
         }
