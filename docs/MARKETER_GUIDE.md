@@ -95,6 +95,21 @@ DirectPilot — единая прослойка для маркетолога:
 - `/metrika/counters`, `/metrika/counters/{counter_id}/goals`, `/metrika/counters/{counter_id}/summary`, `/metrika/counters/{counter_id}/traffic-sources`
 - `/wordstat/top`, `/wordstat/dynamics`, `/wordstat/regions`, `/wordstat/regions-tree`
 
+## Scope rule: конкретная кампания vs весь аккаунт
+
+Перед любым выводом сначала зафиксируйте scope запроса пользователя.
+
+- Если пользователь спрашивает про **конкретную кампанию**, выводы должны опираться на campaign-scoped endpoints (`/yandex/campaigns/{campaign_id}/...`) или на account-wide данные, явно отфильтрованные через `CampaignId`/`AdGroupId`/`AdId`/связанный id из campaign readback.
+- Если пользователь спрашивает про **весь аккаунт**, account-wide endpoints (`/yandex/campaigns`, `/yandex/sitelinks`, `/yandex/businesses`, `/yandex/vcards`, finance/account reports) подходят для account-level выводов.
+- Account-wide endpoint сам по себе **не доказывает**, что найденная сущность привязана к выбранной кампании. Его можно использовать только как справочник после того, как campaign-scoped readback дал конкретный id связи.
+
+Пример для быстрых ссылок:
+
+- для конкретной кампании используйте `GET /yandex/campaigns/{campaign_id}/ad-assets` и смотрите `SitelinkSetId` у объявления + `sitelinks_sets` в ответе;
+- `GET /yandex/sitelinks` показывает все наборы аккаунта и не является доказательством привязки к этой кампании.
+
+То же правило применяется ко всему: объявлениям, ключам, минус-словам, бюджетам, визиткам, организациям, отчетам, быстрым ссылкам и другим ассетам. Если вопрос про кампанию — проверяйте именно кампанию; если вопрос общий — можно анализировать весь аккаунт.
+
 ## Что маркетолог может делать сам
 
 **Важно:** `/demo/*` и любые mock/sandbox-only маршруты не используются в рабочем маркетинг-процессе.

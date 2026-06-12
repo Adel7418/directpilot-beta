@@ -1004,6 +1004,8 @@ GET /yandex/agency-clients -> agencyclients.get
 
 Назначение: агрегированный аудит внешнего вида объявлений (`ad-assets`), быстрые ссылки, визитки, BusinessId-привязка, изображения, креативы, фиды, организации и агентские клиенты. `GET /yandex/campaigns/{campaign_id}/ad-assets` — рекомендуемый endpoint для маркетолога: собирает все объявления с расширенными полями (Title, Title2, Text, Href, SitelinkSetId, BusinessId, VCardId, AdExtensions), разрешает быстрые ссылки, бизнесы и визитки в одном ответе. `GET /yandex/sitelinks` — низкоуровневый helper для прямого чтения наборов быстрых ссылок.
 
+Scope rule: если пользователь спрашивает про **конкретную кампанию**, используйте campaign-scoped endpoints (`/yandex/campaigns/{campaign_id}/...`) или account-wide данные, явно связанные с кампанией через `CampaignId`/`AdGroupId`/`AdId`/`SitelinkSetId`/`BusinessId`/`VCardId` из campaign readback. Если пользователь спрашивает про **весь аккаунт**, используйте account-wide endpoints. Нельзя делать вывод о конкретной кампании только потому, что сущность есть в общем аккаунтном ответе (`GET /yandex/sitelinks`, `/yandex/businesses`, `/yandex/vcards`, finance/account reports и т.п.). Это правило касается не только быстрых ссылок, а всех данных: объявлений, ключей, минусов, бюджетов, отчетов, организаций, визиток и ассетов.
+
 Практический контактный маршрут (детально: `docs/YANDEX_BUSINESS_CONTACTS.md`):
 
 Если `POST /yandex/vcards` вернул `error_code=3500` (`Создание визиток не поддерживается`), не перебирать `vcard` payload — переходить в BusinessId-путь:

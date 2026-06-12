@@ -48,6 +48,13 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/ads`
    - `GET /yandex/campaigns/{campaign_id}/keywords`
    - `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида (заголовки, тексты, быстрые ссылки, организации, визитки)
+
+Scope rule for operators/agents:
+
+- If the user asks about a **specific campaign**, conclusions must come from campaign-scoped endpoints (`/yandex/campaigns/{campaign_id}/...`) or from account-wide data explicitly filtered through campaign/ad/ad-group ids.
+- If the user asks about the **whole account**, account-wide endpoints are valid.
+- Never infer that an account-wide entity is attached to a campaign merely because it exists in the account. Example: `GET /yandex/sitelinks` lists all sitelink sets; for campaign-specific quick links use `GET /yandex/campaigns/{campaign_id}/ad-assets` and its `SitelinkSetId`/`sitelinks_sets` readback.
+
 4. Read performance:
    - `GET /yandex/reports/summary?campaign_id=...&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`
    - `GET /yandex/reports/search-queries` when available for intent/minus-keyword analysis.
