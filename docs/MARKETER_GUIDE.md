@@ -31,7 +31,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
 | Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC; **live** в `sandbox`/`live_readonly`/`live_write` (источник `CAMPAIGN_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock` |
-| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи |
+| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; пустой live-отчёт = `items=[]` с `source="yandex"` (не mock-fallback) |
 | Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
 | Проверить аудит после публикации | `GET /audit-log` | `live_create_campaign_*`, `live_create_campaign_failed`; для DRAFT-запуска ожидайте отдельный факт отправки ads на модерацию |
 | Отправить DRAFT в модерацию | Direct `ads.moderate` по `ad_ids` | для новой кампании после live-create: **не** `campaigns.resume`; ожидаемый readback: campaign `Status=MODERATION`, ads `Status=MODERATION` |
@@ -53,6 +53,25 @@ DirectPilot — единая прослойка для маркетолога:
 - В `sandbox`/`live_readonly`/`live_write` endpoint возвращает `source="yandex"` при рабочей интеграции.
 - `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`.
 - В live-режимах HTTP **409** означает, что Yandex Direct client/токен недоступен; это не скрытая подмена mock-данными.
+
+Важно по `GET /yandex/reports/search-queries`:
+
+- В `sandbox`/`live_readonly`/`live_write` с настроенной интеграцией endpoint
+  возвращает `source="yandex"` и реальный результат
+  `SEARCH_QUERY_PERFORMANCE_REPORT` (`Query / CampaignId / AdGroupId /
+  Impressions / Clicks / Ctr / Cost`). Источник: `SEARCH_QUERY_PERFORMANCE_REPORT`.
+- `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`; если в
+  live-режиме вы видите старые mock-фразы (`сантехник на дом казань`,
+  `вызов электрика недорого`, `ремонт квартир под ключ`) — это баг
+  конфигурации, а не ожидаемое поведение.
+- Пустой live-отчёт (нет строк за период) — **валидный** ответ:
+  `items=[]`, `source="yandex"`, `read_only=true`. Не 502, не mock-fallback.
+- В live-режимах HTTP **409** означает, что Yandex Direct client/токен
+  недоступен.
+- Фильтр `campaign_id` уходит в Reports API как
+  `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN",
+  Values: ["..."]}]`, **не** `SelectionCriteria.CampaignIds` (эта форма
+  возвращает HTTP 400 на reports endpoint).
 
 
 ## Что использовать дополнительно (advanced)

@@ -6027,7 +6027,64 @@
     },
     "/yandex/reports/search-queries": {
       "get": {
+        "description": "Search query performance for the requested period.\n\nIn ``DIRECTPILOT_MODE=mock`` the deterministic mock payload is returned\n(with ``source=\"mock\"``). In any non-mock mode (``sandbox`` /\n``live_readonly`` / ``live_write``) with a configured Yandex Direct\nclient, the live ``SEARCH_QUERY_PERFORMANCE_REPORT`` v5 reports\nendpoint is called and the TSV is parsed into YandexSearchQuery items\nwith ``source=\"yandex\"``, ``read_only=True``. An empty live report is\na valid response — it returns ``items=[]`` and ``source=\"yandex\"``,\nnot a mock fallback and not a 502.\n\nWhen the live mode is selected but no client/token is available the\nendpoint surfaces HTTP 409 (same contract as\n``/yandex/reports/summary`` and the other read-only endpoints), not\na silent mock — marketing must not mistake mock numbers for live\nnumbers.",
         "operationId": "yandex_search_queries_yandex_reports_search_queries_get",
+        "parameters": [
+          {
+            "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
+              "title": "Date From"
+            }
+          },
+          {
+            "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+              "title": "Date To"
+            }
+          },
+          {
+            "description": "Optional Yandex Direct campaign id filter.",
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional Yandex Direct campaign id filter.",
+              "title": "Campaign Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6038,6 +6095,22 @@
               }
             },
             "description": "Successful Response"
+          },
+          "409": {
+            "description": "Non-mock mode requires configured Yandex credentials/client."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Redacted Yandex Direct Reports API error."
           }
         },
         "summary": "Yandex Search Queries"
@@ -6162,6 +6235,9 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "description": "Non-mock mode requires configured Yandex credentials/client."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -6171,6 +6247,9 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "description": "Redacted Yandex Direct Reports API error."
           }
         },
         "summary": "Yandex Reports Summary"

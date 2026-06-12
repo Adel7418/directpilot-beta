@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import httpx
@@ -768,7 +770,6 @@ class YandexDirectClient:
         campaign_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         field_names = field_names or ["Date", "CampaignId", "CampaignName", "Impressions", "Clicks", "Cost", "Ctr"]
-        report_name = f"directpilot-{report_type.lower().replace('_', '-')}"
         selection_criteria: dict[str, Any] = {"DateFrom": date_from, "DateTo": date_to}
         if campaign_ids:
             # Reports API selection filters campaign ids through Filter items,
@@ -781,6 +782,19 @@ class YandexDirectClient:
                     "Values": [str(self._direct_id(campaign_id)) for campaign_id in campaign_ids],
                 }
             ]
+        # Direct reports reject reusing the same ReportName for different
+        # parameters. Include a short stable hash of the report definition so
+        # changing fields/date/filter does not collide with a queued/generated
+        # report of the same type.
+        report_signature = {
+            "ReportType": report_type,
+            "SelectionCriteria": selection_criteria,
+            "FieldNames": field_names,
+        }
+        report_hash = hashlib.sha1(
+            json.dumps(report_signature, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()[:10]
+        report_name = f"directpilot-{report_type.lower().replace('_', '-')}-{report_hash}"
         payload = {
             "params": {
                 "SelectionCriteria": selection_criteria,
@@ -848,6 +862,28 @@ class YandexDirectClient:
 
         if response.status_code >= 400:
             raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
+
+        # Reports usually return TSV, but Direct can still return a JSON error
+        # envelope with HTTP 200. Do not let that masquerade as an empty TSV
+        # report in parsed endpoints.
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and "error" in body:
+            error = body.get("error")
+            if isinstance(error, dict):
+                return {
+                    "ok": False,
+                    "error": {"error_code": error.get("error_code")},
+                    "units": response.headers.get("Units"),
+                }
+            return {
+                "ok": False,
+                "error": {"error_code": None},
+                "units": response.headers.get("Units"),
+            }
+
         return {"ok": True, "result": response.text, "units": response.headers.get("Units")}
 
     def _call(self, service: str, payload: dict[str, Any]) -> dict[str, Any]:

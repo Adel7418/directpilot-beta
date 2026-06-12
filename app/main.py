@@ -1139,7 +1139,14 @@ def yandex_search_queries_live(
         lambda c: c.report("SEARCH_QUERY_PERFORMANCE_REPORT", date_from=date_from, date_to=date_to),
     )
 
-@app.get("/yandex/reports/summary", response_model=ReportSummary)
+@app.get(
+    "/yandex/reports/summary",
+    response_model=ReportSummary,
+    responses={
+        409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
+        502: {"description": "Redacted Yandex Direct Reports API error."},
+    },
+)
 def yandex_reports_summary(
     date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to 7 days ago."),
     date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to today."),
@@ -1286,16 +1293,164 @@ def _aggregate_campaign_performance_tsv(
     return {"impressions": impressions, "clicks": clicks, "spend": spend}
 
 
+# Default field set for SEARCH_QUERY_PERFORMANCE_REPORT. The order matches
+# what we request from Yandex and what the parser expects:
+# Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost.
+_SEARCH_QUERY_REPORT_FIELDS: tuple[str, ...] = (
+    "Query",
+    "CampaignId",
+    "AdGroupId",
+    "Impressions",
+    "Clicks",
+    "Ctr",
+    "Cost",
+)
+
+
+def _aggregate_search_query_tsv(
+    tsv_text: str, campaign_id: str | None = None
+) -> list[YandexSearchQuery]:
+    """Parse a SEARCH_QUERY_PERFORMANCE_REPORT TSV into YandexSearchQuery items.
+
+    Expected column order (matches ``_SEARCH_QUERY_REPORT_FIELDS`` above):
+        Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost
+
+    Rows whose ``CampaignId`` does not match the optional ``campaign_id``
+    filter are dropped. Malformed rows are skipped silently (the endpoint
+    surfaces 502 only on transport / envelope errors, not on per-row parse
+    noise). Empty input returns an empty list — a real live report with
+    no rows is a valid response, not a 502 and not a mock fallback.
+    """
+    items: list[YandexSearchQuery] = []
+    for raw_line in tsv_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        cols = line.split("\t")
+        # Need at least Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost
+        # i.e. index 6 (Cost) reachable.
+        if len(cols) < 7:
+            continue
+        # Skip the header row (TSV first line repeats the field names).
+        if cols[0].lower() == "query":
+            continue
+        if campaign_id is not None and cols[1] != campaign_id:
+            continue
+        try:
+            impressions = int(cols[3])
+            clicks = int(cols[4])
+            ctr = float(cols[5])
+        except ValueError:
+            # Malformed numeric — skip the row, do not raise.
+            continue
+        items.append(
+            YandexSearchQuery(
+                query=cols[0],
+                impressions=impressions,
+                clicks=clicks,
+                ctr=round(ctr, 4),
+            )
+        )
+    return items
+
+
 @app.get(
     "/yandex/reports/search-queries",
     response_model=YandexSearchQueriesReport,
+    responses={
+        409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
+        502: {"description": "Redacted Yandex Direct Reports API error."},
+    },
 )
-def yandex_search_queries() -> YandexSearchQueriesReport:
-    items = [YandexSearchQuery(**q) for q in mock_yandex.search_queries()]
+def yandex_search_queries(
+    date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to 7 days ago."),
+    date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to today."),
+    campaign_id: str | None = Query(default=None, description="Optional Yandex Direct campaign id filter."),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexSearchQueriesReport:
+    """Search query performance for the requested period.
+
+    In ``DIRECTPILOT_MODE=mock`` the deterministic mock payload is returned
+    (with ``source="mock"``). In any non-mock mode (``sandbox`` /
+    ``live_readonly`` / ``live_write``) with a configured Yandex Direct
+    client, the live ``SEARCH_QUERY_PERFORMANCE_REPORT`` v5 reports
+    endpoint is called and the TSV is parsed into YandexSearchQuery items
+    with ``source="yandex"``, ``read_only=True``. An empty live report is
+    a valid response — it returns ``items=[]`` and ``source="yandex"``,
+    not a mock fallback and not a 502.
+
+    When the live mode is selected but no client/token is available the
+    endpoint surfaces HTTP 409 (same contract as
+    ``/yandex/reports/summary`` and the other read-only endpoints), not
+    a silent mock — marketing must not mistake mock numbers for live
+    numbers.
+    """
+    # Fallback path: mock mode, or live mode but no client/token.
+    if settings.directpilot_mode == "mock" or client is None:
+        if settings.directpilot_mode != "mock":
+            # Live read mode without a usable client — be explicit
+            # rather than silently returning mock data.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This endpoint requires sandbox, live_readonly, or live_write "
+                    "mode with Yandex credentials"
+                ),
+            )
+        items = [YandexSearchQuery(**q) for q in mock_yandex.search_queries()]
+        return YandexSearchQueriesReport(
+            period="last_7_days",
+            items=items,
+            source="mock",
+            read_only=True,
+        )
+
+    # Live read-only path: real SEARCH_QUERY_PERFORMANCE_REPORT, parsed.
+    today = date.today()
+    if date_to is None:
+        date_to = today.isoformat()
+    if date_from is None:
+        date_from = (today - timedelta(days=6)).isoformat()
+
+    period = f"{date_from}..{date_to}"
+
+    try:
+        report_kwargs: dict[str, Any] = {
+            "date_from": date_from,
+            "date_to": date_to,
+            "field_names": list(_SEARCH_QUERY_REPORT_FIELDS),
+        }
+        if campaign_id is not None:
+            report_kwargs["campaign_ids"] = [campaign_id]
+        response = client.report(
+            "SEARCH_QUERY_PERFORMANCE_REPORT", **report_kwargs
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"Yandex Direct rejected reports: error_code="
+                    f"{err.get('error_code')!r}"
+                ),
+            },
+        )
+
+    # The client returns the raw TSV text in ``result``. NEVER log it
+    # (it contains customer search query data); parse and aggregate.
+    tsv_text = response.get("result") or ""
+    items = _aggregate_search_query_tsv(tsv_text, campaign_id=campaign_id)
+
     return YandexSearchQueriesReport(
-        period="last_7_days",
+        period=period,
         items=items,
-        source="mock",
+        source="yandex",
         read_only=True,
     )
 

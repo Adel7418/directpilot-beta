@@ -597,26 +597,57 @@ Query-параметры (все опциональны):
 ### Поисковые запросы
 
 ```http
-GET /yandex/reports/search-queries
+GET /yandex/reports/search-queries?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&campaign_id=...
 ```
 
-Ответы содержат признаки:
+Возвращает реальные поисковые запросы (`Query / Impressions / Clicks / Ctr`) за
+период, агрегированные по запросам. Источник — `SEARCH_QUERY_PERFORMANCE_REPORT`
+v5 reports.
 
-```json
-{
-  "source": "yandex",
-  "read_only": true
-}
-```
+- `DIRECTPILOT_MODE=mock` → `source="mock"`, детерминированный fallback payload.
+- `sandbox` / `live_readonly` / `live_write` с настроенным `YANDEX_OAUTH_TOKEN` и
+  доступным Yandex client → `source="yandex"`, `read_only=true`, реальный вызов
+  `SEARCH_QUERY_PERFORMANCE_REPORT` (поля `Query, CampaignId, AdGroupId,
+  Impressions, Clicks, Ctr, Cost`).
+- `sandbox` / `live_readonly` / `live_write` без доступного Yandex client или
+  токена → HTTP **409**. Это осознанный отказ, а не silent mock.
+- Пустой live-отчёт (нет строк за период) — **валидный** ответ: `items=[]`,
+  `source="yandex"`, `read_only=true`. Это не 502 и не silent mock-fallback.
+  Если у кампании реально нет поисковых показов за период, маркетолог видит
+  пустой список, а не старые mock-фразы (`сантехник на дом казань`,
+  `вызов электрика недорого`, `ремонт квартир под ключ`).
 
-Последняя проверка реального аккаунта:
+Опциональные query-параметры:
 
-```text
-GET /yandex/campaigns -> count=1
-GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/ad-groups -> count=1
-GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/ads -> count=1
-GET /yandex/campaigns/[REDACTED_CAMPAIGN_ID]/keywords -> count=32
-```
+- `date_from`, `date_to` (YYYY-MM-DD) — диапазон периода, по умолчанию
+  последние 7 дней.
+- `campaign_id` — фильтр по конкретной кампании. В Reports API v5 фильтр
+  передаётся через `SelectionCriteria.Filter = [{Field: "CampaignId",
+  Operator: "IN", Values: ["..."]}]`, **не** через `SelectionCriteria.CampaignIds`
+  (эта форма возвращает HTTP 400 на reports endpoint).
+- `ReportName` должен быть уникальным для набора параметров отчёта. Live Direct
+  вернул HTTP 400 `error_code=4000`, когда один и тот же `ReportName`
+  использовался с разными fields/date/filter: `Отчет с таким названием, но с
+  отличающимися параметрами уже сформирован или находится в очереди. Измените
+  значение в параметре ReportName`. DirectPilot добавляет стабильный hash от
+  `ReportType + SelectionCriteria + FieldNames`, чтобы внешний агент не
+  повторял эту ошибку.
+
+`period` отражает запрошенный диапазон в формате `YYYY-MM-DD..YYYY-MM-DD`; в
+mock-режиме `period="last_7_days"`.
+
+Пример валидации: если отчёт содержит 1 строку TSV с
+`Query=ремонт квартир казань, CampaignId=710691939, AdGroupId=1001,
+Impressions=540, Clicks=22, Ctr=4.07, Cost=660.00`, endpoint вернёт
+`items=[{query: "ремонт квартир казань", impressions: 540, clicks: 22,
+ctr: 4.07}]` с `source="yandex"`.
+
+> **Маркетинговый контракт.** В live-режимах mock-фразы никогда не возвращаются.
+> Видеть `source="mock"` в `sandbox` / `live_readonly` / `live_write` — баг
+> конфигурации, а не ожидаемое поведение.
+
+Также доступен raw-эндпоинт `GET /yandex/reports/search-queries-live?date_from=...&date_to=...`
+(возвращает `YandexRawResult` с TSV-телом ответа).
 
 ---
 

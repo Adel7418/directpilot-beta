@@ -191,7 +191,9 @@ def test_report_method_posts_to_reports_endpoint_with_report_name():
     result = client.report("CAMPAIGN_PERFORMANCE_REPORT", date_from="2026-06-01", date_to="2026-06-06")
 
     assert captured["url"] == "https://api.direct.yandex.com/json/v5/reports"
-    assert captured["body"]["params"]["ReportName"] == "directpilot-campaign-performance-report"
+    assert captured["body"]["params"]["ReportName"].startswith(
+        "directpilot-campaign-performance-report-"
+    )
     assert captured["body"]["params"]["ReportType"] == "CAMPAIGN_PERFORMANCE_REPORT"
     assert captured["body"]["params"]["DateRangeType"] == "CUSTOM_DATE"
     assert result["ok"] is True
