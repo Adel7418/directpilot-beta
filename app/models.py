@@ -1471,3 +1471,152 @@ class YandexTimeTargetingReadResult(BaseModel):
             "available; ``None`` when the raw block cannot be parsed."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# Campaign strategy read / update
+# ---------------------------------------------------------------------------
+
+
+class YandexStrategyReadResult(BaseModel):
+    """Response envelope for ``GET /yandex/campaigns/{campaign_id}/strategy``.
+
+    Read-only in all modes — no ``approved``, no ``idempotency_key``,
+    no network write call. Returns the current campaign type, strategy
+    block, CounterIds (if available), DailyBudget (if relevant),
+    State, Status, and Name from Yandex Direct v5 ``campaigns.get``.
+    """
+
+    campaign_id: str
+    campaign_name: str | None = Field(
+        default=None,
+        description="Campaign name from Yandex Direct (live) or mock.",
+    )
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = True
+    campaign_type: str | None = Field(
+        default=None,
+        description="Campaign Type from Direct v5 (e.g. TEXT_CAMPAIGN).",
+    )
+    state: str | None = Field(
+        default=None,
+        description="Campaign State from Direct v5 (e.g. ON, OFF).",
+    )
+    status: str | None = Field(
+        default=None,
+        description="Campaign Status from Direct v5 (e.g. DRAFT, ACCEPTED).",
+    )
+    daily_budget: dict | None = Field(
+        default=None,
+        description=(
+            "Current DailyBudget block (Amount in micros, SpendMode). "
+            "``null``/None when the campaign has no daily budget configured "
+            "(e.g. after switching to a weekly conversion strategy)."
+        ),
+    )
+    counter_ids: list[int] | None = Field(
+        default=None,
+        description="CounterIds attached to the campaign in Direct v5, if any.",
+    )
+    strategy: dict | None = Field(
+        default=None,
+        description=(
+            "Raw TextCampaign.BiddingStrategy block as returned by v5 "
+            "``campaigns.get``. Contains ``Search`` and ``Network`` "
+            "sub-objects with strategy-type-specific params."
+        ),
+    )
+    strategy_summary: dict | None = Field(
+        default=None,
+        description=(
+            "Normalized human-readable strategy summary. "
+            "Example: {search: {type: 'WB_MAXIMUM_CONVERSION_RATE', "
+            "goal_id: 567732835, weekly_spend_limit_rub: 7000.0, "
+            "bid_ceiling_rub: 1500.0}, network: {type: 'SERVING_OFF'}}."
+        ),
+    )
+
+
+class YandexStrategyRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/{campaign_id}/strategy``.
+
+    Updates the search TextCampaign.BiddingStrategy for an existing
+    campaign. Currently supports switching the search channel to
+    ``WB_MAXIMUM_CONVERSION_RATE``. The standard product gate contract
+    applies: ``dry_run=True`` is preview-only (default); real apply
+    requires ``DIRECTPILOT_MODE=live_write``, ``approved=True``,
+    ``idempotency_key``, and ``dry_run=False``.
+
+    ``weekly_spend_limit`` and ``bid_ceiling`` are in RUBLES
+    (public REST convention). The store converts to Direct micros
+    (multiply by 1_000_000) before building the v5 payload. The
+    conversion is exact and documented.
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    strategy_type: Literal["WB_MAXIMUM_CONVERSION_RATE"] = Field(
+        default="WB_MAXIMUM_CONVERSION_RATE",
+        description="Search bidding strategy type to set.",
+    )
+    goal_id: int = Field(
+        ...,
+        ge=1,
+        description="Metrika goal id for WB_MAXIMUM_CONVERSION_RATE.",
+    )
+    weekly_spend_limit: float = Field(
+        ...,
+        gt=0,
+        description="Weekly spend limit in RUBLES. Converted to micros for Direct.",
+    )
+    bid_ceiling: float | None = Field(
+        default=None,
+        gt=0,
+        description="Optional bid ceiling in RUBLES. Converted to micros for Direct.",
+    )
+    network: Literal["SERVING_OFF"] | None = Field(
+        default=None,
+        description=(
+            "Explicit Network strategy override. When omitted, the current "
+            "Network strategy is preserved from readback. Set to "
+            "``SERVING_OFF`` to explicitly disable networks. The endpoint "
+            "never silently turns networks ON."
+        ),
+    )
+    reason: str | None = None
+
+
+class YandexStrategyResult(BaseModel):
+    """Response envelope for ``POST /yandex/campaigns/{campaign_id}/strategy``.
+
+    * ``dry_run=True`` returns ``applied=False`` with ``payload_preview``.
+    * ``dry_run=False`` + ``live_write`` returns ``applied=True``
+      with optional ``readback``.
+    * ``source=\"mock\"`` only in mock-mode dry-run.
+    """
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    audit_id: str
+    payload_preview: dict | None = Field(
+        default=None,
+        description=(
+            "The v5 ``campaigns.update`` payload that WOULD be sent. "
+            "Present on dry-run; ``None`` on a successful apply."
+        ),
+    )
+    strategy_applied: dict | None = Field(
+        default=None,
+        description="The strategy configuration that was applied (normalized).",
+    )
+    readback: dict | None = Field(
+        default=None,
+        description="Post-apply readback of the strategy block from Direct. ``None`` on dry-run.",
+    )
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    yandex_units: int | None = None
+    yandex_error: str | None = None

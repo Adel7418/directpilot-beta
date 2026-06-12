@@ -126,6 +126,17 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - If the `DailyBudget` read yields `null` (типичная картинка для text smart-strategies), endpoint does a second `campaigns.get` with `TextCampaignFieldNames` to read `Type` + `TextCampaign.BiddingStrategy`. For `TEXT_CAMPAIGN` cases, this strategy block is required in update payload together with `TimeTargeting`; missing strategy is treated as fail-closed and returns 502 before `campaigns.update`. `BudgetType` from read-side **must be preserved** in the write-side payload for `WbMaximumConversionRate` / `WbMaximumClicks` — the live API returns it on GET and requires it on UPDATE; stripping `BudgetType` causes error_code=8000.
 - If the `DailyBudget` or strategy read fails/returns an ambiguous shape, apply is rejected with 502 (fail closed; no invented budget/strategy values). A successful `DailyBudget: null` read means there is no daily budget to preserve.
 - Always use `dry_run=true` first to confirm the v5 payload preview; the apply path follows up with `campaigns.get TimeTargeting` for a read-back so the operator can diff `readback.TimeTargeting` against `schedule_applied`.
+
+### Strategy management (BiddingStrategy)
+
+- Current strategy can be read via `GET /yandex/campaigns/{campaign_id}/strategy` — read-only, no write gate, available in all modes. Returns `Type`, `State`, `Status`, `DailyBudget`, `CounterIds`, `TextCampaign.BiddingStrategy` (raw) and `strategy_summary` (normalized with micros→rubles conversion).
+- To update strategy, use `POST /yandex/campaigns/{campaign_id}/strategy` — gate contract identical to time-targeting: `approved` + `idempotency_key` + `dry_run`; `live_readonly` blocks real writes with HTTP 409; real apply only in `live_write`.
+- Live apply first reads campaign `DailyBudget` from `campaigns.get` and requires an unambiguous read for mode-dependent shape mapping. If `DailyBudget` cannot be reliably extracted in a supported shape, the request is rejected before `campaigns.update` with fail-closed 502 (no invented budget block).
+- Currently supports switching search to `WB_MAXIMUM_CONVERSION_RATE` with `goal_id`, `weekly_spend_limit` (RUBLES, converted to micros × 1 000 000), optional `bid_ceiling` (RUBLES).
+- `BudgetType` (e.g. `WEEKLY_BUDGET`) is preserved from readback strategy block. Direct requires it on update; stripping it caused live `error_code=8000`.
+- Network strategy defaults to preserve-from-readback. Explicit `network="SERVING_OFF"` is supported. Endpoint never silently turns networks ON.
+- Before applying, read current campaign state via the GET endpoint to verify `goal_id` against `/metrika/counters/{counter_id}/goals`.
+
 - For live bid updates through Direct v5 `keywordbids.set`, concrete known keywords should use the minimal item shape:
   ```json
   {"KeywordId": 57440007797, "SearchBid": 250000000}
@@ -137,6 +148,7 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Switching a text campaign from manual `HIGHEST_POSITION` to `WB_MAXIMUM_CONVERSION_RATE` uses `TextCampaign.BiddingStrategy.Search.WbMaximumConversionRate` with `GoalId`, `WeeklySpendLimit`, and optional `BidCeiling`; keep `Network.BiddingStrategyType=SERVING_OFF` for search-only campaigns.
 - Direct can return warning `10162` / `Дневной бюджет сброшен` when switching to weekly conversion strategy. This is expected: `DailyBudget` is meaningful for manual strategies; the conversion strategy uses `WeeklySpendLimit`.
 - When adding keywords under `WB_MAXIMUM_CONVERSION_RATE`, Direct can return warning `10160` / `Ставка не будет применена`: `Bid` is ignored by the auto-budget strategy, and `ContextBid` is ignored when Network is `SERVING_OFF`. This is expected; control spend through `WeeklySpendLimit` and `BidCeiling`.
+- Direct can return warning `10165` / `Параметр не будет применен`: one of the request fields was ignored by the API. The `details` field names the specific parameter. Check `provider_warnings` in the DirectPilot response to find which parameter was dropped.
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
 

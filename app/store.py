@@ -52,6 +52,9 @@ from app.models import (
     AdsModerateRequest,
     AdsModerateResult,
     ProviderWarning,
+    YandexStrategyReadResult,
+    YandexStrategyRequest,
+    YandexStrategyResult,
 )
 from app.yandex_direct import YandexDirectClient, YandexDirectError
 
@@ -367,6 +370,9 @@ class MockStore:
         # idempotency_key) so replays of the same apply return the
         # cached result without re-sending to Yandex.
         self.time_targeting_results_by_key: dict[str, Any] = {}
+        # Strategy update results, keyed by (campaign_id, idempotency_key).
+        # Mirrors time_targeting_results_by_key contract.
+        self._strategy_results_by_key: dict[str, Any] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -1759,6 +1765,361 @@ class MockStore:
         except YandexDirectError as exc:
             self.append_audit(
                 "yandex_time_targeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "yandex_error": str(exc),
+                    "yandex_error_detail": exc.diagnostics.get(
+                        "error_detail"
+                    ),
+                    "payload_preview": exc.diagnostics.get(
+                        "payload_preview"
+                    ),
+                },
+            )
+            raise
+
+    # ------------------------------------------------- strategy read / update
+    #
+    # ``POST /yandex/campaigns/{campaign_id}/strategy`` updates the
+    # ``TextCampaign.BiddingStrategy`` for an existing campaign via
+    # v5 ``campaigns.update``. The gate contract is identical to the
+    # time-targeting endpoint: ``dry_run=True`` is preview-only,
+    # real apply requires ``live_write``, ``approved=True``,
+    # ``idempotency_key``, and ``dry_run=False``.
+    #
+    # ``weekly_spend_limit`` and ``bid_ceiling`` are received in RUBLES
+    # (public REST convention) and converted to Direct micros
+    # (multiply by 1_000_000) before building the v5 payload.
+    #
+    # The ``Network`` strategy is preserved from readback when the
+    # request omits the ``network`` field. When ``network=\"SERVING_OFF\"``
+    # is set explicitly, it is applied as requested. The endpoint never
+    # silently turns networks ON.
+    #
+    # ``BudgetType`` is preserved from the readback strategy block
+    # (e.g. ``WEEKLY_BUDGET`` for WbMaximumConversionRate). Direct
+    # requires it on update; stripping it caused live error_code=8000.
+
+    _MICROS_PER_RUBLE: int = 1_000_000
+
+    def yandex_strategy_update(
+        self,
+        campaign_id: str,
+        payload: "YandexStrategyRequest",
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "YandexStrategyResult":
+        """Apply a strategy update for an existing campaign."""
+
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # Idempotency cache check (mirrors time-targeting).
+        cache_key = f"strategy:{campaign_id}:{payload.idempotency_key}"
+        if cache_key in self._strategy_results_by_key:
+            cached = self._strategy_results_by_key[cache_key]
+            if cached.dry_run != payload.dry_run:
+                raise YandexDirectError(
+                    f"Idempotency key {payload.idempotency_key!r} was "
+                    f"previously used with dry_run={cached.dry_run}; "
+                    f"replay with dry_run={payload.dry_run} is not allowed"
+                )
+            return cached
+
+        # Read current campaign to preserve DailyBudget (if any),
+        # BudgetType from existing strategy, and Network strategy
+        # when the request does not explicitly set it.
+        current_daily_budget: dict[str, Any] | None = None
+        current_strategy: dict[str, Any] | None = None
+        daily_budget_read_ok = False
+        strategy_read_ok = False
+
+        if is_live and client is not None:
+            # Read current DailyBudget + strategy via the same
+            # full-strategy method used by the GET endpoint.
+            try:
+                strat_response = client.campaigns_get_full_strategy(campaign_id)
+                if strat_response.get("ok"):
+                    strat_result = strat_response.get("result") or {}
+                    if isinstance(strat_result, dict):
+                        strat_campaigns = strat_result.get("Campaigns") or []
+                        if strat_campaigns and isinstance(strat_campaigns[0], dict):
+                            camp = strat_campaigns[0]
+
+                            # DailyBudget
+                            if "DailyBudget" in camp:
+                                raw_budget = camp.get("DailyBudget")
+                                daily_budget_read_ok = True
+                                if raw_budget is None:
+                                    current_daily_budget = None
+                                elif isinstance(raw_budget, dict) and raw_budget:
+                                    current_daily_budget = dict(raw_budget)
+                                    spend_mode = current_daily_budget.pop(
+                                        "SpendMode", None
+                                    )
+                                    if "Mode" not in current_daily_budget and spend_mode:
+                                        current_daily_budget["Mode"] = spend_mode
+                                    elif "Mode" not in current_daily_budget:
+                                        current_daily_budget = None
+                            else:
+                                # Field requested but absent — fail closed
+                                daily_budget_read_ok = False
+
+                            # TextCampaign.BiddingStrategy
+                            tc = camp.get("TextCampaign")
+                            if isinstance(tc, dict) and "BiddingStrategy" in tc:
+                                strategy_read_ok = True
+                                current_strategy = self._normalize_strategy_for_write(
+                                    tc["BiddingStrategy"]
+                                )
+            except Exception:
+                current_daily_budget = None
+                daily_budget_read_ok = False
+                current_strategy = None
+                strategy_read_ok = False
+
+        # Build the Search strategy from request.
+        # Values in RUBLES → convert to micros for Direct.
+        search_wb: dict[str, Any] = {
+            "GoalId": payload.goal_id,
+            "WeeklySpendLimit": int(
+                payload.weekly_spend_limit * self._MICROS_PER_RUBLE
+            ),
+        }
+        if payload.bid_ceiling is not None:
+            search_wb["BidCeiling"] = int(
+                payload.bid_ceiling * self._MICROS_PER_RUBLE
+            )
+
+        # Preserve BudgetType from readback if present.
+        if current_strategy is not None:
+            current_search = current_strategy.get("Search")
+            if isinstance(current_search, dict):
+                for sub_key, sub_val in current_search.items():
+                    if isinstance(sub_val, dict) and "BudgetType" in sub_val:
+                        search_wb["BudgetType"] = sub_val["BudgetType"]
+
+        new_search: dict[str, Any] = {
+            "BiddingStrategyType": payload.strategy_type,
+            "WbMaximumConversionRate": search_wb,
+        }
+
+        # Network: preserve from readback or use explicit request value.
+        if payload.network is not None:
+            new_network: dict[str, Any] = {
+                "BiddingStrategyType": payload.network,
+            }
+        elif current_strategy is not None:
+            net = current_strategy.get("Network")
+            if isinstance(net, dict):
+                new_network = dict(net)
+            else:
+                new_network = {"BiddingStrategyType": "SERVING_OFF"}
+        else:
+            new_network = {"BiddingStrategyType": "SERVING_OFF"}
+
+        new_strategy: dict[str, Any] = {
+            "Search": new_search,
+            "Network": new_network,
+        }
+
+        text_campaign_block: dict[str, Any] = {
+            "BiddingStrategy": new_strategy,
+        }
+
+        # Build the campaigns.update payload entry.
+        campaign_entry: dict[str, Any] = {
+            "Id": YandexDirectClient._direct_id(campaign_id),
+            "TextCampaign": text_campaign_block,
+        }
+        if current_daily_budget is not None:
+            campaign_entry["DailyBudget"] = current_daily_budget
+        payload_preview: dict[str, Any] = {
+            "method": "campaigns.update",
+            "params": {
+                "Campaigns": [campaign_entry]
+            },
+        }
+
+        strategy_applied: dict[str, Any] = {
+            "search": {
+                "type": payload.strategy_type,
+                "goal_id": payload.goal_id,
+                "weekly_spend_limit_rub": payload.weekly_spend_limit,
+                "weekly_spend_limit_micros": int(
+                    payload.weekly_spend_limit * self._MICROS_PER_RUBLE
+                ),
+            },
+            "network": {
+                "type": new_network.get("BiddingStrategyType", "UNKNOWN"),
+            },
+        }
+        if payload.bid_ceiling is not None:
+            strategy_applied["search"]["bid_ceiling_rub"] = payload.bid_ceiling
+            strategy_applied["search"]["bid_ceiling_micros"] = int(
+                payload.bid_ceiling * self._MICROS_PER_RUBLE
+            )
+
+        # Mock mode
+        if not is_live:
+            audit = self.append_audit(
+                "yandex_strategy_requested",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "mock",
+                    "mode": mode,
+                    "strategy_applied": strategy_applied,
+                },
+            )
+            result = YandexStrategyResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=payload.dry_run,
+                applied=False,
+                source="mock",
+                audit_id=audit.id,
+                payload_preview=payload_preview,
+                strategy_applied=strategy_applied,
+                readback=None,
+                provider_warnings=[],
+            )
+            self._strategy_results_by_key[cache_key] = result
+            return result
+
+        # Live modes: dry-run
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_strategy_requested",
+                campaign_id,
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "payload_redacted": payload_preview,
+                },
+            )
+            result = YandexStrategyResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                source="yandex",
+                audit_id=audit.id,
+                payload_preview=payload_preview,
+                strategy_applied=strategy_applied,
+                readback=None,
+                provider_warnings=[],
+            )
+            self._strategy_results_by_key[cache_key] = result
+            return result
+
+        # Real apply: only live_write
+        if not can_write:
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch "
+                f"campaigns.update"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live strategy writes"
+            )
+
+        # Fail closed if budget read was ambiguous.
+        if is_live and not daily_budget_read_ok:
+            raise YandexDirectError(
+                "Could not read current DailyBudget from campaign "
+                f"{campaign_id!r}; refusing to send campaigns.update"
+            )
+
+        try:
+            yandex_result = client.campaigns_update_strategy(
+                campaign_id,
+                text_campaign_block,
+                daily_budget=current_daily_budget,
+            )
+            if not yandex_result.get("ok"):
+                err = yandex_result.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected campaigns.update: "
+                    f"error_code={err.get('error_code')!r}",
+                    diagnostics={
+                        "error_code": err.get("error_code"),
+                        "error_detail": err.get("error_detail"),
+                        "payload_preview": payload_preview,
+                    },
+                )
+
+            # Readback: re-read the strategy to verify.
+            readback_block: dict[str, Any] | None = None
+            provider_warnings: list[Any] = _provider_warnings_from_result(
+                yandex_result
+            )
+            try:
+                readback_response = client.campaigns_get_full_strategy(campaign_id)
+                if readback_response.get("ok"):
+                    rb_result = readback_response.get("result") or {}
+                    if isinstance(rb_result, dict):
+                        rb_campaigns = rb_result.get("Campaigns") or []
+                        if rb_campaigns and isinstance(rb_campaigns[0], dict):
+                            tc_rb = rb_campaigns[0].get("TextCampaign")
+                            if isinstance(tc_rb, dict):
+                                bs = tc_rb.get("BiddingStrategy")
+                                if isinstance(bs, dict):
+                                    readback_block = {"BiddingStrategy": dict(bs)}
+            except Exception:
+                pass  # Best-effort readback
+
+            audit = self.append_audit(
+                "yandex_strategy_requested",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "strategy_applied": strategy_applied,
+                    "yandex_units": yandex_result.get("units"),
+                    "readback_present": readback_block is not None,
+                },
+            )
+            result = YandexStrategyResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                audit_id=audit.id,
+                payload_preview=None,
+                strategy_applied=strategy_applied,
+                readback=readback_block,
+                provider_warnings=provider_warnings,
+            )
+            self._strategy_results_by_key[cache_key] = result
+            return result
+        except YandexDirectError as exc:
+            self.append_audit(
+                "yandex_strategy_failed",
                 campaign_id,
                 dry_run=False,
                 details={

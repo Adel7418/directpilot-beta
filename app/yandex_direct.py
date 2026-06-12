@@ -831,6 +831,9 @@ class YandexDirectClient:
     _DAILY_BUDGET_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "DailyBudget")
     _STRATEGY_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "Type", "DailyBudget")
     _STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES: tuple[str, ...] = ("BiddingStrategy",)
+    _STRATEGY_FULL_FIELD_NAMES: tuple[str, ...] = (
+        "Id", "Name", "Type", "State", "Status", "DailyBudget", "CounterIds",
+    )
 
     def campaigns_get_daily_budget(
         self, campaign_id: int | str
@@ -878,6 +881,68 @@ class YandexDirectClient:
                 "TextCampaignFieldNames": list(
                     self._STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES
                 ),
+            },
+        }
+        return self._call("campaigns", payload)
+
+    def campaigns_get_full_strategy(
+        self, campaign_id: int | str
+    ) -> dict[str, Any]:
+        """v5 ``campaigns.get`` reading the full strategy-relevant fields.
+
+        Returns the standard ``{ok, result, units, error}`` envelope.
+        The ``result.Campaigns[0]`` carries ``Id``, ``Name``, ``Type``,
+        ``State``, ``Status``, ``DailyBudget``, ``CounterIds``, and
+        ``TextCampaign.BiddingStrategy`` (via ``TextCampaignFieldNames``).
+        Used by ``GET /yandex/campaigns/{campaign_id}/strategy``.
+        """
+        campaign_id = self._direct_id(campaign_id)
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {"Ids": [campaign_id]},
+                "FieldNames": list(self._STRATEGY_FULL_FIELD_NAMES),
+                "TextCampaignFieldNames": list(
+                    self._STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES
+                ),
+            },
+        }
+        return self._call("campaigns", payload)
+
+    def campaigns_update_strategy(
+        self,
+        campaign_id: int | str,
+        text_campaign: dict[str, Any],
+        *,
+        daily_budget: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Update ``TextCampaign.BiddingStrategy`` on one campaign.
+
+        ``text_campaign`` MUST be the v5 ``TextCampaign`` shape:
+        ``{"BiddingStrategy": {Search: {...}, Network: {...}}}``.
+        Direct v5 ``campaigns.update`` is a REPLACE-shaped call for
+        the strategy block — the existing strategy is replaced.
+
+        ``daily_budget`` is an optional ``DailyBudget`` block to
+        include in the payload. For campaigns switching to a weekly
+        conversion strategy this is typically ``None`` (no daily budget).
+        """
+        if not isinstance(text_campaign, dict):
+            raise YandexDirectError(
+                "TextCampaign must be a dict with BiddingStrategy, "
+                f"got {type(text_campaign).__name__}"
+            )
+        campaign_id = self._direct_id(campaign_id)
+        campaign_entry: dict[str, Any] = {
+            "Id": campaign_id,
+            "TextCampaign": text_campaign,
+        }
+        if daily_budget is not None:
+            campaign_entry["DailyBudget"] = dict(daily_budget)
+        payload = {
+            "method": "update",
+            "params": {
+                "Campaigns": [campaign_entry]
             },
         }
         return self._call("campaigns", payload)

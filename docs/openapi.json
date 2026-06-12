@@ -3323,6 +3323,94 @@
         }
       }
     },
+    "/yandex/campaigns/{campaign_id}/strategy": {
+      "get": {
+        "summary": "Yandex Strategy Read",
+        "description": "Read the current bidding strategy of a campaign.\n\nPure read-only — no write gate. Available in all modes.",
+        "operationId": "yandex_strategy_read_yandex_campaigns__campaign_id__strategy_get",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexStrategyReadResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Yandex Strategy Update",
+        "description": "Update the bidding strategy of a campaign.\n\nCurrently supports WB_MAXIMUM_CONVERSION_RATE.\nweekly_spend_limit and bid_ceiling are in RUBLES.",
+        "operationId": "yandex_strategy_update_yandex_campaigns__campaign_id__strategy_post",
+        "parameters": [
+          {
+            "name": "campaign_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Campaign Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexStrategyRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexStrategyResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/metrika/counters": {
       "get": {
         "summary": "Metrika Counters",
@@ -7158,6 +7246,330 @@
         ],
         "title": "YandexSitelinkSetItem",
         "description": "Sitelink set resolved from Direct."
+      },
+      "YandexStrategyReadResult": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "campaign_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Name",
+            "description": "Campaign name from Yandex Direct (live) or mock."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "yandex"
+          },
+          "read_only": {
+            "type": "boolean",
+            "title": "Read Only",
+            "default": true
+          },
+          "campaign_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Type",
+            "description": "Campaign Type from Direct v5 (e.g. TEXT_CAMPAIGN)."
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State",
+            "description": "Campaign State from Direct v5 (e.g. ON, OFF)."
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "Campaign Status from Direct v5 (e.g. DRAFT, ACCEPTED)."
+          },
+          "daily_budget": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Budget",
+            "description": "Current DailyBudget block (Amount in micros, SpendMode). ``null``/None when the campaign has no daily budget configured (e.g. after switching to a weekly conversion strategy)."
+          },
+          "counter_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Counter Ids",
+            "description": "CounterIds attached to the campaign in Direct v5, if any."
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy",
+            "description": "Raw TextCampaign.BiddingStrategy block as returned by v5 ``campaigns.get``. Contains ``Search`` and ``Network`` sub-objects with strategy-type-specific params."
+          },
+          "strategy_summary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Summary",
+            "description": "Normalized human-readable strategy summary. Example: {search: {type: 'WB_MAXIMUM_CONVERSION_RATE', goal_id: 567732835, weekly_spend_limit_rub: 7000.0, bid_ceiling_rub: 1500.0}, network: {type: 'SERVING_OFF'}}."
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_id"
+        ],
+        "title": "YandexStrategyReadResult",
+        "description": "Response envelope for ``GET /yandex/campaigns/{campaign_id}/strategy``.\n\nRead-only in all modes — no ``approved``, no ``idempotency_key``,\nno network write call. Returns the current campaign type, strategy\nblock, CounterIds (if available), DailyBudget (if relevant),\nState, Status, and Name from Yandex Direct v5 ``campaigns.get``."
+      },
+      "YandexStrategyRequest": {
+        "properties": {
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 6,
+            "title": "Idempotency Key"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": true
+          },
+          "strategy_type": {
+            "type": "string",
+            "const": "WB_MAXIMUM_CONVERSION_RATE",
+            "title": "Strategy Type",
+            "description": "Search bidding strategy type to set.",
+            "default": "WB_MAXIMUM_CONVERSION_RATE"
+          },
+          "goal_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Goal Id",
+            "description": "Metrika goal id for WB_MAXIMUM_CONVERSION_RATE."
+          },
+          "weekly_spend_limit": {
+            "type": "number",
+            "exclusiveMinimum": 0.0,
+            "title": "Weekly Spend Limit",
+            "description": "Weekly spend limit in RUBLES. Converted to micros for Direct."
+          },
+          "bid_ceiling": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid Ceiling",
+            "description": "Optional bid ceiling in RUBLES. Converted to micros for Direct."
+          },
+          "network": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "SERVING_OFF"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network",
+            "description": "Explicit Network strategy override. When omitted, the current Network strategy is preserved from readback. Set to ``SERVING_OFF`` to explicitly disable networks. The endpoint never silently turns networks ON."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "approved",
+          "idempotency_key",
+          "goal_id",
+          "weekly_spend_limit"
+        ],
+        "title": "YandexStrategyRequest",
+        "description": "Body of ``POST /yandex/campaigns/{campaign_id}/strategy``.\n\nUpdates the search TextCampaign.BiddingStrategy for an existing\ncampaign. Currently supports switching the search channel to\n``WB_MAXIMUM_CONVERSION_RATE``. The standard product gate contract\napplies: ``dry_run=True`` is preview-only (default); real apply\nrequires ``DIRECTPILOT_MODE=live_write``, ``approved=True``,\n``idempotency_key``, and ``dry_run=False``.\n\n``weekly_spend_limit`` and ``bid_ceiling`` are in RUBLES\n(public REST convention). The store converts to Direct micros\n(multiply by 1_000_000) before building the v5 payload. The\nconversion is exact and documented."
+      },
+      "YandexStrategyResult": {
+        "properties": {
+          "campaign_id": {
+            "type": "string",
+            "title": "Campaign Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "applied": {
+            "type": "boolean",
+            "title": "Applied"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "default": "yandex"
+          },
+          "audit_id": {
+            "type": "string",
+            "title": "Audit Id"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview",
+            "description": "The v5 ``campaigns.update`` payload that WOULD be sent. Present on dry-run; ``None`` on a successful apply."
+          },
+          "strategy_applied": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Applied",
+            "description": "The strategy configuration that was applied (normalized)."
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback",
+            "description": "Post-apply readback of the strategy block from Direct. ``None`` on dry-run."
+          },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "type": "array",
+            "title": "Provider Warnings"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "YandexStrategyResult",
+        "description": "Response envelope for ``POST /yandex/campaigns/{campaign_id}/strategy``.\n\n* ``dry_run=True`` returns ``applied=False`` with ``payload_preview``.\n* ``dry_run=False`` + ``live_write`` returns ``applied=True``\n  with optional ``readback``.\n* ``source=\"mock\"`` only in mock-mode dry-run."
       },
       "YandexTimeTargetingHourly": {
         "properties": {

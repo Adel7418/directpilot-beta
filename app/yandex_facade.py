@@ -175,6 +175,50 @@ class MockYandexCatalog:
             },
         }
 
+    # --- strategy read -------------------------------------------------------
+
+    def mock_strategy(self, campaign_id: str) -> dict:
+        """Deterministic mock strategy block for a given campaign.
+
+        Returns a dict with ``campaign_name``, ``campaign_type``,
+        ``state``, ``status``, ``daily_budget``, ``counter_ids``,
+        ``strategy`` (raw BiddingStrategy), and ``strategy_summary``.
+        Mirrors the shape of ``YandexStrategyReadResult``.
+        """
+        campaign_names: dict[str, str] = {
+            "cmp_mock_local_services": "Mock: локальные услуги",
+            "cmp_mock_remont_kazan": "Mock: ремонт Казань",
+        }
+        return {
+            "campaign_name": campaign_names.get(
+                campaign_id, f"Mock campaign {campaign_id}"
+            ),
+            "campaign_type": "TEXT_CAMPAIGN",
+            "state": "ON",
+            "status": "ACCEPTED",
+            "daily_budget": {
+                "Amount": 5000000000,
+                "SpendMode": "STANDARD",
+            },
+            "counter_ids": [123456],
+            "strategy": {
+                "Search": {
+                    "BiddingStrategyType": "HIGHEST_POSITION",
+                },
+                "Network": {
+                    "BiddingStrategyType": "SERVING_OFF",
+                },
+            },
+            "strategy_summary": {
+                "search": {
+                    "type": "HIGHEST_POSITION",
+                },
+                "network": {
+                    "type": "SERVING_OFF",
+                },
+            },
+        }
+
 
 mock_yandex = MockYandexCatalog()
 

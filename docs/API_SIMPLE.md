@@ -854,6 +854,122 @@ POST /yandex/campaigns/{campaign_id}/time-targeting
 
 ---
 
+## 12.2. Campaign Strategy (стратегия назначения ставок)
+
+### Чтение текущей стратегии
+
+Чисто read-only эндпоинт. Возвращает текущие поля кампании: `Type`, `State`, `Status`, `DailyBudget` (если есть), `CounterIds` (если есть), `TextCampaign.BiddingStrategy`. Без write-гейтов. Доступен во всех режимах.
+
+```http
+GET /yandex/campaigns/{campaign_id}/strategy
+```
+
+Ответ:
+
+```json
+{
+  "campaign_id": "710691939",
+  "campaign_name": "Ремонт кондиционеров Казань — поиск",
+  "source": "yandex",
+  "read_only": true,
+  "campaign_type": "TEXT_CAMPAIGN",
+  "state": "ON",
+  "status": "ACCEPTED",
+  "daily_budget": {"Amount": 5000000000, "SpendMode": "STANDARD"},
+  "counter_ids": [123456],
+  "strategy": {
+    "Search": {
+      "BiddingStrategyType": "WB_MAXIMUM_CONVERSION_RATE",
+      "WbMaximumConversionRate": {
+        "GoalId": 567732835,
+        "WeeklySpendLimit": 7000000000,
+        "BidCeiling": 1500000000,
+        "BudgetType": "WEEKLY_BUDGET"
+      }
+    },
+    "Network": {
+      "BiddingStrategyType": "SERVING_OFF"
+    }
+  },
+  "strategy_summary": {
+    "search": {
+      "type": "WB_MAXIMUM_CONVERSION_RATE",
+      "WbMaximumConversionRate": {
+        "goal_id": 567732835,
+        "weekly_spend_limit_rub": 7000.0,
+        "bid_ceiling_rub": 1500.0,
+        "budget_type": "WEEKLY_BUDGET"
+      }
+    },
+    "network": {"type": "SERVING_OFF"}
+  }
+}
+```
+
+Поля:
+- `strategy` — сырой блок `BiddingStrategy` из v5 `campaigns.get`;
+- `strategy_summary` — нормализованный human-readable summary с микро→рубли конверсией;
+- `source` — `"yandex"` в live-режимах, `"mock"` в mock-режиме;
+- `read_only` — всегда `true`.
+
+### Обновление стратегии (write)
+
+Безопасный write-эндпоинт для обновления `TextCampaign.BiddingStrategy` существующей кампании через v5 `campaigns.update`. Поддерживает переключение поисковой стратегии на `WB_MAXIMUM_CONVERSION_RATE` (максимум конверсий).
+
+```http
+POST /yandex/campaigns/{campaign_id}/strategy
+```
+
+Тело запроса:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "strategy-001",
+  "dry_run": true,
+  "strategy_type": "WB_MAXIMUM_CONVERSION_RATE",
+  "goal_id": 567732835,
+  "weekly_spend_limit": 7000.0,
+  "bid_ceiling": 1500.0,
+  "network": null,
+  "reason": "Switch to conversion optimization"
+}
+```
+
+Поля:
+- `approved` (bool, required) — должно быть `true`;
+- `idempotency_key` (str, required, min 6 символов);
+- `dry_run` (bool, default `true`) — preview-only без мутации;
+- `strategy_type` — `"WB_MAXIMUM_CONVERSION_RATE"`;
+- `goal_id` (int, required) — ID цели Метрики;
+- `weekly_spend_limit` (float, required) — недельный бюджет в **рублях** (конвертируется в микроединицы × 1 000 000);
+- `bid_ceiling` (float, optional) — максимальная ставка в **рублях**;
+- `network` (str, optional) — `"SERVING_OFF"` для явного выключения сетей. Когда опущено, текущая Network-стратегия сохраняется из readback. Endpoint никогда молча не включает сети;
+- `reason` (str, optional) — причина для аудита.
+
+Правила:
+- `dry_run=true` — preview payload без сетевого вызова. Доступен во всех режимах;
+- `dry_run=false` в `live_readonly`/`sandbox`/`mock` — **отклоняется с HTTP 409 до сетевого вызова**;
+- реальный apply возможен только в `live_write` с `approved=true` + `idempotency_key` + `dry_run=false`;
+- `weekly_spend_limit` и `bid_ceiling` — в **рублях** (публичное REST-соглашение). Конвертируются в Direct-микроединицы (× 1 000 000) строго в store-слое;
+- `BudgetType` (например `WEEKLY_BUDGET`) сохраняется из readback-блока стратегии. Direct требует его при update; удаление `BudgetType` вызывает `error_code=8000`;
+- Network-стратегия по умолчанию сохраняется из текущего состояния кампании. Endpoint не включает РСЯ молча;
+- Для live-применения endpoint сначала делает readback кампании. Если `DailyBudget` нельзя надежно прочитать из `campaigns.get` (отсутствует или невалидная форма), apply отклоняется с `502` (fail-closed) до `campaigns.update`.
+- после apply выполняется readback через `campaigns_get_full_strategy` для верификации;
+- ответ включает `strategy_applied` (нормализованная конфигурация), `payload_preview` (на dry-run), `readback` (после apply), `provider_warnings`, `yandex_units`.
+
+### Выбор цели Метрики
+
+Для выбора `goal_id` используйте существующий read-only эндпоинт Метрики:
+
+```http
+GET /metrika/counters/{counter_id}/goals
+```
+
+Возвращает список целей счётчика. Выберите нужный `goal_id` и передайте его в `POST /yandex/campaigns/{campaign_id}/strategy`.
+
+---
+
 ## 13. Audit log
 
 ```http
@@ -1102,6 +1218,11 @@ POST /yandex/ad-groups/{ad_group_id}/ads
 - `inherit_sitelink_set_id` — предложение переиспользовать SitelinkSetId.
 - `keywords_not_per_ad` — ключевые слова и минус-слова управляются на уровне кампании/группы, не на уровне объявления.
 
+Кроме локальных `warnings`, ответ также содержит `provider_warnings` — предупреждения, возвращённые самим Яндекс Директом в v5-конверте ответа (поле `Warnings[]`):
+- Каждое предупреждение: `code` (int), `message` (str), `details` (str).
+- Например, warning `10165` «Параметр не будет применен» означает, что Директ проигнорировал одно из переданных полей. Поле `details` содержит уточнение (например, «Параметр DisplayUrlPath не поддерживается»), по которому можно понять, какой именно параметр не был применён.
+- Проверяйте `provider_warnings` чтобы диагностировать нефатальные отклонения на стороне Яндекса.
+
 Важно: endpoint **не меняет** ключевые слова и минус-слова. Если новому объявлению нужны дополнительные ключи/минуса — используйте отдельную задачу semantic-changes.
 
 ### Отправить объявления на модерацию
@@ -1131,3 +1252,4 @@ POST /yandex/ads/moderate
 - Используется после `live-create` для перевода DRAFT-объявлений в MODERATION.
 - **Не** используйте `campaigns.resume` для новых DRAFT-кампаний — это только для already-created stopped/suspended кампаний.
 - Нет автоматической модерации внутри `ads.add` — moderate вызывается отдельно и явно.
+- Ответ содержит `provider_warnings` с предупреждениями от Яндекс Директа (аналогично `ads.add`) — проверяйте на нефатальные отклонения.

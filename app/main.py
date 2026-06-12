@@ -84,6 +84,9 @@ from app.models import (
     YandexVCardRequest,
     YandexVCardResult,
     YandexVCardAssetItem,
+    YandexStrategyReadResult,
+    YandexStrategyRequest,
+    YandexStrategyResult,
     LiveAdCreateRequest,
     LiveAdCreateResult,
     AdsModerateRequest,
@@ -2738,6 +2741,238 @@ def yandex_time_targeting(
                 "error_type": "YandexDirectError",
                 "message": (
                     f"unexpected error during time-targeting: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Campaign strategy read (GET)
+# ---------------------------------------------------------------------------
+
+
+def _build_strategy_summary(
+    strategy: dict | None,
+) -> dict | None:
+    """Build a human-readable strategy summary from a raw BiddingStrategy block."""
+    import re
+
+    if not isinstance(strategy, dict):
+        return None
+    summary: dict[str, Any] = {}
+
+    def _to_snake(name: str) -> str:
+        # Convert CamelCase to snake_case: GoalId → goal_id
+        s1 = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+        s2 = re.sub(r"([a-z\d])([A-Z])", r"\1_\2", s1)
+        return s2.lower()
+
+    search = strategy.get("Search")
+    if isinstance(search, dict):
+        search_summary: dict[str, Any] = {
+            "type": search.get("BiddingStrategyType", "UNKNOWN"),
+        }
+        for sub_key, sub_val in search.items():
+            if isinstance(sub_val, dict):
+                params: dict[str, Any] = {}
+                for pk, pv in sub_val.items():
+                    snake_key = _to_snake(pk)
+                    if pk in ("WeeklySpendLimit", "BidCeiling"):
+                        try:
+                            params[f"{snake_key}_rub"] = float(pv) / 1_000_000
+                        except (TypeError, ValueError):
+                            params[snake_key] = pv
+                    else:
+                        params[snake_key] = pv
+                search_summary[sub_key] = params
+        summary["search"] = search_summary
+
+    network = strategy.get("Network")
+    if isinstance(network, dict):
+        summary["network"] = {
+            "type": network.get("BiddingStrategyType", "UNKNOWN"),
+        }
+
+    return summary if summary else None
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/strategy",
+    response_model=YandexStrategyReadResult,
+)
+def yandex_strategy_read(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexStrategyReadResult:
+    """Read the current bidding strategy of a campaign.
+
+    Pure read-only — no write gate. Available in all modes.
+    """
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.campaigns_get_full_strategy(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        "Yandex Direct rejected campaigns.get (strategy): "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        result = response.get("result") or {}
+        campaigns = result.get("Campaigns") if isinstance(result, dict) else None
+        if isinstance(campaigns, list) and campaigns and isinstance(campaigns[0], dict):
+            camp = campaigns[0]
+            campaign_name = camp.get("Name")
+            campaign_type = camp.get("Type")
+            state = camp.get("State")
+            status = camp.get("Status")
+            raw_daily_budget = camp.get("DailyBudget")
+            raw_counter_ids = camp.get("CounterIds")
+            tc = camp.get("TextCampaign")
+            raw_strategy = tc.get("BiddingStrategy") if isinstance(tc, dict) else None
+        else:
+            campaign_name = None
+            campaign_type = None
+            state = None
+            status = None
+            raw_daily_budget = None
+            raw_counter_ids = None
+            raw_strategy = None
+
+        daily_budget = (
+            dict(raw_daily_budget)
+            if isinstance(raw_daily_budget, dict)
+            else raw_daily_budget
+        )
+        counter_ids = (
+            list(raw_counter_ids)
+            if isinstance(raw_counter_ids, list)
+            else None
+        )
+        strategy = (
+            dict(raw_strategy) if isinstance(raw_strategy, dict) else None
+        )
+        strategy_summary = _build_strategy_summary(strategy)
+
+        return YandexStrategyReadResult(
+            campaign_id=campaign_id,
+            campaign_name=str(campaign_name) if campaign_name else None,
+            source="yandex",
+            read_only=True,
+            campaign_type=str(campaign_type) if campaign_type else None,
+            state=str(state) if state else None,
+            status=str(status) if status else None,
+            daily_budget=daily_budget,
+            counter_ids=counter_ids,
+            strategy=strategy,
+            strategy_summary=strategy_summary,
+        )
+
+    mock = mock_yandex.mock_strategy(campaign_id)
+    return YandexStrategyReadResult(
+        campaign_id=campaign_id,
+        campaign_name=mock.get("campaign_name"),
+        source="mock",
+        read_only=True,
+        campaign_type=mock.get("campaign_type"),
+        state=mock.get("state"),
+        status=mock.get("status"),
+        daily_budget=mock.get("daily_budget"),
+        counter_ids=mock.get("counter_ids"),
+        strategy=mock.get("strategy"),
+        strategy_summary=mock.get("strategy_summary"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Campaign strategy update (POST)
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/strategy",
+    response_model=YandexStrategyResult,
+)
+def yandex_strategy_update(
+    campaign_id: str,
+    payload: YandexStrategyRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexStrategyResult:
+    """Update the bidding strategy of a campaign.
+
+    Currently supports WB_MAXIMUM_CONVERSION_RATE.
+    weekly_spend_limit and bid_ceiling are in RUBLES.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before strategy update",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"strategy apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_strategy_update(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        try:
+            store.append_audit(
+                "yandex_strategy_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in strategy endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during strategy update: "
                     f"{type(exc).__name__}"
                 ),
             },
