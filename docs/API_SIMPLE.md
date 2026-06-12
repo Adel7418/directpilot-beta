@@ -941,7 +941,7 @@ POST /yandex/campaigns/{campaign_id}/strategy
 - `idempotency_key` (str, required, min 6 символов);
 - `dry_run` (bool, default `true`) — preview-only без мутации;
 - `strategy_type` — `"WB_MAXIMUM_CONVERSION_RATE"`;
-- `goal_id` (int, required) — ID цели Метрики;
+- `goal_id` (int, required) — ID одной цели Метрики, которая станет текущим `GoalId` стратегии;
 - `weekly_spend_limit` (float, required) — недельный бюджет в **рублях** (конвертируется в микроединицы × 1 000 000);
 - `bid_ceiling` (float, optional) — максимальная ставка в **рублях**;
 - `network` (str, optional) — `"SERVING_OFF"` для явного выключения сетей. Когда опущено, текущая Network-стратегия сохраняется из readback. Endpoint никогда молча не включает сети;
@@ -952,6 +952,8 @@ POST /yandex/campaigns/{campaign_id}/strategy
 - `dry_run=false` в `live_readonly`/`sandbox`/`mock` — **отклоняется с HTTP 409 до сетевого вызова**;
 - реальный apply возможен только в `live_write` с `approved=true` + `idempotency_key` + `dry_run=false`;
 - `weekly_spend_limit` и `bid_ceiling` — в **рублях** (публичное REST-соглашение). Конвертируются в Direct-микроединицы (× 1 000 000) строго в store-слое;
+- `goal_id` **заменяет** текущий `GoalId` в стратегии кампании. Это не добавление цели в список: повторный вызов с другим `goal_id` переключит стратегию на новую цель;
+- текущий endpoint не поддерживает `goal_ids: []` или «добавить все цели». Если нужна оптимизация по нескольким целям, сначала нужно подтвердить поддержку и payload-формат в Yandex Direct API и доработать DirectPilot;
 - `BudgetType` (например `WEEKLY_BUDGET`) сохраняется из readback-блока стратегии. Direct требует его при update; удаление `BudgetType` вызывает `error_code=8000`;
 - Network-стратегия по умолчанию сохраняется из текущего состояния кампании. Endpoint не включает РСЯ молча;
 - Для live-применения endpoint сначала делает readback кампании. Если `DailyBudget` нельзя надежно прочитать из `campaigns.get` (отсутствует или невалидная форма), apply отклоняется с `502` (fail-closed) до `campaigns.update`.
@@ -966,7 +968,7 @@ POST /yandex/campaigns/{campaign_id}/strategy
 GET /metrika/counters/{counter_id}/goals
 ```
 
-Возвращает список целей счётчика. Выберите нужный `goal_id` и передайте его в `POST /yandex/campaigns/{campaign_id}/strategy`.
+Возвращает список целей счётчика. Выберите **один** нужный `goal_id` и передайте его в `POST /yandex/campaigns/{campaign_id}/strategy`. Этот `goal_id` станет единственной текущей целью оптимизации в стратегии, которую поддерживает данный endpoint.
 
 ---
 

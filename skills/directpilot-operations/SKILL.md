@@ -132,10 +132,11 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Current strategy can be read via `GET /yandex/campaigns/{campaign_id}/strategy` — read-only, no write gate, available in all modes. Returns `Type`, `State`, `Status`, `DailyBudget`, `CounterIds`, `TextCampaign.BiddingStrategy` (raw) and `strategy_summary` (normalized with micros→rubles conversion).
 - To update strategy, use `POST /yandex/campaigns/{campaign_id}/strategy` — gate contract identical to time-targeting: `approved` + `idempotency_key` + `dry_run`; `live_readonly` blocks real writes with HTTP 409; real apply only in `live_write`.
 - Live apply first reads campaign `DailyBudget` from `campaigns.get` and requires an unambiguous read for mode-dependent shape mapping. If `DailyBudget` cannot be reliably extracted in a supported shape, the request is rejected before `campaigns.update` with fail-closed 502 (no invented budget block).
-- Currently supports switching search to `WB_MAXIMUM_CONVERSION_RATE` with `goal_id`, `weekly_spend_limit` (RUBLES, converted to micros × 1 000 000), optional `bid_ceiling` (RUBLES).
+- Currently supports switching search to `WB_MAXIMUM_CONVERSION_RATE` with a single `goal_id`, `weekly_spend_limit` (RUBLES, converted to micros × 1 000 000), optional `bid_ceiling` (RUBLES). This is a **replacement** of the strategy's current `GoalId`, not an append/add-to-list operation.
+- The current DirectPilot endpoint does not accept `goal_ids: []` or “optimize for all goals”. If callers need multiple optimization goals, treat that as a product/API investigation first; do not imply that repeated calls accumulate goals.
 - `BudgetType` (e.g. `WEEKLY_BUDGET`) is preserved from readback strategy block. Direct requires it on update; stripping it caused live `error_code=8000`.
 - Network strategy defaults to preserve-from-readback. Explicit `network="SERVING_OFF"` is supported. Endpoint never silently turns networks ON.
-- Before applying, read current campaign state via the GET endpoint to verify `goal_id` against `/metrika/counters/{counter_id}/goals`.
+- Before applying, read current campaign state via the GET endpoint to verify the single selected `goal_id` against `/metrika/counters/{counter_id}/goals`.
 
 - For live bid updates through Direct v5 `keywordbids.set`, concrete known keywords should use the minimal item shape:
   ```json
