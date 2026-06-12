@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, model_validator
+from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -919,5 +919,299 @@ class LiveCreateCampaignResult(BaseModel):
             "activate it via the existing "
             "``POST /yandex/campaigns/{campaign_id}/resume`` endpoint "
             "with its own approval and idempotency gate."
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Time-targeting update (Yandex Direct API v5 ``campaigns.update``)
+#
+# A safe-by-default write endpoint for the campaign-level
+# TimeTargeting / hourly-bidding schedule. Mirrors the same gate
+# contract as the rest of the product surface: dry_run is always
+# allowed and never mutates; live_readonly blocks real writes before
+# any network call; live_write requires ``approved=true`` and an
+# ``idempotency_key`` for the real apply.
+#
+# The v5 contract for ``TimeTargeting`` is documented at
+# https://yandex.com/dev/direct/doc/ref-v5/campaigns/update.html
+# and is the same shape that ``campaigns.get`` already returns
+# under the ``TimeTargeting`` field. Direct v5 represents a weekly
+# schedule as a list of seven ``TimeTargetItem`` blocks, one per day
+# of the week (MONDAY..SUNDAY), each carrying 24 hourly
+# ``BidPercent`` values (0..100). See ``YandexTimeTargetingSchedule``
+# below for the day-of-week -> index mapping.
+# ---------------------------------------------------------------------------
+
+
+# 7 days, 24 hours per day, percentages 0..100 (Direct's
+# ``BidPercent`` is the percentage of the ad group's base bid that
+# applies during that hour; 100 = full bid, 0 = paused).
+WEEK_DAY_NAMES: tuple[str, ...] = (
+    "MONDAY",
+    "TUESDAY",
+    "WEDNESDAY",
+    "THURSDAY",
+    "FRIDAY",
+    "SATURDAY",
+    "SUNDAY",
+)
+HOURS_PER_DAY: int = 24
+DAYS_PER_WEEK: int = 7
+
+
+class YandexTimeTargetingHourly(BaseModel):
+    """A single day's 24-hour schedule.
+
+    Direct v5 represents a TimeTargetItem's hourly ``BidPercent`` as
+    a list of 24 integer percentages. The list is ordered by hour
+    (index 0 = 00:00, index 23 = 23:00) and the value range is
+    0..100 (``0`` pauses the campaign during that hour, ``100`` is
+    the ad-group base bid).
+    """
+
+    hours: list[int] = Field(
+        ...,
+        min_length=HOURS_PER_DAY,
+        max_length=HOURS_PER_DAY,
+        description=(
+            "24 hourly BidPercent values, 0..100. Index 0 = 00:00, "
+            "index 23 = 23:00 (local campaign timezone)."
+        ),
+    )
+
+    @field_validator("hours", mode="before")
+    @classmethod
+    def _no_bools_in_hours(cls, value: Any) -> Any:
+        # Pydantic auto-coerces ``True`` -> ``1`` and ``False`` ->
+        # ``0`` for ``list[int]``; a real bidder who typed
+        # ``hours=[True, False, ...]`` would otherwise see
+        # ``[1, 0, ...]`` silently. Block that here.
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, bool):
+                    raise ValueError(
+                        f"hours[{index}] must be an integer 0..100, "
+                        f"got bool: {item!r}"
+                    )
+        return value
+
+    @field_validator("hours")
+    @classmethod
+    def _validate_percent_range(cls, value: list[int]) -> list[int]:
+        for index, item in enumerate(value):
+            if item < 0 or item > 100:
+                raise ValueError(
+                    f"hours[{index}]={item} is out of range 0..100"
+                )
+        return value
+
+
+class YandexTimeTargetingSchedule(BaseModel):
+    """A 7-day weekly schedule.
+
+    The seven ``days`` entries are ALWAYS in the v5 day-of-week
+    order MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY,
+    SUNDAY. The model treats the list as positional: index 0 maps
+    to MONDAY and index 6 maps to SUNDAY. It validates the length
+    and hour vectors; it does not infer or re-order named days.
+
+    Each day's 24 values follow the v5 contract documented on
+    ``YandexTimeTargetingHourly`` above.
+    """
+
+    days: list[YandexTimeTargetingHourly] = Field(
+        ...,
+        min_length=DAYS_PER_WEEK,
+        max_length=DAYS_PER_WEEK,
+        description=(
+            "Seven 24-hour schedule entries, one per day of the week. "
+            "The list is positional in the v5 day-of-week order "
+            "MONDAY..SUNDAY; no named-day re-ordering is inferred."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_v5_day_order(self) -> "YandexTimeTargetingSchedule":
+        # The schedule is positional: the first entry maps to
+        # MONDAY, the second to TUESDAY, ... the seventh to
+        # SUNDAY. The ``hours`` / ``days`` request shape is the
+        # only entry path that does the expansion into the
+        # canonical order; the ``schedule`` shape is positional
+        # by definition. We re-validate the count here so direct
+        # callers that bypass Pydantic still get a typed error.
+        if len(self.days) != DAYS_PER_WEEK:
+            # Pydantic's min_length / max_length has already
+            # enforced this; the guard is here for direct callers
+            # that bypass Pydantic.
+            raise ValueError(
+                f"schedule.days must have exactly {DAYS_PER_WEEK} entries"
+            )
+        return self
+
+
+class YandexTimeTargetingRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/{campaign_id}/time-targeting``.
+
+    Accepts the schedule in one of two shapes:
+
+    1. ``schedule`` — a :class:`YandexTimeTargetingSchedule` with the
+       full 7 x 24 matrix. Always validated.
+    2. ``hours`` — a flat 24-value list (0..100) plus an optional
+       ``days`` filter (``["MONDAY", ..., "SUNDAY"]``). Convenience
+       for the common "use these hours every day" use case; the
+       endpoint expands it into the canonical 7 x 24 matrix.
+
+    Either ``schedule`` or ``hours`` MUST be supplied; supplying
+    both is a 400-level validation error.
+
+    The standard product gate contract applies:
+    ``approved`` / ``idempotency_key`` / ``dry_run`` plus the
+    runtime mode (live_readonly blocks real writes before any
+    network call; live_write requires ``approved=true`` and
+    ``idempotency_key`` for the real apply).
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    schedule: YandexTimeTargetingSchedule | None = Field(
+        default=None,
+        description=(
+            "Full 7 x 24 weekly schedule. Re-ordered to v5 day-of-"
+            "week order on the way in. Mutually exclusive with "
+            "``hours``."
+        ),
+    )
+    hours: list[int] | None = Field(
+        default=None,
+        description=(
+            "Flat 24-value hourly list (0..100). Used with "
+            "``days`` to expand into a full 7 x 24 schedule. "
+            "Mutually exclusive with ``schedule``."
+        ),
+    )
+    days: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional day filter for the ``hours`` shape. Defaults "
+            "to all seven days when omitted. Ignored when "
+            "``schedule`` is supplied."
+        ),
+    )
+    timezone: str | None = Field(
+        default=None,
+        description=(
+            "Optional human-readable timezone label, recorded in "
+            "the audit and the readback so the operator can see "
+            "which timezone the schedule applies to. Direct's "
+            "``TimeTargeting`` itself does not carry a timezone "
+            "field; this label is metadata only and is NEVER sent "
+            "to the v5 service."
+        ),
+    )
+    reason: str | None = None
+
+    @field_validator("hours", mode="before")
+    @classmethod
+    def _no_bools_in_request_hours(cls, value: Any) -> Any:
+        # Same guard as on ``YandexTimeTargetingHourly`` —
+        # Pydantic auto-coerces ``True``/``False`` to ``1``/``0``
+        # for ``list[int]``; we reject the silent coercion here.
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, bool):
+                    raise ValueError(
+                        f"hours[{index}] must be an integer 0..100, "
+                        f"got bool: {item!r}"
+                    )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_either_or(self) -> "YandexTimeTargetingRequest":
+        if (self.schedule is None) == (self.hours is None):
+            raise ValueError(
+                "exactly one of `schedule` or `hours` must be supplied"
+            )
+        if self.hours is not None:
+            if len(self.hours) != HOURS_PER_DAY:
+                raise ValueError(
+                    f"`hours` must contain exactly {HOURS_PER_DAY} "
+                    f"values, got {len(self.hours)}"
+                )
+            for index, value in enumerate(self.hours):
+                if value < 0 or value > 100:
+                    raise ValueError(
+                        f"hours[{index}]={value} is out of range 0..100"
+                    )
+            if self.days is not None:
+                seen: set[str] = set()
+                for day in self.days:
+                    normalized = day.strip().upper()
+                    if normalized not in WEEK_DAY_NAMES:
+                        raise ValueError(
+                            f"days entry {day!r} is not one of "
+                            f"{list(WEEK_DAY_NAMES)}"
+                        )
+                    if normalized in seen:
+                        raise ValueError(
+                            f"days entry {day!r} is duplicated"
+                        )
+                    seen.add(normalized)
+        return self
+
+
+class YandexTimeTargetingResult(BaseModel):
+    """Response envelope for the time-targeting update endpoint.
+
+    ``dry_run=True`` returns the v5 ``campaigns.update`` payload
+    preview (one ``TimeTargeting`` block with seven ``TimeTargetItem``
+    entries) that WOULD be sent, with ``applied=False``. ``dry_run=False``
+    (live_write only) returns the read-back from ``campaigns.get``
+    after the apply, with ``applied=True`` and ``source="yandex"``.
+
+    The ``schedule_applied`` field is the canonical v5-shape matrix
+    (7 x 24) the endpoint actually sent to the v5 service, returned
+    unchanged on dry-run and on apply. The operator can diff it
+    against the live readback (also returned) to confirm that the
+    schedule was applied as expected.
+    """
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    audit_id: str
+    payload_preview: dict | None = Field(
+        default=None,
+        description=(
+            "The v5 ``campaigns.update`` payload that WOULD be sent. "
+            "Present on dry-run; ``None`` on a successful apply "
+            "(the read-back fills the operator-facing schedule)."
+        ),
+    )
+    schedule_applied: YandexTimeTargetingSchedule | None = Field(
+        default=None,
+        description=(
+            "The canonical 7 x 24 schedule that was actually sent to "
+            "(or, in dry-run, would be sent to) the v5 service. "
+            "Always present."
+        ),
+    )
+    readback: dict | None = Field(
+        default=None,
+        description=(
+            "The ``TimeTargeting`` block returned by the post-apply "
+            "``campaigns.get`` read-back. ``None`` on dry-run."
+        ),
+    )
+    timezone: str | None = Field(
+        default=None,
+        description=(
+            "Timezone label echoed from the request, recorded in "
+            "the audit and returned to the operator. Direct's "
+            "TimeTargeting does not carry a timezone; this field "
+            "is metadata only and is never sent to v5."
         ),
     )

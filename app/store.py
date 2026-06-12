@@ -40,6 +40,9 @@ from app.models import (
     YandexAdsBusinessAttachSkipped,
     YandexControlRequest,
     YandexControlResult,
+    YandexTimeTargetingRequest,
+    YandexTimeTargetingResult,
+    YandexTimeTargetingSchedule,
     YandexVCardRequest,
     YandexVCardResult,
 )
@@ -321,6 +324,10 @@ class MockStore:
         # collisions). Replays with the same key return the cached
         # result without re-sending to Yandex.
         self.live_create_results_by_key: dict[str, Any] = {}
+        # Time-targeting apply results, keyed by (campaign_id,
+        # idempotency_key) so replays of the same apply return the
+        # cached result without re-sending to Yandex.
+        self.time_targeting_results_by_key: dict[str, Any] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -1122,6 +1129,381 @@ class MockStore:
             )
             raise
 
+
+    # ------------------------------------------------- time-targeting update
+    #
+    # Gated update of an existing campaign's ``TimeTargeting`` block
+    # via v5 ``campaigns.update``. Mirrors the same gate contract as
+    # the rest of the product surface:
+    #
+    # * ``approved`` MUST be ``True`` (the endpoint enforces this
+    #   with HTTP 409, the store double-checks).
+    # * ``idempotency_key`` is required (Pydantic enforces
+    #   ``min_length=6``). Replays of the same ``(campaign_id,
+    #   idempotency_key)`` pair return the cached result without
+    #   re-sending to Yandex.
+    # * ``dry_run=True`` is ALWAYS allowed and NEVER performs a
+    #   network write. The result includes the v5
+    #   ``campaigns.update`` payload preview.
+    # * ``live_readonly`` + ``dry_run=False`` is REJECTED before any
+    #   network call (the same gate as live-create).
+    # * ``live_write`` + ``approved`` + ``idempotency_key`` +
+    #   ``dry_run=False`` performs the real apply: a v5
+    #   ``campaigns.update`` call with the canonical
+    #   ``TimeTargeting`` block, followed by a read-back via
+    #   ``campaigns.get`` to verify the schedule landed.
+    #
+    # The apply path uses the canonical 7 x 24 matrix. The
+    # ``hours`` / ``days`` request shape is expanded into the
+    # canonical matrix by the model layer; the store NEVER
+    # inverts that expansion, so a dry-run and an apply see the
+    # exact same ``TimeTargeting`` payload.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_v5_time_targeting_from_schedule(
+        schedule: YandexTimeTargetingSchedule,
+    ) -> list[dict[str, Any]]:
+        """Build the v5 ``TimeTargeting`` block from a canonical schedule.
+
+        The result is a list of seven ``TimeTargetItem`` dictionaries
+        in the v5 day-of-week order MONDAY..SUNDAY. Each item carries
+        a ``Days`` field (a list of the single day name) and a
+        ``Hours`` block with 24 ``BidPercent`` integer values in the
+        0..100 range.
+
+        The model layer has already validated the 7 x 24 matrix and
+        the integer range, so this helper only reshapes. The v5
+        contract for a TimeTargetItem is documented at
+        https://yandex.com/dev/direct/doc/ref-v5/campaigns/update.html
+        — we mirror the documented ``Days`` / ``Hours.BidPercent``
+        shape literally.
+        """
+        from app.models import WEEK_DAY_NAMES
+
+        if len(schedule.days) != len(WEEK_DAY_NAMES):
+            # Defensive guard. The model layer has already pinned
+            # this at 7 via ``min_length`` / ``max_length`` but a
+            # direct caller of the helper must also get a typed
+            # error rather than a confusing IndexError.
+            raise YandexDirectError(
+                f"TimeTargeting schedule must have 7 days, got {len(schedule.days)}"
+            )
+        return [
+            {
+                "Days": [WEEK_DAY_NAMES[index]],
+                "Hours": {"BidPercent": list(day.hours)},
+            }
+            for index, day in enumerate(schedule.days)
+        ]
+
+    @staticmethod
+    def _normalize_time_targeting_schedule(
+        schedule: YandexTimeTargetingSchedule,
+    ) -> YandexTimeTargetingSchedule:
+        """Validate and re-wrap a 7-day schedule in v5 day order.
+
+        ``MONDAY`` MUST be at index 0 and ``SUNDAY`` at index 6 — that
+        is the documented v5 contract. The request model is positional
+        and does not infer named-day ordering from ``schedule.days``;
+        callers that want a named-day shortcut should use the flat
+        ``hours`` + ``days`` request shape instead. Days that are out
+        of range are caught by the model layer (Pydantic ``min_length``
+        / ``max_length``).
+        """
+        from app.models import WEEK_DAY_NAMES
+
+        # Pydantic has already validated exactly 7 entries, so the
+        # positional index 0..6 maps directly to MONDAY..SUNDAY. The
+        # helper is idempotent — feeding it a schedule that is
+        # already in canonical order is a no-op.
+        if len(schedule.days) != len(WEEK_DAY_NAMES):
+            raise YandexDirectError(
+                f"TimeTargeting schedule must have 7 days, got {len(schedule.days)}"
+            )
+        return YandexTimeTargetingSchedule(days=list(schedule.days))
+
+    def yandex_time_targeting(
+        self,
+        campaign_id: str,
+        payload: YandexTimeTargetingRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> YandexTimeTargetingResult:
+        """Apply a time-targeting update for an existing campaign.
+
+        See the contract block above for the full gate description.
+        """
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        # Build + validate the canonical schedule exactly once.
+        # ``_normalize_time_targeting_schedule`` raises a typed
+        # ``YandexDirectError`` if the schedule is malformed at
+        # the store layer (the model has already validated it; this
+        # is defence-in-depth for direct callers).
+        if payload.schedule is not None:
+            canonical_schedule = self._normalize_time_targeting_schedule(
+                payload.schedule
+            )
+        else:
+            # Expand the ``hours`` shape into a canonical 7 x 24
+            # matrix. ``days`` defaults to every day of the week
+            # when omitted; ``None``/empty list also means every
+            # day. Per-day re-validation here would duplicate the
+            # Pydantic contract; we just build a clean 7-entry
+            # schedule.
+            from app.models import WEEK_DAY_NAMES, YandexTimeTargetingHourly
+
+            assert payload.hours is not None  # model enforces either/or
+            if payload.days is None:
+                target_days = list(WEEK_DAY_NAMES)
+            else:
+                target_days = [
+                    day.strip().upper() for day in payload.days
+                ]
+            schedule_days: list[YandexTimeTargetingHourly] = []
+            for day_name in WEEK_DAY_NAMES:
+                if day_name in target_days:
+                    schedule_days.append(
+                        YandexTimeTargetingHourly(hours=list(payload.hours))
+                    )
+                else:
+                    # Direct's v5 contract: a TimeTargetItem's
+                    # ``Hours.BidPercent`` is required. Days not
+                    # listed in the request are set to all-zeros
+                    # (``0`` = paused during that hour) so the
+                    # campaign is paused on the missing days
+                    # rather than left in whatever the previous
+                    # schedule was. This is the same shape the v5
+                    # service would accept on a brand-new
+                    # TimeTargeting block.
+                    schedule_days.append(
+                        YandexTimeTargetingHourly(hours=[0] * 24)
+                    )
+            canonical_schedule = YandexTimeTargetingSchedule(days=schedule_days)
+
+        v5_time_targeting = self._build_v5_time_targeting_from_schedule(
+            canonical_schedule
+        )
+        payload_preview: dict[str, Any] = {
+            "method": "campaigns.update",
+            "params": {
+                "Campaigns": [
+                    {
+                        "Id": YandexDirectClient._direct_id(campaign_id),
+                        "TimeTargeting": v5_time_targeting,
+                    }
+                ]
+            },
+        }
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # Idempotency: cache key is (campaign_id, idempotency_key).
+        # ``dry_run`` is NOT part of the cache key on purpose: a
+        # single idempotency_key represents one operator action;
+        # mixing a dry-run replay and a real-apply replay on the
+        # same key is unsupported and would be a contract bug,
+        # not a feature. We require the same ``dry_run`` flag
+        # across replays and surface a 409 otherwise. This mirrors
+        # the existing live-create cache contract.
+        cache_key = f"time_targeting:{campaign_id}:{payload.idempotency_key}"
+        if cache_key in self.time_targeting_results_by_key:
+            cached = self.time_targeting_results_by_key[cache_key]
+            if cached.dry_run != payload.dry_run:
+                # The cache key is supposed to represent one
+                # action. Replaying with a different dry_run flag
+                # is a logic error; surface as a typed error so
+                # the endpoint returns 409.
+                raise YandexDirectError(
+                    f"Idempotency key {payload.idempotency_key!r} was "
+                    f"previously used with dry_run={cached.dry_run}; "
+                    f"replay with dry_run={payload.dry_run} is not allowed"
+                )
+            return cached
+
+        # Mock mode: pure in-memory mirror. The apply mutates the
+        # local mirror so a follow-up ``campaigns.get
+        # TimeTargeting`` would see the new schedule. The result
+        # surfaces ``applied=False`` regardless of ``dry_run`` —
+        # mock is the no-network, no-mutation path; even a
+        # ``dry_run=False`` request is treated as a dry-run so the
+        # operator can preview the payload the apply WOULD have
+        # sent. (The endpoint gate is the primary mode guard: any
+        # non-``live_write`` apply is rejected with HTTP 409 before
+        # this branch ever runs, so the mock apply path here is
+        # only reachable via direct store calls — e.g. an
+        # integration test, a future background worker, or a
+        # caller that bypasses the endpoint gate.)
+        if not is_live:
+            audit = self.append_audit(
+                "yandex_time_targeting_requested",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "timezone": payload.timezone,
+                    "source": "mock",
+                    "mode": mode,
+                    "schedule_applied": canonical_schedule.model_dump(
+                        mode="json"
+                    ),
+                },
+            )
+            result = YandexTimeTargetingResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=payload.dry_run,
+                # Mock is always ``applied=False`` — the local
+                # mirror is not a real Yandex apply. The endpoint
+                # gate already blocks non-``live_write`` apply, so
+                # this branch is only exercised by dry-run or
+                # direct store callers.
+                applied=False,
+                source="mock",
+                audit_id=audit.id,
+                payload_preview=payload_preview,
+                schedule_applied=canonical_schedule,
+                readback=None,
+                timezone=payload.timezone,
+            )
+            self.time_targeting_results_by_key[cache_key] = result
+            return result
+
+        # Live modes: dry-run is always allowed and never mutates.
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_time_targeting_requested",
+                campaign_id,
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "timezone": payload.timezone,
+                    "source": "yandex",
+                    "mode": mode,
+                    "payload_redacted": payload_preview,
+                },
+            )
+            result = YandexTimeTargetingResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                source="yandex",
+                audit_id=audit.id,
+                payload_preview=payload_preview,
+                schedule_applied=canonical_schedule,
+                readback=None,
+                timezone=payload.timezone,
+            )
+            self.time_targeting_results_by_key[cache_key] = result
+            return result
+
+        # Real apply: only ``live_write`` may proceed. The other
+        # live-ish modes (``sandbox`` / ``live_readonly``) share
+        # the same v5 ``campaigns.update`` write shape with
+        # production — a real apply against a sandbox token would
+        # mutate the user's sandbox account, and ``live_readonly``
+        # is the documented read-only path.
+        if not can_write:
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch "
+                f"campaigns.update"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live time-targeting writes"
+            )
+
+        try:
+            yandex_result = client.campaigns_update_time_targeting(
+                campaign_id, list(v5_time_targeting)
+            )
+            if not yandex_result.get("ok"):
+                err = yandex_result.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected campaigns.update: "
+                    f"error_code={err.get('error_code')!r}"
+                )
+            # Read-back via ``campaigns.get TimeTargeting`` so the
+            # operator sees the live schedule that landed on
+            # Direct. We surface the full ``TimeTargeting`` block
+            # exactly as v5 returned it, so the operator can diff
+            # it against ``schedule_applied`` without any
+            # reshaping.
+            readback_response = client.campaigns_get_time_targeting(campaign_id)
+            readback_block: dict[str, Any] | None = None
+            if readback_response.get("ok"):
+                readback_result = readback_response.get("result") or {}
+                if isinstance(readback_result, dict):
+                    readback_campaigns = readback_result.get("Campaigns") or []
+                    if readback_campaigns and isinstance(
+                        readback_campaigns[0], dict
+                    ):
+                        candidate = readback_campaigns[0].get("TimeTargeting")
+                        if isinstance(candidate, list):
+                            readback_block = {"TimeTargeting": list(candidate)}
+            # The readback is best-effort: a v5 ok envelope with a
+            # missing/odd TimeTargeting shape is recorded in the
+            # audit, not in the readback field. The apply itself
+            # succeeded as far as Direct is concerned; a missing
+            # readback is informational, not an error.
+            audit = self.append_audit(
+                "yandex_time_targeting_requested",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "timezone": payload.timezone,
+                    "source": "yandex",
+                    "mode": mode,
+                    "schedule_applied": canonical_schedule.model_dump(
+                        mode="json"
+                    ),
+                    "yandex_units": yandex_result.get("units"),
+                    "readback_present": readback_block is not None,
+                },
+            )
+            result = YandexTimeTargetingResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                audit_id=audit.id,
+                payload_preview=None,
+                schedule_applied=canonical_schedule,
+                readback=readback_block,
+                timezone=payload.timezone,
+            )
+            self.time_targeting_results_by_key[cache_key] = result
+            return result
+        except YandexDirectError as exc:
+            self.append_audit(
+                "yandex_time_targeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
 
     # ------------------------------------------------- live-create campaign
     #

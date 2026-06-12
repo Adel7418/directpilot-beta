@@ -69,6 +69,8 @@ from app.models import (
     YandexSearchApiResult,
     YandexSearchQueriesReport,
     YandexSearchQuery,
+    YandexTimeTargetingRequest,
+    YandexTimeTargetingResult,
     YandexVCardRequest,
     YandexVCardResult,
 )
@@ -2170,6 +2172,178 @@ def yandex_live_create_campaign(
                 "error_type": "YandexDirectError",
                 "message": (
                     f"unexpected error during live-create: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct campaign TimeTargeting update
+#
+# ``POST /yandex/campaigns/{campaign_id}/time-targeting`` updates the
+# hourly-bidding schedule (TimeTargeting) of an existing Yandex
+# Direct campaign via v5 ``campaigns.update``. The gate contract is
+# identical to the rest of the product surface:
+#
+# * ``approved`` must be ``True`` (HTTP 409 otherwise).
+# * ``idempotency_key`` is required.
+# * ``live_readonly`` + ``dry_run=False`` is REJECTED before any
+#   network call (HTTP 409).
+# * ``live_write`` + ``approved`` + ``idempotency_key`` +
+#   ``dry_run=False`` performs the real apply: a v5
+#   ``campaigns.update`` call with the canonical ``TimeTargeting``
+#   block, followed by a read-back via ``campaigns.get`` to verify
+#   the schedule landed. ``sandbox`` is rejected (same write shape
+#   as production, so the gate is strict).
+#
+# The request body accepts the schedule in one of two shapes (see
+# ``YandexTimeTargetingRequest``): the full 7 x 24 ``schedule``
+# matrix, or the flat ``hours`` list plus an optional ``days``
+# filter. The endpoint normalises both shapes into the canonical
+# v5 day-of-week order MONDAY..SUNDAY before sending.
+#
+# Direct v5 ``campaigns.update`` is a REPLACE-shaped call for the
+# ``TimeTargeting`` block — sending the new block atomically
+# replaces the previous schedule. Other campaign fields are not
+# included in the payload so the apply touches only the schedule.
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/time-targeting",
+    response_model=YandexTimeTargetingResult,
+)
+def yandex_time_targeting(
+    campaign_id: str,
+    payload: YandexTimeTargetingRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexTimeTargetingResult:
+    """Update the TimeTargeting / hourly schedule of a campaign.
+
+    Gates (mirrors the rest of the product):
+
+    * ``approved`` must be ``True`` (HTTP 409 otherwise).
+    * ``idempotency_key`` is required (HTTP 422 otherwise — Pydantic).
+    * ``live_readonly`` + ``dry_run=False`` is REJECTED before any
+      network call (HTTP 409). The dry-run path is allowed in every
+      mode and never mutates.
+    * ``live_write`` + ``approved`` + ``idempotency_key`` +
+      ``dry_run=False`` performs the real apply: v5
+      ``campaigns.update`` with the canonical ``TimeTargeting``
+      block, followed by a read-back via v5 ``campaigns.get
+      TimeTargeting`` to verify the schedule landed. The response
+      surfaces the read-back so the operator can diff it against
+      ``schedule_applied`` without re-querying.
+
+    The request body accepts the schedule in one of two shapes
+    (see :class:`YandexTimeTargetingRequest`):
+
+    1. ``schedule`` — the full 7 x 24 matrix (positional, in the
+       v5 day-of-week order MONDAY..SUNDAY).
+    2. ``hours`` — a flat 24-value list (0..100) plus an optional
+       ``days`` filter (``["MONDAY", ..., "SUNDAY"]``). Convenience
+       for the common "use these hours every day" use case; the
+       endpoint expands it into the canonical 7 x 24 matrix. Days
+       not listed in ``days`` are set to all-zeros (paused) on the
+       apply so the operator sees an explicit zero schedule on the
+       missing days, not a silent carry-over of the previous
+       schedule.
+
+    Either ``schedule`` or ``hours`` MUST be supplied; supplying
+    both is a 422 validation error.
+
+    Audit events ``yandex_time_targeting_requested`` (every
+    request, dry-run or apply) and ``yandex_time_targeting_failed``
+    (only on apply-path failure) record the request id, the
+    schedule, the timezone label, and the Yandex error (no token
+    in the audit). Mock mode does NOT call any client method —
+    the apply is a pure in-memory mirror with a deterministic
+    ``readback`` shape so the operator can preview the v5 payload
+    the apply would send.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before time-targeting update",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        # Mode gate: only ``live_write`` may perform a real apply.
+        # ``live_readonly`` and ``sandbox`` are REJECTED before any
+        # network call. ``sandbox`` shares the v5
+        # ``campaigns.update`` write shape with production; a
+        # sandbox-apply would mutate the user's sandbox account.
+        # ``mock`` has no live client — silently returning
+        # ``applied=False`` (a dry-run shape) would lie to the
+        # operator. ``dry_run=True`` short-circuits all of this
+        # and is allowed in every mode.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"time-targeting apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_time_targeting(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        # ``ValueError`` is the in-store gate violation signal
+        # (e.g. unapproved apply when the endpoint gate is
+        # bypassed). Surface as 409 with the reason — never as
+        # the opaque FastAPI 500 default.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        # Two cases land here:
+        #
+        # 1. ``live_readonly`` / ``sandbox`` apply pre-flight gate
+        #    (the endpoint gate is the primary; this is a
+        #    defence-in-depth check from the store).
+        # 2. The apply path's v5 ``campaigns.update`` rejection.
+        #    The store audits ``yandex_time_targeting_failed``
+        #    before re-raising, so the audit log already carries
+        #    the failing stage and the redacted Yandex error.
+        # Both surface as 502 with a typed envelope.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": str(exc),
+            },
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — safety net
+        # Last-resort contract: any non-typed exception becomes
+        # 502 with a redacted message. The token is never
+        # included.
+        try:
+            store.append_audit(
+                "yandex_time_targeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in time-targeting endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during time-targeting: "
                     f"{type(exc).__name__}"
                 ),
             },

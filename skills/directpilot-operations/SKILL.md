@@ -102,6 +102,7 @@ For campaign creation or live mutation:
 ## Direct API operational pitfalls
 
 - New DRAFT campaigns are not launched with `campaigns.resume`. Draft-to-moderation uses `ads.moderate` with `SelectionCriteria.Ids=[ad_ids]`; `campaigns.resume` is only for already-created stopped/suspended campaigns.
+- The campaign-level hourly schedule (TimeTargeting) is updated via v5 `campaigns.update TimeTargeting` and is REPLACE-shaped on the `TimeTargeting` block. DirectPilot exposes a safe write endpoint at `POST /yandex/campaigns/{campaign_id}/time-targeting` (gate contract identical to the rest of the product surface: `approved` + `idempotency_key` + `dry_run`; `live_readonly` blocks real writes with HTTP 409 before any network call; real apply only in `live_write`). Always use `dry_run=true` first to confirm the v5 payload preview; the apply path follows up with `campaigns.get TimeTargeting` for a read-back so the operator can diff `readback.TimeTargeting` against `schedule_applied`.
 - For live bid updates through Direct v5 `keywordbids.set`, concrete known keywords should use the minimal item shape:
   ```json
   {"KeywordId": 57440007797, "SearchBid": 250000000}

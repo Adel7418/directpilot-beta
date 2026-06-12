@@ -700,6 +700,96 @@ Reference live launch result: для кампании `710691939` `campaigns.res
 
 ---
 
+## 12.1. TimeTargeting (расписание показов по часам)
+
+Безопасный write-эндпойнт для обновления `TimeTargeting` (почасовое расписание ставок / расписание показов) существующей кампании через v5 `campaigns.update`. В текущем `live_readonly` режиме реальный apply заблокирован; `dry_run=true` возвращает полный preview v5-пакета, который был бы отправлен.
+
+```http
+POST /yandex/campaigns/{campaign_id}/time-targeting
+```
+
+Тело запроса — одно из двух представлений:
+
+### Полное расписание (7 x 24)
+
+Позиционный список 7 дней (MONDAY..SUNDAY), каждый день — массив из 24 целых `BidPercent` (0..100, где 0 = пауза в этот час, 100 = полная ставка).
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "tt-001",
+  "dry_run": true,
+  "schedule": {
+    "days": [
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]},
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]},
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]},
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]},
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]},
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]},
+      {"hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0]}
+    ]
+  },
+  "timezone": "Europe/Moscow",
+  "reason": "Проверка безопасного time-targeting flow"
+}
+```
+
+### Плоский `hours` + опциональный `days` фильтр
+
+Удобный шорткат: один и тот же 24-часовой шаблон на указанные дни. Дни, не указанные в `days`, будут выставлены в нули (пауза) — никакого тихого carry-over старого расписания. `days: null` / отсутствие поля означает «все 7 дней»; явный `days: []` означает «ни один день» и даст полностью нулевое расписание.
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "tt-002",
+  "dry_run": true,
+  "hours": [0,0,0,0,0,0,0,0, 100,100,100,100,100,100,100,100,100,100,100,100,100,100, 0,0],
+  "days": ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY"],
+  "timezone": "Europe/Moscow"
+}
+```
+
+### Правила
+
+- `schedule` и `hours` взаимоисключающие — передавать строго одно;
+- `idempotency_key` обязателен (минимум 6 символов);
+- `dry_run=true` — preview без сетевого вызова, доступен в любом режиме;
+- `dry_run=false` в режимах `mock` / `sandbox` / `live_readonly` отклоняется с HTTP 409 до любого сетевого вызова;
+- реальный apply (`dry_run=false` + `approved=true` + `idempotency_key`) возможен только в `live_write`;
+- после apply делается v5 `campaigns.get` с полем `TimeTargeting` и возвращается в `readback` — оператор сверяет `readback.TimeTargeting` с `schedule_applied`;
+- replay с тем же `(campaign_id, idempotency_key)` возвращает кешированный результат, сеть не дёргается;
+- replay с тем же ключом, но другим `dry_run` — отклоняется с 502 (типизированная `YandexDirectError`);
+- токен OAuth не возвращается в response и не пишется в audit;
+- `timezone` — локальная метка часового пояса (метаданные, в v5 не отправляется, в audit и response возвращается).
+
+### v5 контракт payload preview
+
+`dry_run=true` возвращает:
+
+```json
+{
+  "method": "campaigns.update",
+  "params": {
+    "Campaigns": [
+      {
+        "Id": 710691939,
+        "TimeTargeting": [
+          {"Days": ["MONDAY"], "Hours": {"BidPercent": [0,...,0]}},
+          {"Days": ["TUESDAY"], "Hours": {"BidPercent": [0,...,0]}},
+          ...
+          {"Days": ["SUNDAY"], "Hours": {"BidPercent": [0,...,0]}}
+        ]
+      }
+    ]
+  }
+}
+```
+
+Это literal shape из Direct API v5 docs (см. https://yandex.com/dev/direct/doc/ref-v5/campaigns/update.html), без выдуманных полей. `campaigns.update` для блока `TimeTargeting` — REPLACE-shaped: переданный блок атомарно заменяет предыдущее расписание; остальные поля кампании не затрагиваются.
+
+---
+
 ## 13. Audit log
 
 ```http

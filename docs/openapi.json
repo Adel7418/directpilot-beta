@@ -2802,6 +2802,227 @@
         "title": "YandexSearchQuery",
         "type": "object"
       },
+      "YandexTimeTargetingHourly": {
+        "description": "A single day's 24-hour schedule.\n\nDirect v5 represents a TimeTargetItem's hourly ``BidPercent`` as\na list of 24 integer percentages. The list is ordered by hour\n(index 0 = 00:00, index 23 = 23:00) and the value range is\n0..100 (``0`` pauses the campaign during that hour, ``100`` is\nthe ad-group base bid).",
+        "properties": {
+          "hours": {
+            "description": "24 hourly BidPercent values, 0..100. Index 0 = 00:00, index 23 = 23:00 (local campaign timezone).",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 24,
+            "minItems": 24,
+            "title": "Hours",
+            "type": "array"
+          }
+        },
+        "required": [
+          "hours"
+        ],
+        "title": "YandexTimeTargetingHourly",
+        "type": "object"
+      },
+      "YandexTimeTargetingRequest": {
+        "description": "Body of ``POST /yandex/campaigns/{campaign_id}/time-targeting``.\n\nAccepts the schedule in one of two shapes:\n\n1. ``schedule`` — a :class:`YandexTimeTargetingSchedule` with the\n   full 7 x 24 matrix. Always validated.\n2. ``hours`` — a flat 24-value list (0..100) plus an optional\n   ``days`` filter (``[\"MONDAY\", ..., \"SUNDAY\"]``). Convenience\n   for the common \"use these hours every day\" use case; the\n   endpoint expands it into the canonical 7 x 24 matrix.\n\nEither ``schedule`` or ``hours`` MUST be supplied; supplying\nboth is a 400-level validation error.\n\nThe standard product gate contract applies:\n``approved`` / ``idempotency_key`` / ``dry_run`` plus the\nruntime mode (live_readonly blocks real writes before any\nnetwork call; live_write requires ``approved=true`` and\n``idempotency_key`` for the real apply).",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "days": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional day filter for the ``hours`` shape. Defaults to all seven days when omitted. Ignored when ``schedule`` is supplied.",
+            "title": "Days"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "hours": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Flat 24-value hourly list (0..100). Used with ``days`` to expand into a full 7 x 24 schedule. Mutually exclusive with ``schedule``.",
+            "title": "Hours"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "schedule": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/YandexTimeTargetingSchedule"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Full 7 x 24 weekly schedule. Re-ordered to v5 day-of-week order on the way in. Mutually exclusive with ``hours``."
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional human-readable timezone label, recorded in the audit and the readback so the operator can see which timezone the schedule applies to. Direct's ``TimeTargeting`` itself does not carry a timezone field; this label is metadata only and is NEVER sent to the v5 service.",
+            "title": "Timezone"
+          }
+        },
+        "required": [
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "YandexTimeTargetingRequest",
+        "type": "object"
+      },
+      "YandexTimeTargetingResult": {
+        "description": "Response envelope for the time-targeting update endpoint.\n\n``dry_run=True`` returns the v5 ``campaigns.update`` payload\npreview (one ``TimeTargeting`` block with seven ``TimeTargetItem``\nentries) that WOULD be sent, with ``applied=False``. ``dry_run=False``\n(live_write only) returns the read-back from ``campaigns.get``\nafter the apply, with ``applied=True`` and ``source=\"yandex\"``.\n\nThe ``schedule_applied`` field is the canonical v5-shape matrix\n(7 x 24) the endpoint actually sent to the v5 service, returned\nunchanged on dry-run and on apply. The operator can diff it\nagainst the live readback (also returned) to confirm that the\nschedule was applied as expected.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The v5 ``campaigns.update`` payload that WOULD be sent. Present on dry-run; ``None`` on a successful apply (the read-back fills the operator-facing schedule).",
+            "title": "Payload Preview"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ``TimeTargeting`` block returned by the post-apply ``campaigns.get`` read-back. ``None`` on dry-run.",
+            "title": "Readback"
+          },
+          "schedule_applied": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/YandexTimeTargetingSchedule"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The canonical 7 x 24 schedule that was actually sent to (or, in dry-run, would be sent to) the v5 service. Always present."
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Timezone label echoed from the request, recorded in the audit and returned to the operator. Direct's TimeTargeting does not carry a timezone; this field is metadata only and is never sent to v5.",
+            "title": "Timezone"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "YandexTimeTargetingResult",
+        "type": "object"
+      },
+      "YandexTimeTargetingSchedule": {
+        "description": "A 7-day weekly schedule.\n\nThe seven ``days`` entries are ALWAYS in the v5 day-of-week\norder MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY,\nSUNDAY. The model treats the list as positional: index 0 maps\nto MONDAY and index 6 maps to SUNDAY. It validates the length\nand hour vectors; it does not infer or re-order named days.\n\nEach day's 24 values follow the v5 contract documented on\n``YandexTimeTargetingHourly`` above.",
+        "properties": {
+          "days": {
+            "description": "Seven 24-hour schedule entries, one per day of the week. The list is positional in the v5 day-of-week order MONDAY..SUNDAY; no named-day re-ordering is inferred.",
+            "items": {
+              "$ref": "#/components/schemas/YandexTimeTargetingHourly"
+            },
+            "maxItems": 7,
+            "minItems": 7,
+            "title": "Days",
+            "type": "array"
+          }
+        },
+        "required": [
+          "days"
+        ],
+        "title": "YandexTimeTargetingSchedule",
+        "type": "object"
+      },
       "YandexVCardPhone": {
         "properties": {
           "city_code": {
@@ -5610,6 +5831,56 @@
           }
         },
         "summary": "Yandex Resume"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/time-targeting": {
+      "post": {
+        "description": "Update the TimeTargeting / hourly schedule of a campaign.\n\nGates (mirrors the rest of the product):\n\n* ``approved`` must be ``True`` (HTTP 409 otherwise).\n* ``idempotency_key`` is required (HTTP 422 otherwise — Pydantic).\n* ``live_readonly`` + ``dry_run=False`` is REJECTED before any\n  network call (HTTP 409). The dry-run path is allowed in every\n  mode and never mutates.\n* ``live_write`` + ``approved`` + ``idempotency_key`` +\n  ``dry_run=False`` performs the real apply: v5\n  ``campaigns.update`` with the canonical ``TimeTargeting``\n  block, followed by a read-back via v5 ``campaigns.get\n  TimeTargeting`` to verify the schedule landed. The response\n  surfaces the read-back so the operator can diff it against\n  ``schedule_applied`` without re-querying.\n\nThe request body accepts the schedule in one of two shapes\n(see :class:`YandexTimeTargetingRequest`):\n\n1. ``schedule`` — the full 7 x 24 matrix (positional, in the\n   v5 day-of-week order MONDAY..SUNDAY).\n2. ``hours`` — a flat 24-value list (0..100) plus an optional\n   ``days`` filter (``[\"MONDAY\", ..., \"SUNDAY\"]``). Convenience\n   for the common \"use these hours every day\" use case; the\n   endpoint expands it into the canonical 7 x 24 matrix. Days\n   not listed in ``days`` are set to all-zeros (paused) on the\n   apply so the operator sees an explicit zero schedule on the\n   missing days, not a silent carry-over of the previous\n   schedule.\n\nEither ``schedule`` or ``hours`` MUST be supplied; supplying\nboth is a 422 validation error.\n\nAudit events ``yandex_time_targeting_requested`` (every\nrequest, dry-run or apply) and ``yandex_time_targeting_failed``\n(only on apply-path failure) record the request id, the\nschedule, the timezone label, and the Yandex error (no token\nin the audit). Mock mode does NOT call any client method —\nthe apply is a pure in-memory mirror with a deterministic\n``readback`` shape so the operator can preview the v5 payload\nthe apply would send.",
+        "operationId": "yandex_time_targeting_yandex_campaigns__campaign_id__time_targeting_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexTimeTargetingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTimeTargetingResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Time Targeting"
       }
     },
     "/yandex/changes": {
