@@ -13,7 +13,23 @@ LIVE_BASE_URL = "https://api.direct.yandex.com/json/v5"
 
 
 class YandexDirectError(RuntimeError):
-    pass
+    """Error raised by Yandex Direct API interactions.
+
+    Optional *diagnostics* dict carries structured context
+    (``error_code``, ``error_detail``, ``payload_preview``) for
+    callers that need more than the message string. The dict is
+    intentionally a flat bag — all values are already redacted
+    by the call site.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
 
 
 class YandexDirectClient:
@@ -755,11 +771,11 @@ class YandexDirectClient:
         strings are passed through unchanged.
 
         Returns the standard ``{ok, result, units, error}`` envelope.
-        The ``result.Campaigns[0].TimeTargeting`` block is a list of
-        seven ``TimeTargetItem`` entries — the exact shape that
-        ``campaigns_update_time_targeting`` expects on the apply
-        path, so the read-back can be diffed against the applied
-        schedule without any reshaping.
+        The ``result.Campaigns[0].TimeTargeting`` block is a dict
+        with ``Schedule.Items`` (array of 7 strings),
+        ``ConsiderWorkingWeekends``, and ``HolidaysSchedule`` —
+        the same shape that ``campaigns_update_time_targeting``
+        accepts on the apply path.
         """
         campaign_id = self._direct_id(campaign_id)
         payload = {
@@ -774,18 +790,18 @@ class YandexDirectClient:
     def campaigns_update_time_targeting(
         self,
         campaign_id: int | str,
-        time_targeting: list[dict[str, Any]],
+        time_targeting: dict[str, Any],
         *,
         daily_budget: dict[str, Any] | None = None,
         text_campaign: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update only the ``TimeTargeting`` block of one campaign.
 
-        ``time_targeting`` MUST be a list of seven ``TimeTargetItem``
-        dictionaries, one per day of the week (MONDAY..SUNDAY), each
-        carrying the canonical 24 ``BidPercent`` integers in the
-        0..100 range. The exact shape the v5 service returns from
-        ``campaigns.get TimeTargeting``. We never invent field names.
+        ``time_targeting`` MUST be the v5 ``campaigns.update``
+        shape: a dict with ``Schedule.Items`` (seven strings,
+        day-number + 24 bid percents), plus the explicit
+        ``ConsiderWorkingWeekends`` / ``HolidaysSchedule`` keys
+        that Direct expects. We never invent field names.
 
         ``daily_budget`` is an optional ``DailyBudget`` block to
         include in the ``campaigns.update`` payload. Direct v5
@@ -810,20 +826,22 @@ class YandexDirectClient:
         left untouched (we do not include them in the payload). See
         the v5 docs for the full REPLACE contract.
         """
-        if not isinstance(time_targeting, list) or len(time_targeting) != 7:
-            # Defensive guard: the store validates the canonical
-            # 7 x 24 matrix at the model layer, but a direct
-            # caller of this client must also get a typed error if
-            # they hand us a malformed schedule.
+        if not isinstance(time_targeting, dict):
             raise YandexDirectError(
-                "TimeTargeting must be a list of 7 TimeTargetItem entries, "
-                f"got {type(time_targeting).__name__} of length "
-                f"{len(time_targeting) if hasattr(time_targeting, '__len__') else 'n/a'}"
+                "TimeTargeting must be a dict with Schedule/Items, "
+                f"got {type(time_targeting).__name__}"
+            )
+        schedule = time_targeting.get("Schedule", {})
+        items = schedule.get("Items") if isinstance(schedule, dict) else None
+        if not isinstance(items, list) or len(items) != 7:
+            raise YandexDirectError(
+                "TimeTargeting.Schedule.Items must be a list of 7 strings, "
+                f"got {type(items).__name__}"
             )
         campaign_id = self._direct_id(campaign_id)
         campaign_entry: dict[str, Any] = {
             "Id": campaign_id,
-            "TimeTargeting": list(time_targeting),
+            "TimeTargeting": time_targeting,
         }
         if daily_budget is not None:
             campaign_entry["DailyBudget"] = dict(daily_budget)
@@ -1039,7 +1057,11 @@ class YandexDirectClient:
             if isinstance(error, dict):
                 return {
                     "ok": False,
-                    "error": {"error_code": error.get("error_code")},
+                    "error": {
+                        "error_code": error.get("error_code"),
+                        "error_detail": error.get("error_detail"),
+                        "error_string": error.get("error_string"),
+                    },
                     "units": response.headers.get("Units"),
                 }
             return {
@@ -1089,7 +1111,11 @@ class YandexDirectClient:
                 error = body["error"]
                 return {
                     "ok": False,
-                    "error": {"error_code": error.get("error_code")},
+                    "error": {
+                        "error_code": error.get("error_code"),
+                        "error_detail": error.get("error_detail"),
+                        "error_string": error.get("error_string"),
+                    },
                     "units": units,
                 }
             return {

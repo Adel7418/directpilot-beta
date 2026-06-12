@@ -376,7 +376,7 @@ def test_mock_dry_run_returns_deterministic_preview_without_network():
     assert body["payload_preview"]["method"] == "campaigns.update"
     assert body["payload_preview"]["params"]["Campaigns"][0]["Id"] == 710691939
     assert (
-        len(body["payload_preview"]["params"]["Campaigns"][0]["TimeTargeting"])
+        len(body["payload_preview"]["params"]["Campaigns"][0]["TimeTargeting"]["Schedule"]["Items"])
         == 7
     )
     assert body["readback"] is None
@@ -608,16 +608,21 @@ def test_dry_run_payload_uses_canonical_v5_time_targeting_shape():
     assert len(campaigns) == 1
     assert campaigns[0]["Id"] == 710691939
     tt = campaigns[0]["TimeTargeting"]
-    # Seven TimeTargetItems, one per day, in v5 canonical order.
-    assert len(tt) == 7
-    for index, item in enumerate(tt):
-        assert item["Days"] == [WEEK_DAY_NAMES[index]]
-        assert "Hours" in item
-        assert "BidPercent" in item["Hours"]
-        assert len(item["Hours"]["BidPercent"]) == 24
-        for value in item["Hours"]["BidPercent"]:
-            assert isinstance(value, int)
-            assert 0 <= value <= 100
+    # Dict with Schedule.Items (7 strings), ConsiderWorkingWeekends,
+    # and HolidaysSchedule — the v5 campaigns.update shape.
+    assert isinstance(tt, dict)
+    assert "Schedule" in tt
+    items = tt["Schedule"]["Items"]
+    assert len(items) == 7
+    for index, item in enumerate(items):
+        assert isinstance(item, str)
+        parts = item.split(",")
+        assert len(parts) == 25
+        assert parts[0] == str(index + 1)
+        for bid_str in parts[1:]:
+            bid = int(bid_str)
+            assert 0 <= bid <= 100
+            assert isinstance(int(bid_str), int)
 
 
 def test_hours_shape_with_days_filter_expands_to_canonical_seven():
@@ -647,14 +652,21 @@ def test_hours_shape_with_days_filter_expands_to_canonical_seven():
     assert response.status_code == 200, response.text
     preview = response.json()["payload_preview"]
     tt = preview["params"]["Campaigns"][0]["TimeTargeting"]
-    assert len(tt) == 7
-    # MONDAY, WEDNESDAY, FRIDAY use the 100 schedule; the rest
-    # are all-zeros (paused).
-    for index, item in enumerate(tt):
-        if WEEK_DAY_NAMES[index] in ("MONDAY", "WEDNESDAY", "FRIDAY"):
-            assert item["Hours"]["BidPercent"] == [100] * 24
+    assert isinstance(tt, dict)
+    items = tt["Schedule"]["Items"]
+    assert len(items) == 7
+    # MONDAY(index 0), WEDNESDAY(index 2), FRIDAY(index 4) use
+    # the 100 schedule; the rest are all-zeros (paused).
+    expected_active = {0, 2, 4}
+    for index, item in enumerate(items):
+        parts = item.split(",")
+        assert len(parts) == 25
+        assert parts[0] == str(index + 1)
+        bids = [int(b) for b in parts[1:]]
+        if index in expected_active:
+            assert bids == [100] * 24
         else:
-            assert item["Hours"]["BidPercent"] == [0] * 24
+            assert bids == [0] * 24
 
 
 # ---------------------------------------------------------------------------
@@ -1235,6 +1247,98 @@ def test_error_8000_regression_daily_budget_mode_required():
 
 
 # ---------------------------------------------------------------------------
+# error_detail preservation (regression: error_code=8000 without detail)
+# ---------------------------------------------------------------------------
+
+
+def test_direct_error_detail_preserved_in_client_envelope():
+    """``_call`` MUST preserve ``error_detail`` and ``error_string`` from
+    the Direct API error response, so callers can surface actionable
+    diagnostics (e.g. \"Отсутствует обязательный параметр Mode\")
+    instead of just the numeric ``error_code``.
+    """
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "error": {
+                    "error_code": 8000,
+                    "error_detail": "Отсутствует обязательный параметр Mode",
+                    "error_string": "Missing required parameter: Mode",
+                }
+            },
+        )
+
+    yandex = _client_with_handler(settings, handler)
+    # Use any public method that goes through _call.
+    result = yandex.campaigns_get_daily_budget(710691939)
+    assert result["ok"] is False
+    assert result["error"]["error_code"] == 8000
+    assert result["error"]["error_detail"] == "Отсутствует обязательный параметр Mode"
+    assert result["error"]["error_string"] == "Missing required parameter: Mode"
+
+
+def test_error_8000_surfaces_detail_and_redacted_payload():
+    """When campaigns.update returns error_code=8000, the endpoint MUST
+    surface not just the code but also error_detail and a redacted
+    payload_preview so the operator can diagnose the shape mismatch
+    without raw OAuth tokens.
+    """
+    settings = _settings("live_write")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("method") == "get":
+            return httpx.Response(200, json=_campaign_read_envelope())
+        if body.get("method") == "update":
+            return httpx.Response(
+                200,
+                json={
+                    "error": {
+                        "error_code": 8000,
+                        "error_detail": "Отсутствует обязательный параметр Mode",
+                    }
+                },
+            )
+        return httpx.Response(200, json={})
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(
+                dry_run=False, idempotency_key="tt-err8000-detail-001"
+            ),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    detail = body["detail"]
+    # error_detail must be surfaced.
+    assert "error_detail" in detail
+    assert "Отсутствует обязательный параметр Mode" in str(detail)
+    # error_code must be in the message.
+    assert 8000 == detail.get("error_code")
+    # Payload preview must be included (redacted).
+    assert "payload_preview" in detail
+    assert "Campaigns" in str(detail["payload_preview"])
+    assert SECRET_TOKEN not in response.text
+    # Audit must record the failure with diagnostic fields.
+    failed_events = [
+        e for e in store.audit_events
+        if e.action == "yandex_time_targeting_failed"
+    ]
+    assert failed_events, "expected yandex_time_targeting_failed audit event"
+    assert "yandex_error_detail" in failed_events[-1].details
+
+
+# ---------------------------------------------------------------------------
 # Smart-strategy BiddingStrategy preservation (error_code=8000 regression
 # for TEXT_CAMPAIGN with WB_MAXIMUM_CONVERSION_RATE and DailyBudget=null)
 # ---------------------------------------------------------------------------
@@ -1330,7 +1434,7 @@ def test_smart_strategy_dry_run_preserves_bidding_strategy_in_payload():
     campaigns = preview["params"]["Campaigns"][0]
     # TimeTargeting MUST be present.
     assert "TimeTargeting" in campaigns
-    assert len(campaigns["TimeTargeting"]) == 7
+    assert len(campaigns["TimeTargeting"]["Schedule"]["Items"]) == 7
     # DailyBudget MUST NOT be present (campaign has no daily budget).
     assert "DailyBudget" not in campaigns
     # TextCampaign.BiddingStrategy MUST be present.
@@ -1341,8 +1445,10 @@ def test_smart_strategy_dry_run_preserves_bidding_strategy_in_payload():
     assert wmcr["GoalId"] == 567732835
     assert wmcr["WeeklySpendLimit"] == 7000000000
     assert wmcr["BidCeiling"] == 1500000000
-    # BudgetType MUST be removed on write-side.
-    assert "BudgetType" not in wmcr
+    # BudgetType is preserved (not stripped) — the real Yandex API
+    # returns it on GET and requires it on write for
+    # WbMaximumConversionRate to avoid error_code=8000.
+    assert wmcr.get("BudgetType") == "WEEKLY_BUDGET"
     # Network strategy preserved.
     assert strategy["Network"]["BiddingStrategyType"] == "SERVING_OFF"
     assert SECRET_TOKEN not in response.text
@@ -1392,7 +1498,10 @@ def test_smart_strategy_live_write_apply_includes_bidding_strategy():
     assert strategy["Search"]["BiddingStrategyType"] == "WB_MAXIMUM_CONVERSION_RATE"
     wmcr = strategy["Search"]["WbMaximumConversionRate"]
     assert wmcr["GoalId"] == 567732835
-    assert "BudgetType" not in wmcr
+    # BudgetType is preserved (not stripped) — the real Yandex API
+    # returns it on GET and requires it on write for
+    # WbMaximumConversionRate to avoid error_code=8000.
+    assert wmcr.get("BudgetType") == "WEEKLY_BUDGET"
     # DailyBudget MUST NOT be present (null on this campaign).
     assert "DailyBudget" not in update_campaign
     # TimeTargeting MUST be present.
@@ -1432,10 +1541,99 @@ def test_smart_strategy_budgettype_normalization():
     strategy = preview["params"]["Campaigns"][0]["TextCampaign"]["BiddingStrategy"]
     # BudgetType is read-only; write-side should not carry it.
     wmcr = strategy["Search"].get("WbMaximumConversionRate", {})
-    assert "BudgetType" not in wmcr, (
-        f"BudgetType should be stripped on write-side, got {wmcr}"
+    # BudgetType is returned by the real Yandex API on GET for
+    # WbMaximumConversionRate (despite docs not listing it) and
+    # must be preserved on write to avoid error_code=8000
+    # ("Отсутствует обязательный параметр"). The deterministic
+    # read→write mapping never invents values, so passing through
+    # what Yandex returned is the safest behaviour.
+    assert "BudgetType" in wmcr, (
+        f"BudgetType should be preserved on write-side, got {wmcr}"
     )
+    assert wmcr["BudgetType"] == "WEEKLY_BUDGET"
     assert SECRET_TOKEN not in response.text
+
+
+def test_smart_strategy_error_8000_with_diagnostics():
+    """When Direct rejects a smart-strategy time-targeting apply
+    with error_code=8000, the 502 response MUST include:
+    - error_code
+    - error_detail (the human-readable Direct error message)
+    - payload_preview (sanitized campaigns.update payload, no OAuth)
+    so the operator can diagnose the mismatch without live trial-and-error.
+
+    Regression: the prior fix stripped BudgetType from
+    WbMaximumConversionRate on write, causing error 8000
+    ("missing required parameter") on the real API.
+    """
+    settings = _settings("live_write")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("method") == "get":
+            return httpx.Response(
+                200, json=_smart_strategy_read_envelope()
+            )
+        if body.get("method") == "update":
+            return httpx.Response(
+                200,
+                json={
+                    "error": {
+                        "error_code": 8000,
+                        "error_detail": (
+                            "Отсутствует обязательный параметр"
+                        ),
+                        "error_string": (
+                            "Missing required parameter"
+                        ),
+                    }
+                },
+            )
+        return httpx.Response(200, json={})
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(
+                dry_run=False, idempotency_key="tt-smart-err8000-001"
+            ),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    detail = body["detail"]
+    assert detail["error_type"] == "YandexDirectError"
+    assert detail["error_code"] == 8000
+    assert detail["error_detail"] == (
+        "Отсутствует обязательный параметр"
+    )
+    # payload_preview MUST be present and sanitized.
+    assert "payload_preview" in detail
+    pp = detail["payload_preview"]
+    assert pp["method"] == "campaigns.update"
+    campaigns = pp["params"]["Campaigns"]
+    assert len(campaigns) == 1
+    entry = campaigns[0]
+    # Strategy must be present (smart-strategy preservation).
+    strategy = entry["TextCampaign"]["BiddingStrategy"]
+    wmcr = strategy["Search"]["WbMaximumConversionRate"]
+    # BudgetType must be PRESERVED (the fix for this regression).
+    assert "BudgetType" in wmcr, (
+        f"BudgetType must be preserved to avoid error 8000, got {wmcr}"
+    )
+    assert wmcr["BudgetType"] == "WEEKLY_BUDGET"
+    assert SECRET_TOKEN not in response.text
+    # Audit must record the failure.
+    failed_events = [
+        e for e in store.audit_events
+        if e.action == "yandex_time_targeting_failed"
+    ]
+    assert failed_events, "expected yandex_time_targeting_failed audit event"
 
 
 def test_missing_strategy_read_fails_closed_for_text_campaign():
@@ -1493,3 +1691,83 @@ def test_missing_strategy_read_fails_closed_for_text_campaign():
         if e.action == "yandex_time_targeting_failed"
     ]
     assert failed_events, "expected yandex_time_targeting_failed audit event"
+
+# ---------------------------------------------------------------------------
+# TimeTargeting v5 update format (string-encoded Schedule.Items)
+# ---------------------------------------------------------------------------
+
+
+def test_time_targeting_uses_v5_update_string_format():
+    """The TimeTargeting payload for campaigns.update MUST use
+    the v5 string-encoded format: Schedule.Items is an array of
+    strings "D,bid0,bid1,...,bid23" where D is 1-7
+    (Monday-Sunday). ConsiderWorkingWeekends is required.
+    HolidaysSchedule is included with safe defaults.
+
+    This matches the documented v5 contract at
+    https://yandex.com/dev/direct/doc/en/curl-campaigns-timetargeting
+    """
+    from app.store import store as s
+
+    schedule = YandexTimeTargetingSchedule(
+        days=[YandexTimeTargetingHourly(hours=_hours_8_to_22_full()) for _ in range(7)]
+    )
+    tt = s._build_v5_time_targeting_from_schedule(schedule)
+    assert isinstance(tt, dict), f"expected dict, got {type(tt).__name__}"
+    assert "Schedule" in tt
+    assert "Items" in tt["Schedule"]
+    assert isinstance(tt["Schedule"]["Items"], list)
+    assert len(tt["Schedule"]["Items"]) == 7
+    # Each item must be a string "D,bid0,bid1,...,bid23"
+    for idx, item in enumerate(tt["Schedule"]["Items"]):
+        assert isinstance(item, str), f"item {idx}: expected str, got {type(item).__name__}"
+        parts = item.split(",")
+        assert len(parts) == 25, f"item {idx}: expected 25 parts, got {len(parts)}"
+        assert parts[0] == str(idx + 1), f"item {idx}: day number mismatch"
+        # 24 bid values, all in 0..100
+        for bid_str in parts[1:]:
+            bid = int(bid_str)
+            assert 0 <= bid <= 100
+    # ConsiderWorkingWeekends is required.
+    assert "ConsiderWorkingWeekends" in tt
+    assert tt["ConsiderWorkingWeekends"] in ("YES", "NO")
+    # HolidaysSchedule is included.
+    assert "HolidaysSchedule" in tt
+    hs = tt["HolidaysSchedule"]
+    assert "SuspendOnHolidays" in hs
+    assert "BidPercent" in hs
+    assert "StartHour" in hs
+    assert "EndHour" in hs
+
+
+def test_time_targeting_string_format_in_dry_run_payload():
+    """A dry-run for any campaign MUST show the string-encoded
+    TimeTargeting format in payload_preview.
+    """
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_ok_readback_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(idempotency_key="tt-string-001"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["payload_preview"]
+    tt = preview["params"]["Campaigns"][0]["TimeTargeting"]
+    assert isinstance(tt, dict), f"expected dict, got {type(tt).__name__}"
+    assert "Schedule" in tt
+    assert "Items" in tt["Schedule"]
+    assert len(tt["Schedule"]["Items"]) == 7
+    assert isinstance(tt["Schedule"]["Items"][0], str)
+    assert "ConsiderWorkingWeekends" in tt
+    assert "HolidaysSchedule" in tt
+    assert SECRET_TOKEN not in response.text

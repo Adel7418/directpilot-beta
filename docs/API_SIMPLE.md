@@ -761,7 +761,7 @@ POST /yandex/campaigns/{campaign_id}/time-targeting
 - реальный apply (`dry_run=false` + `approved=true` + `idempotency_key`) возможен только в `live_write`;
 - перед apply читается текущий `DailyBudget` кампании через `campaigns.get`; если у кампании есть дневной бюджет, блок `DailyBudget` с нормализованным `Mode` (из `SpendMode`) включается в `campaigns.update` payload — без него Direct возвращает error_code=8000 «Отсутствует обязательный параметр Mode»;
 - если `DailyBudget` пришел как `null` (smart-strategy text campaign), endpoint дополнительно читает `Type` + `TextCampaign.BiddingStrategy` через отдельный `campaigns.get` с `TextCampaignFieldNames`; без найденного `BiddingStrategy` apply отклоняется с 502 (fail-closed), так как `campaigns.update` для таких кампаний требует сохранения strategy block даже при чистом TimeTargeting update;
-- `BudgetType` из read-side `TextCampaign.BiddingStrategy.*` считается read-only и убирается из payload (`Search/WbMaximumConversionRate`, `Network` и др.), чтобы выслать write-side shape без лишних полей;
+- `BudgetType` из read-side `TextCampaign.BiddingStrategy.*` **сохраняется** в write-side payload — реальный API Яндекса возвращает его на GET и требует на UPDATE для стратегий `WbMaximumConversionRate` / `WbMaximumClicks`; удаление `BudgetType` вызывает error_code=8000 («Отсутствует обязательный параметр»);
 - после apply делается v5 `campaigns.get` с полем `TimeTargeting` и возвращается в `readback` — оператор сверяет `readback.TimeTargeting` с `schedule_applied`;
 - replay с тем же `(campaign_id, idempotency_key)` возвращает кешированный результат, сеть не дёргается;
 - replay с тем же ключом, но другим `dry_run` — отклоняется с 502 (типизированная `YandexDirectError`);
@@ -780,19 +780,25 @@ POST /yandex/campaigns/{campaign_id}/time-targeting
       {
         "Id": 710691939,
         "DailyBudget": {"Amount": 5000000, "Mode": "STANDARD"},
-        "TimeTargeting": [
-          {"Days": ["MONDAY"], "Hours": {"BidPercent": [0,...,0]}},
-          {"Days": ["TUESDAY"], "Hours": {"BidPercent": [0,...,0]}},
-          ...
-          {"Days": ["SUNDAY"], "Hours": {"BidPercent": [0,...,0]}}
-        ]
+        "TimeTargeting": {
+          "Schedule": {
+            "Items": [
+              "1,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0",
+              "2,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0",
+              "...",
+              "7,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0"
+            ]
+          },
+          "ConsiderWorkingWeekends": "NO",
+          "HolidaysSchedule": null
+        }
       }
     ]
   }
 }
 ```
 
-`DailyBudget` включается в preview только если кампания имеет дневной бюджет. `Mode` нормализуется из `SpendMode` (read-side) в `Mode` (write-side). Для smart-strategy кампаний (`DailyBudget: null`) preview также включает `TextCampaign.BiddingStrategy` (read-side стратегия с нормализацией `BudgetType`) — иначе `campaigns.update` не пройдёт. Если чтение бюджета/стратегии сломалось или envelope неоднозначен, apply отклоняется с 502; `DailyBudget: null` — валидный признак отсутствия дневного бюджета.
+`DailyBudget` включается в preview только если кампания имеет дневной бюджет. `Mode` нормализуется из `SpendMode` (read-side) в `Mode` (write-side). Для smart-strategy кампаний (`DailyBudget: null`) preview также включает `TextCampaign.BiddingStrategy` (read-side стратегия с сохранением `BudgetType` — реальный API возвращает его на GET и требует на UPDATE; удаление `BudgetType` вызывает error_code=8000). Если чтение бюджета/стратегии сломалось или envelope неоднозначен, apply отклоняется с 502; `DailyBudget: null` — валидный признак отсутствия дневного бюджета.
 
 Это literal shape из Direct API v5 docs (см. https://yandex.com/dev/direct/doc/ref-v5/campaigns/update.html), без выдуманных полей. `campaigns.update` для блока `TimeTargeting` — REPLACE-shaped: переданный блок атомарно заменяет предыдущее расписание; остальные поля кампании не затрагиваются.
 

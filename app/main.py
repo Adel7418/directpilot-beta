@@ -2308,13 +2308,18 @@ def yandex_time_targeting(
         #    before re-raising, so the audit log already carries
         #    the failing stage and the redacted Yandex error.
         # Both surface as 502 with a typed envelope.
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error_type": "YandexDirectError",
-                "message": str(exc),
-            },
-        ) from exc
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
     except Exception as exc:  # noqa: BLE001 — safety net
         # Last-resort contract: any non-typed exception becomes
         # 502 with a redacted message. The token is never

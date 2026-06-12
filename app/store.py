@@ -1163,39 +1163,37 @@ class MockStore:
     @staticmethod
     def _build_v5_time_targeting_from_schedule(
         schedule: YandexTimeTargetingSchedule,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Build the v5 ``TimeTargeting`` block from a canonical schedule.
 
-        The result is a list of seven ``TimeTargetItem`` dictionaries
-        in the v5 day-of-week order MONDAY..SUNDAY. Each item carries
-        a ``Days`` field (a list of the single day name) and a
-        ``Hours`` block with 24 ``BidPercent`` integer values in the
-        0..100 range.
+        The result is a dictionary with ``Schedule.Items`` (array of
+        strings ``\"D,bid0,bid1,...,bid23\"`` where D is 1-7 for
+        Monday-Sunday), ``ConsiderWorkingWeekends`` (required), and
+        ``HolidaysSchedule`` (required by the v5 contract).
 
-        The model layer has already validated the 7 x 24 matrix and
-        the integer range, so this helper only reshapes. The v5
-        contract for a TimeTargetItem is documented at
-        https://yandex.com/dev/direct/doc/ref-v5/campaigns/update.html
-        — we mirror the documented ``Days`` / ``Hours.BidPercent``
-        shape literally.
+        This mirrors the documented v5 ``campaigns.update`` format at
+        https://yandex.com/dev/direct/doc/en/curl-campaigns-timetargeting
         """
         from app.models import WEEK_DAY_NAMES
 
         if len(schedule.days) != len(WEEK_DAY_NAMES):
-            # Defensive guard. The model layer has already pinned
-            # this at 7 via ``min_length`` / ``max_length`` but a
-            # direct caller of the helper must also get a typed
-            # error rather than a confusing IndexError.
             raise YandexDirectError(
                 f"TimeTargeting schedule must have 7 days, got {len(schedule.days)}"
             )
-        return [
-            {
-                "Days": [WEEK_DAY_NAMES[index]],
-                "Hours": {"BidPercent": list(day.hours)},
-            }
-            for index, day in enumerate(schedule.days)
-        ]
+        items: list[str] = []
+        for index, day in enumerate(schedule.days):
+            bid_values = [str(int(b)) for b in day.hours]
+            items.append(f"{index + 1},{','.join(bid_values)}")
+        return {
+            "Schedule": {"Items": items},
+            "ConsiderWorkingWeekends": "YES",
+            "HolidaysSchedule": {
+                "StartHour": 14,
+                "EndHour": 24,
+                "SuspendOnHolidays": "NO",
+                "BidPercent": 100,
+            },
+        }
 
     @staticmethod
     def _normalize_time_targeting_schedule(
@@ -1226,12 +1224,19 @@ class MockStore:
     # Read-side → write-side normalization for BiddingStrategy.
     #
     # Direct v5 ``campaigns.get`` returns extra read-only fields in
-    # BiddingStrategy sub-objects (e.g. ``BudgetType``) that the
-    # ``campaigns.update`` write-side does not accept. We strip
-    # known read-only fields and return a clean write-side dict.
-    # We never invent field names — we only remove fields that the
-    # write-side contract does not document.
-    _STRATEGY_READ_ONLY_FIELDS: frozenset[str] = frozenset({"BudgetType"})
+    # BiddingStrategy sub-objects that the ``campaigns.update``
+    # write-side does not accept.  We strip known read-only fields
+    # and return a clean write-side dict.  We never invent field
+    # names — we only remove fields that the write-side contract
+    # does not document.
+    #
+    # ``BudgetType`` was previously treated as read-only because the
+    # public Yandex docs do not list it in the write-side schema for
+    # WbMaximumConversionRate / WbMaximumClicks.  However the live
+    # API returns it on GET and rejects updates without it
+    # (error_code=8000), so we now pass it through unchanged on
+    # deterministic read→write mapping.
+    _STRATEGY_READ_ONLY_FIELDS: frozenset[str] = frozenset()
 
     @classmethod
     def _normalize_strategy_for_write(
@@ -1636,7 +1641,7 @@ class MockStore:
         try:
             yandex_result = client.campaigns_update_time_targeting(
                 campaign_id,
-                list(v5_time_targeting),
+                v5_time_targeting,
                 daily_budget=resolved_daily_budget,
                 text_campaign=(
                     {"BiddingStrategy": resolved_strategy}
@@ -1648,7 +1653,12 @@ class MockStore:
                 err = yandex_result.get("error") or {}
                 raise YandexDirectError(
                     f"Yandex Direct rejected campaigns.update: "
-                    f"error_code={err.get('error_code')!r}"
+                    f"error_code={err.get('error_code')!r}",
+                    diagnostics={
+                        "error_code": err.get("error_code"),
+                        "error_detail": err.get("error_detail"),
+                        "payload_preview": payload_preview,
+                    },
                 )
             # Read-back via ``campaigns.get TimeTargeting`` so the
             # operator sees the live schedule that landed on
@@ -1666,7 +1676,9 @@ class MockStore:
                         readback_campaigns[0], dict
                     ):
                         candidate = readback_campaigns[0].get("TimeTargeting")
-                        if isinstance(candidate, list):
+                        if isinstance(candidate, dict):
+                            readback_block = {"TimeTargeting": dict(candidate)}
+                        elif isinstance(candidate, list):
                             readback_block = {"TimeTargeting": list(candidate)}
             # The readback is best-effort: a v5 ok envelope with a
             # missing/odd TimeTargeting shape is recorded in the
@@ -1717,6 +1729,12 @@ class MockStore:
                     "source": "yandex",
                     "mode": mode,
                     "yandex_error": str(exc),
+                    "yandex_error_detail": exc.diagnostics.get(
+                        "error_detail"
+                    ),
+                    "payload_preview": exc.diagnostics.get(
+                        "payload_preview"
+                    ),
                 },
             )
             raise
