@@ -48,6 +48,8 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/ads`
    - `GET /yandex/campaigns/{campaign_id}/keywords`
    - `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида (заголовки, тексты, быстрые ссылки, организации, визитки)
+   - `POST /yandex/ad-groups/{ad_group_id}/ads` — добавить объявления в существующую группу (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
+   - `POST /yandex/ads/moderate` — отправить объявления на модерацию (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
 
 Scope rule for operators/agents:
 
@@ -96,6 +98,15 @@ For campaign creation or live mutation:
 - Do not perform real Yandex writes unless the user explicitly approved the exact action.
 - Keep `dry_run=true` for previews and safety checks.
 - If DirectPilot lacks the required endpoint, report the product gap instead of bypassing DirectPilot with raw Yandex API calls.
+
+When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_group_id}/ads``:
+
+- Ask or decide whether to reuse the existing BusinessId (default: reuse if existing ads already use one).
+- Ask or decide whether to reuse the existing SitelinkSetId for quick links (default: reuse if relevant, verify via campaign-specific readback).
+- Keywords and negative keywords are NOT per-ad — they are managed at campaign/ad-group level. If a new ad angle needs extra keywords/minuses, propose a separate semantic-change task.
+- Technical and niche-specific phrasing in ad text is allowed as creative copy — do not treat it as the same as adding a key term in keyword targeting.
+- If niche-specific terms can attract off-intent/DIY traffic, flag the risk and handle mitigation via separate keyword/minus workflows.
+- After adding ads (or after live-create), send them to moderation via ``POST /yandex/ads/moderate`` — do NOT use ``campaigns.resume`` for new DRAFT campaigns.
 
 ## High-risk areas
 

@@ -33,6 +33,8 @@ DirectPilot — единая прослойка для маркетолога:
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC; **live** в `sandbox`/`live_readonly`/`live_write` (источник `CAMPAIGN_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock` |
 | Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; пустой live-отчёт = `items=[]` с `source="yandex"` (не mock-fallback) |
 | Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
+| Добавить объявления в существующую группу | `POST /yandex/ad-groups/{ad_group_id}/ads` | `dry_run=true` для preview; в ответе смотрите `warnings` — наследование BusinessId/SitelinkSetId; ключи/минуса отдельно; `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key` |
+| Отправить объявления на модерацию | `POST /yandex/ads/moderate` | `dry_run=true` для preview; `dry_run=false` + `live_write` для живой отправки; для новой DRAFT-кампании используйте **этот** endpoint, **не** `campaigns.resume`; `campaigns.resume` — только для already-created stopped/suspended кампаний |
 | Проверить аудит после публикации | `GET /audit-log` | `live_create_campaign_*`, `live_create_campaign_failed`; для DRAFT-запуска ожидайте отдельный факт отправки ads на модерацию |
 | Отправить DRAFT в модерацию | Direct `ads.moderate` по `ad_ids` | для новой кампании после live-create: **не** `campaigns.resume`; ожидаемый readback: campaign `Status=MODERATION`, ads `Status=MODERATION` |
 | Возобновить остановленную кампанию | `POST /yandex/campaigns/{campaign_id}/resume` | только для уже созданных stopped/suspended кампаний; не для DRAFT-to-moderation |
@@ -131,6 +133,39 @@ DirectPilot — единая прослойка для маркетолога:
 
   Для smart-кампаний `TEXT_CAMPAIGN` эндпойнт дополнительно читает `TextCampaign.BiddingStrategy` и, если у кампании есть дневной бюджет, применяет `SpendMode→Mode` нормализацию: если `DailyBudget` есть, включается `DailyBudget` с `Mode`; если `DailyBudget: null`, включается сохранённая стратегия (`Search`/`Network`). Если прочитать обязательные поля не удалось (нет бюджета при `live`-режиме или отсутствует `BiddingStrategy` для smart-strategy), apply отклоняется с 502 (fail-closed). `BudgetType` из read-side **сохраняется** в write-side payload — удаление `BudgetType` вызывает error_code=8000.
 
+## Правила для добавления объявлений в существующую кампанию/группу
+
+При подготовке новых объявлений для конкретной кампании/группы через `POST /yandex/ad-groups/{ad_group_id}/ads`, маркетолог должен явно решить (или спросить пользователя):
+
+### 1. BusinessId / организация
+
+- **По умолчанию:** переиспользовать тот же `business_id`, который уже используется в существующих объявлениях кампании/группы (проверить через `GET /yandex/campaigns/{campaign_id}/ads` или `ad-assets`).
+- Если пользователь явно хочет без организации — передать без `business_id`.
+- Endpoint возвращает `warning` с кодом `inherit_business_id`, если `business_id` не указан.
+
+### 2. SitelinkSetId / быстрые ссылки
+
+- **По умолчанию:** переиспользовать тот же `sitelink_set_id`, если существующий набор релевантен (проверить через campaign-specific readback).
+- Если набор нерелевантен новым объявлениям — опустить или указать другой.
+
+### 3. Ключевые слова и минус-слова
+
+- **Ключи и минуса управляются на уровне кампании/группы, НЕ на уровне объявления.**
+- Добавление новых объявлений НЕ меняет ключевые слова и минус-слова.
+- Если новый угол объявления требует дополнительных ключей или минус-слов — создайте отдельную задачу через `POST /campaigns/{campaign_id}/semantic-changes`, не смешивайте с созданием объявлений.
+- Endpoint возвращает `warning` с кодом `keywords_not_per_ad`.
+
+### 4. Слова-ловушки в текстах объявлений
+
+- Использование технических/профессиональных терминов в тексте/заголовке объявления — это креативный выбор, он не заменяет управляемые списки ключевых слов.
+- **Не путайте:** текст объявления и ключевая фраза — разные уровни. Ключи управляются отдельно от объявления.
+- При использовании нишево-специфичных терминов отмечайте потенциальный DIY-трафик и закрывайте его отдельными negative/ключевыми правками, если это требуется по фактическому данным.
+
+### 5. Отправка на модерацию
+
+- После `live-create` или `POST /yandex/ad-groups/{ad_group_id}/ads` с `dry_run=false` НЕ используйте `campaigns.resume` для новых DRAFT-кампаний.
+- Используйте `POST /yandex/ads/moderate` с `ad_ids` созданных объявлений.
+
 ## Стандартный workflow анализа рекламы
 
 1. `GET /health` и `GET /integrations/yandex/direct/status`.
@@ -143,7 +178,7 @@ DirectPilot — единая прослойка для маркетолога:
 8. Для любых задач по ключам, минус-словам или поисковым запросам запускать semantic workflow:
    - классифицировать интент: keep / add as key / minus / decision needed;
    - использовать Wordstat (`/wordstat/top`, `/wordstat/dynamics`, `/wordstat/regions`) для расширения и проверки спроса;
-   - проверять соседние ложные смыслы сферы: например, для бытовых кондиционеров — авто-кондиционеры (`авто`, `автомобиль`, `автокондиционер`, `кондиционер в машине`);
+   - проверять смежные ложные смыслы сферы (например смежные сервисы/использования, которые часто перетягивают нецелевой трафик).
    - группировать минуса по причинам: DIY, работа/обучение, покупка/запчасти, другая техника/услуга, конкуренты/бренды, география;
    - конкурентов/бренды (`айсберг`, `iceberg` и т.п.) добавлять точечно или после подтверждения поисковыми запросами; не минусовать широкие коммерческие слова вроде `компания`/`сервис`, если они могут быть полезным интентом;
    - перед live-write читать фактический список через `/yandex/campaigns/{campaign_id}/negative-keywords` или read-only `adgroups.get`.

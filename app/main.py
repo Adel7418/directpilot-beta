@@ -84,6 +84,10 @@ from app.models import (
     YandexVCardRequest,
     YandexVCardResult,
     YandexVCardAssetItem,
+    LiveAdCreateRequest,
+    LiveAdCreateResult,
+    AdsModerateRequest,
+    AdsModerateResult,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError
@@ -1177,6 +1181,46 @@ def yandex_ads_business_attach(
 ) -> YandexAdsBusinessAttachResult:
     try:
         return store.yandex_ads_business_attach(payload, settings=settings, client=client)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        message = str(exc)
+        if "Live writes require" in message or "live_readonly" in message:
+            raise HTTPException(status_code=409, detail=message) from exc
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post(
+    "/yandex/ad-groups/{ad_group_id}/ads",
+    response_model=LiveAdCreateResult,
+)
+def yandex_ad_group_ads_add(
+    ad_group_id: str,
+    payload: LiveAdCreateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> LiveAdCreateResult:
+    try:
+        return store.yandex_ad_group_ads_add(
+            ad_group_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        message = str(exc)
+        if "Live writes require" in message or "live_readonly" in message:
+            raise HTTPException(status_code=409, detail=message) from exc
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post("/yandex/ads/moderate", response_model=AdsModerateResult)
+def yandex_ads_moderate(
+    payload: AdsModerateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> AdsModerateResult:
+    try:
+        return store.yandex_ads_moderate(payload, settings=settings, client=client)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except YandexDirectError as exc:

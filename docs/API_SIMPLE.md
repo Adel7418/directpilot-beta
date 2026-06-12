@@ -1037,4 +1037,97 @@ Scope rule: если пользователь спрашивает про **ко
 - если передан `campaign_id`, сервис читает все `ads.get` этой кампании;
 - модифицирует только `TEXT_AD` (`Type == "TEXT_AD"`), другие типы (`IMAGE_AD` и т.д.) помечаются в `skipped`;
 - всегда отправляет в `ads.update` вместе с `BusinessId` и `PreferVCardOverBusiness="NO"` поля `Title` / `Text` / `Href` (REPLACE-shape требования v5).
-- пример подтверждённого live-кейса: `business_id=11588384335`, `campaign_id=710691939`, ads `17747346245..17747346249` → `applied=True`, `BusinessId=11588384335`, `PreferVCardOverBusiness="NO"`, `VCardId` пустой/`null`.
+
+---
+
+## 11. Работа с объявлениями в существующих live-кампаниях
+
+### Добавить объявления в live-группу
+
+```http
+POST /yandex/ad-groups/{ad_group_id}/ads
+```
+
+Добавляет текстовые объявления в существующую группу через Direct v5 `ads.add`.
+
+Пример:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "ads_add_2026_001",
+  "dry_run": true,
+  "ads": [
+    {
+      "title": "Ремонт кондиционеров в Казани",
+      "text": "Диагностика, чистка, заправка фреоном. Выезд мастера.",
+      "href": "https://example.ru/remont-kondicionerov"
+    },
+    {
+      "title": "Срочный ремонт кондиционеров",
+      "title2": "Выезд за 30 минут",
+      "text": "Мастер по кондиционерам. Ремонт, обслуживание, чистка.",
+      "href": "https://example.ru/srochnyj-remont",
+      "sitelink_set_id": 555,
+      "business_id": 12345,
+      "prefer_vcard_over_business": "NO"
+    }
+  ],
+  "reason": "Добавляем поисковые объявления в группу «Ремонт кондиционеров»"
+}
+```
+
+Поведение:
+
+- `dry_run=true`: возвращает `payload_preview` (редактированный) и `warnings` без сетевого вызова.
+- `dry_run=false` + `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`:
+  выполняет живой `ads.add`, возвращает `ad_ids`, `add_results`, `readback` (если доступен).
+- `DIRECTPILOT_MODE=live_readonly/sandbox/mock` + `dry_run=false`: отклоняется с HTTP 409 до сетевого вызова.
+
+Поля объявления (Direct v5 `TextAd` add shape):
+
+- `title` (обязательное) — заголовок.
+- `text` (обязательное) — текст объявления.
+- `href` (обязательное) — ссылка.
+- `title2` (опционально) — второй заголовок.
+- `sitelink_set_id` (опционально) — ID набора быстрых ссылок.
+- `business_id` (опционально) — ID организации Яндекс Бизнес.
+- `prefer_vcard_over_business` (опционально) — `"YES"` / `"NO"`.
+
+`DisplayLinkPath` намеренно исключён — текущий Direct v5 `ads.add` отклоняет это поле как неизвестное.
+
+Предупреждения (warnings) в ответе:
+
+- `inherit_business_id` — предложение переиспользовать BusinessId существующих объявлений.
+- `inherit_sitelink_set_id` — предложение переиспользовать SitelinkSetId.
+- `keywords_not_per_ad` — ключевые слова и минус-слова управляются на уровне кампании/группы, не на уровне объявления.
+
+Важно: endpoint **не меняет** ключевые слова и минус-слова. Если новому объявлению нужны дополнительные ключи/минуса — используйте отдельную задачу semantic-changes.
+
+### Отправить объявления на модерацию
+
+```http
+POST /yandex/ads/moderate
+```
+
+Отправляет объявления на модерацию через Direct v5 `ads.moderate`.
+
+Пример:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "mod_2026_001",
+  "dry_run": true,
+  "ad_ids": [99001, 99002],
+  "reason": "Отправляем новые объявления на модерацию"
+}
+```
+
+Поведение:
+
+- `dry_run=true`: preview, applied=false.
+- `dry_run=false` + `live_write`: живой вызов `ads.moderate`, возвращает `ModerateResults` и `readback`.
+- Используется после `live-create` для перевода DRAFT-объявлений в MODERATION.
+- **Не** используйте `campaigns.resume` для новых DRAFT-кампаний — это только для already-created stopped/suspended кампаний.
+- Нет автоматической модерации внутри `ads.add` — moderate вызывается отдельно и явно.

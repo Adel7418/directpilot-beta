@@ -342,6 +342,71 @@ class YandexDirectClient:
         return self._call("vcards", {"method": "add", "params": {"VCards": [vcard]}})
 
     # ------------------------------------------------------------------
+    # ads.moderate — send ads to moderation
+    #
+    # Direct API v5 ``ads.moderate`` (see
+    # https://yandex.com/dev/direct/doc/ref-v5/ads/moderate.html)
+    # sends one or more ads to moderation. The endpoint is used:
+    #   * after live-create to transition DRAFT ads to MODERATION;
+    #   * to re-moderate ads after changes.
+    #
+    # The helper accepts a list of ad ids and forwards them to
+    # the v5 ``ads`` service with ``method=moderate``. It is
+    # intentionally minimal: the store / endpoint layer is
+    # responsible for gating and audit.
+    # ------------------------------------------------------------------
+
+    def ads_moderate(self, ad_ids: list[int]) -> dict[str, Any]:
+        """Send ads to moderation via v5 ``ads.moderate``.
+
+        ``ad_ids`` is a list of Yandex Direct ad ids. The helper
+        forwards them to the v5 ``ads`` service with
+        ``method=moderate`` and returns the standard envelope.
+        """
+        return self._call(
+            "ads",
+            {
+                "method": "moderate",
+                "params": {
+                    "SelectionCriteria": {"Ids": list(ad_ids)},
+                },
+            },
+        )
+
+    def ads_get_by_ids(self, ad_ids: list[int]) -> dict[str, Any]:
+        """Read specific ads by id via v5 ``ads.get``.
+
+        Used for readback after ``ads_moderate`` and ``ads_add``
+        to confirm the state change. Returns the standard envelope.
+        """
+        return self._call(
+            "ads",
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": {"Ids": list(ad_ids)},
+                    "FieldNames": [
+                        "Id",
+                        "AdGroupId",
+                        "CampaignId",
+                        "Status",
+                        "State",
+                        "Type",
+                    ],
+                    "TextAdFieldNames": [
+                        "Title",
+                        "Title2",
+                        "Text",
+                        "Href",
+                        "SitelinkSetId",
+                        "BusinessId",
+                        "PreferVCardOverBusiness",
+                    ],
+                },
+            },
+        )
+
+    # ------------------------------------------------------------------
     # Semantic-change write helpers
     #
     # Direct API v5 confirmed contract (see

@@ -36,12 +36,19 @@ Safe endpoints that expose real production Yandex Direct data in `live_readonly`
 - `GET /yandex/reports/summary`
 - `GET /yandex/reports/search-queries`
 
-### Limited live-control facade
+### Live-control and existing-campaign write actions
 
-Only pause/resume-style actions are allowed in this scope for already-created campaigns. They support dry-run in `live_readonly`; real Direct writes require `live_write`, approval, idempotency and audit gates.
+Safe live-write controls for existing campaigns are available in two groups:
+
+- **Campaign lifecycle control** (`pause`/`resume`) for already-created campaigns.
+- **Existing-campaign ad creation + moderation** for already-created ad groups/ads.
+
+All support `dry_run` in `live_readonly`; real Direct writes require `live_write`, explicit approval, idempotency and audit gates.
 
 - `POST /yandex/campaigns/{campaign_id}/pause`
 - `POST /yandex/campaigns/{campaign_id}/resume`
+- `POST /yandex/ad-groups/{ad_group_id}/ads`
+- `POST /yandex/ads/moderate`
 
 ### Live-create campaign (staged chain)
 

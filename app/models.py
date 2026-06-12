@@ -607,6 +607,127 @@ class YandexAdsBusinessAttachResult(BaseModel):
     yandex_error: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Live existing-campaign ads — add ads to an existing live ad group
+# ---------------------------------------------------------------------------
+
+
+class LiveAdCreateRequest(BaseModel):
+    """Body of ``POST /yandex/ad-groups/{ad_group_id}/ads``.
+
+    Adds one or more text ads to an existing live Yandex Direct ad group
+    via v5 ``ads.add``. Follows the standard product gate contract:
+
+    * ``dry_run=True`` (default) returns a redacted payload preview
+      and never touches the network.
+    * ``dry_run=False`` requires ``approved=True``, ``idempotency_key``
+      (length >= 6), and ``DIRECTPILOT_MODE=live_write``.
+    * ``live_readonly`` / ``sandbox`` / ``mock`` with ``dry_run=False``
+      are rejected BEFORE any network call.
+
+    Fields follow Direct v5 ``ads.add`` TextAd shape:
+    ``Title``, ``Text``, ``Href`` are required. ``Title2``,
+    ``SitelinkSetId``, ``BusinessId``, ``PreferVCardOverBusiness``
+    are optional. ``DisplayLinkPath`` is intentionally omitted —
+    current Direct v5 rejects it as unknown on add.
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    ads: list["LiveAdCreateItem"] = Field(..., min_length=1)
+    reason: str | None = None
+
+
+class LiveAdCreateItem(BaseModel):
+    """One ad to add to an existing ad group.
+
+    ``title``, ``text``, ``href`` are required (Direct v5 TextAd contract).
+    ``title2`` — optional second headline.
+    ``sitelink_set_id`` — optional quick-link set id.
+    ``business_id`` — optional Yandex Business organization id.
+    ``prefer_vcard_over_business`` — ``\"YES\"`` / ``\"NO\"``, optional.
+    """
+
+    title: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1)
+    href: str = Field(..., min_length=1)
+    title2: str | None = None
+    sitelink_set_id: int | None = None
+    business_id: int | None = None
+    prefer_vcard_over_business: Literal["YES", "NO"] | None = None
+
+
+class LiveAdCreateWarning(BaseModel):
+    """Non-blocking warning / preflight question."""
+
+    code: str
+    message: str
+    severity: Literal["warning", "info"] = "warning"
+
+
+class LiveAdCreateResult(BaseModel):
+    """Response for ``POST /yandex/ad-groups/{ad_group_id}/ads``.
+
+    * ``dry_run=True`` returns ``applied=False`` with
+      ``payload_preview`` (redacted).
+    * ``dry_run=False`` + ``live_write`` returns ``applied=True``
+      with ``ad_ids``, ``add_results`` and optional ``readback``.
+    * ``source=\"mock\"`` only in mock-mode dry-run.
+    """
+
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    ad_group_id: str
+    ad_ids: list[int] = Field(default_factory=list)
+    add_results: list[dict] | None = None
+    readback: list[dict] | None = None
+    payload_preview: dict | None = None
+    warnings: list["LiveAdCreateWarning"] = Field(default_factory=list)
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# ads.moderate — send ads to moderation
+# ---------------------------------------------------------------------------
+
+
+class AdsModerateRequest(BaseModel):
+    """Body of ``POST /yandex/ads/moderate``.
+
+    Sends one or more ads to moderation via Direct v5 ``ads.moderate``.
+    Gate contract: same as other write endpoints —
+    ``dry_run=True`` is preview-only; ``dry_run=False`` requires
+    ``approved=True``, ``idempotency_key``, ``DIRECTPILOT_MODE=live_write``.
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    ad_ids: list[int] = Field(..., min_length=1)
+    reason: str | None = None
+
+
+class AdsModerateResult(BaseModel):
+    """Response for ``POST /yandex/ads/moderate``."""
+
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    ad_ids: list[int] = Field(default_factory=list)
+    moderate_results: list[dict] | None = None
+    readback: list[dict] | None = None
+    payload_preview: dict | None = None
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+
+
 class YandexSearchApiResult(BaseModel):
     """Envelope for the Yandex AI Studio / Search API v2 endpoints.
 
