@@ -1096,6 +1096,60 @@ def test_missing_budget_read_fails_closed_502():
     assert SECRET_TOKEN not in response.text
 
 
+def test_daily_budget_null_means_no_daily_budget_apply_allowed():
+    """A successful DailyBudget read with ``DailyBudget: null`` is
+    not ambiguous: the campaign has no daily budget to preserve (for
+    example after switching to a weekly conversion strategy). The
+    update payload should omit DailyBudget instead of blocking apply.
+    """
+    settings = _settings("live_write")
+    captured: dict[str, Any] = {"updates": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("method") == "get":
+            fields = body.get("params", {}).get("FieldNames") or []
+            if "DailyBudget" in fields:
+                return httpx.Response(
+                    200,
+                    json={
+                        "result": {
+                            "Campaigns": [
+                                {
+                                    "Id": 710691939,
+                                    "Name": "Weekly Strategy Campaign",
+                                    "DailyBudget": None,
+                                }
+                            ]
+                        }
+                    },
+                )
+            return httpx.Response(200, json=_ok_readback_envelope())
+        captured["updates"].append(body)
+        return httpx.Response(200, json=_ok_update_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(
+                dry_run=False, idempotency_key="tt-nullbudget-001"
+            ),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    assert len(captured["updates"]) == 1
+    update_campaign = captured["updates"][0]["params"]["Campaigns"][0]
+    assert "TimeTargeting" in update_campaign
+    assert "DailyBudget" not in update_campaign
+    assert SECRET_TOKEN not in response.text
+
+
 def test_daily_budget_spend_mode_normalized_to_mode():
     """Direct returns ``SpendMode`` on ``campaigns.get`` but expects
     ``Mode`` on ``campaigns.update``. The payload MUST use ``Mode``,

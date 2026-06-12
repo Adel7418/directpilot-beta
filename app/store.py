@@ -1326,6 +1326,7 @@ class MockStore:
         # expects ``Mode`` on ``campaigns.add`` / ``campaigns.update``.
         # We normalise here and document the mapping.
         resolved_daily_budget: dict[str, Any] | None = None
+        daily_budget_read_ok = False
 
         if is_live and client is not None:
             try:
@@ -1335,8 +1336,23 @@ class MockStore:
                     if isinstance(budget_result, dict):
                         budget_campaigns = budget_result.get("Campaigns") or []
                         if budget_campaigns and isinstance(budget_campaigns[0], dict):
-                            raw_budget = budget_campaigns[0].get("DailyBudget")
-                            if isinstance(raw_budget, dict) and raw_budget:
+                            daily_budget_read_ok = True
+                            if "DailyBudget" not in budget_campaigns[0]:
+                                # Ambiguous envelope: the field was requested
+                                # but omitted from the response. This is
+                                # different from an explicit ``DailyBudget:
+                                # null`` and must fail closed before apply.
+                                daily_budget_read_ok = False
+                                raw_budget = None
+                            else:
+                                raw_budget = budget_campaigns[0].get("DailyBudget")
+                            if raw_budget is None:
+                                # No daily budget is configured for this
+                                # campaign (for example after switching to a
+                                # weekly conversion strategy). There is no
+                                # DailyBudget.Mode value to preserve.
+                                resolved_daily_budget = None
+                            elif isinstance(raw_budget, dict) and raw_budget:
                                 # Normalise SpendMode → Mode.
                                 # Direct's read returns ``SpendMode``;
                                 # the write contract requires ``Mode``.
@@ -1353,6 +1369,7 @@ class MockStore:
                 # Best-effort read: if the budget read fails, we
                 # cannot safely build the update payload.
                 resolved_daily_budget = None
+                daily_budget_read_ok = False
 
         campaign_entry: dict[str, Any] = {
             "Id": YandexDirectClient._direct_id(campaign_id),
@@ -1465,11 +1482,11 @@ class MockStore:
                 "YandexDirectClient is required for live time-targeting writes"
             )
 
-        # Fail closed: if we could not read the current DailyBudget
-        # from the campaign, we cannot safely build the update
-        # payload. Sending without DailyBudget.Mode yields
-        # error_code=8000 from Direct; we catch this here instead.
-        if resolved_daily_budget is None:
+        # Fail closed if the budget read itself failed or returned an
+        # ambiguous envelope. A successful read with ``DailyBudget: null``
+        # means the campaign has no daily budget (for example weekly
+        # conversion strategy), so there is no Mode value to preserve.
+        if is_live and not daily_budget_read_ok:
             raise YandexDirectError(
                 "Could not read current DailyBudget from campaign "
                 f"{campaign_id!r}; refusing to send campaigns.update "
