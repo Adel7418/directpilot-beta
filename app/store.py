@@ -1287,17 +1287,6 @@ class MockStore:
         v5_time_targeting = self._build_v5_time_targeting_from_schedule(
             canonical_schedule
         )
-        payload_preview: dict[str, Any] = {
-            "method": "campaigns.update",
-            "params": {
-                "Campaigns": [
-                    {
-                        "Id": YandexDirectClient._direct_id(campaign_id),
-                        "TimeTargeting": v5_time_targeting,
-                    }
-                ]
-            },
-        }
 
         mode = settings.directpilot_mode if settings is not None else "mock"
         is_live = mode in ("sandbox", "live_readonly", "live_write")
@@ -1311,20 +1300,72 @@ class MockStore:
         # not a feature. We require the same ``dry_run`` flag
         # across replays and surface a 409 otherwise. This mirrors
         # the existing live-create cache contract.
+        #
+        # The check MUST happen before the DailyBudget read so that
+        # replays do not trigger unnecessary network calls.
         cache_key = f"time_targeting:{campaign_id}:{payload.idempotency_key}"
         if cache_key in self.time_targeting_results_by_key:
             cached = self.time_targeting_results_by_key[cache_key]
             if cached.dry_run != payload.dry_run:
-                # The cache key is supposed to represent one
-                # action. Replaying with a different dry_run flag
-                # is a logic error; surface as a typed error so
-                # the endpoint returns 409.
                 raise YandexDirectError(
                     f"Idempotency key {payload.idempotency_key!r} was "
                     f"previously used with dry_run={cached.dry_run}; "
                     f"replay with dry_run={payload.dry_run} is not allowed"
                 )
             return cached
+
+        # Read the current ``DailyBudget`` block from the live
+        # campaign (if available) so the ``campaigns.update``
+        # payload includes ``DailyBudget.Mode``. Direct v5 rejects
+        # updates without ``Mode`` when the campaign has a daily
+        # budget (error_code=8000). The read uses ``campaigns.get``
+        # with ``FieldNames=[Id, Name, DailyBudget]``.
+        #
+        # ``SpendMode`` (read-side) → ``Mode`` (write-side):
+        # Direct returns ``SpendMode`` on ``campaigns.get`` but
+        # expects ``Mode`` on ``campaigns.add`` / ``campaigns.update``.
+        # We normalise here and document the mapping.
+        resolved_daily_budget: dict[str, Any] | None = None
+
+        if is_live and client is not None:
+            try:
+                budget_response = client.campaigns_get_daily_budget(campaign_id)
+                if budget_response.get("ok"):
+                    budget_result = budget_response.get("result") or {}
+                    if isinstance(budget_result, dict):
+                        budget_campaigns = budget_result.get("Campaigns") or []
+                        if budget_campaigns and isinstance(budget_campaigns[0], dict):
+                            raw_budget = budget_campaigns[0].get("DailyBudget")
+                            if isinstance(raw_budget, dict) and raw_budget:
+                                # Normalise SpendMode → Mode.
+                                # Direct's read returns ``SpendMode``;
+                                # the write contract requires ``Mode``.
+                                resolved_daily_budget = dict(raw_budget)
+                                spend_mode = resolved_daily_budget.pop(
+                                    "SpendMode", None
+                                )
+                                if "Mode" not in resolved_daily_budget and spend_mode:
+                                    resolved_daily_budget["Mode"] = spend_mode
+                                elif "Mode" not in resolved_daily_budget:
+                                    # No SpendMode and no Mode — ambiguous.
+                                    resolved_daily_budget = None
+            except Exception:
+                # Best-effort read: if the budget read fails, we
+                # cannot safely build the update payload.
+                resolved_daily_budget = None
+
+        campaign_entry: dict[str, Any] = {
+            "Id": YandexDirectClient._direct_id(campaign_id),
+            "TimeTargeting": v5_time_targeting,
+        }
+        if resolved_daily_budget is not None:
+            campaign_entry["DailyBudget"] = resolved_daily_budget
+        payload_preview: dict[str, Any] = {
+            "method": "campaigns.update",
+            "params": {
+                "Campaigns": [campaign_entry]
+            },
+        }
 
         # Mock mode: pure in-memory mirror. The apply mutates the
         # local mirror so a follow-up ``campaigns.get
@@ -1424,9 +1465,22 @@ class MockStore:
                 "YandexDirectClient is required for live time-targeting writes"
             )
 
+        # Fail closed: if we could not read the current DailyBudget
+        # from the campaign, we cannot safely build the update
+        # payload. Sending without DailyBudget.Mode yields
+        # error_code=8000 from Direct; we catch this here instead.
+        if resolved_daily_budget is None:
+            raise YandexDirectError(
+                "Could not read current DailyBudget from campaign "
+                f"{campaign_id!r}; refusing to send campaigns.update "
+                "without DailyBudget.Mode (would yield error_code=8000)"
+            )
+
         try:
             yandex_result = client.campaigns_update_time_targeting(
-                campaign_id, list(v5_time_targeting)
+                campaign_id,
+                list(v5_time_targeting),
+                daily_budget=resolved_daily_budget,
             )
             if not yandex_result.get("ok"):
                 err = yandex_result.get("error") or {}

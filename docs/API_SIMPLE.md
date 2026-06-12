@@ -362,7 +362,9 @@ POST /yandex/campaigns/live-create
 - `TextCampaign.BiddingStrategy` отправляется как search-only: `Search.BiddingStrategyType=HIGHEST_POSITION`,
   `Network.BiddingStrategyType=SERVING_OFF`. Сети намеренно выключены для single-intent лендингов.
 - `DailyBudget` отправляется как `{Amount, Mode}` без `Currency`; `Mode` обязателен, иначе Direct
-  возвращает `error_code=8000` / `Отсутствует обязательный параметр Mode`.
+  возвращает `error_code=8000` / `Отсутствует обязательный параметр Mode`. При обновлении
+  TimeTargeting (`campaigns.update`) Direct также требует `DailyBudget.Mode` — DirectPilot
+  автоматически читает текущий бюджет кампании и нормализует `SpendMode` → `Mode`.
 
 Безопасность и ошибки:
 
@@ -754,9 +756,11 @@ POST /yandex/campaigns/{campaign_id}/time-targeting
 
 - `schedule` и `hours` взаимоисключающие — передавать строго одно;
 - `idempotency_key` обязателен (минимум 6 символов);
-- `dry_run=true` — preview без сетевого вызова, доступен в любом режиме;
+- `dry_run=true` — preview без сетевого вызова `campaigns.update`; в live-режимах выполняется `campaigns.get` для чтения текущего `DailyBudget`; в `mock`-режиме сетевых вызовов нет (локальный preview); доступен во всех режимах;
 - `dry_run=false` в режимах `mock` / `sandbox` / `live_readonly` отклоняется с HTTP 409 до любого сетевого вызова;
 - реальный apply (`dry_run=false` + `approved=true` + `idempotency_key`) возможен только в `live_write`;
+- перед apply читается текущий `DailyBudget` кампании через `campaigns.get`; блок `DailyBudget` с нормализованным `Mode` (из `SpendMode`) включается в `campaigns.update` payload — без него Direct возвращает error_code=8000 «Отсутствует обязательный параметр Mode»;
+- если `DailyBudget` не удалось прочитать (отсутствует или неоднозначен), apply отклоняется с 502 (fail closed);
 - после apply делается v5 `campaigns.get` с полем `TimeTargeting` и возвращается в `readback` — оператор сверяет `readback.TimeTargeting` с `schedule_applied`;
 - replay с тем же `(campaign_id, idempotency_key)` возвращает кешированный результат, сеть не дёргается;
 - replay с тем же ключом, но другим `dry_run` — отклоняется с 502 (типизированная `YandexDirectError`);
@@ -774,6 +778,7 @@ POST /yandex/campaigns/{campaign_id}/time-targeting
     "Campaigns": [
       {
         "Id": 710691939,
+        "DailyBudget": {"Amount": 5000000, "Mode": "STANDARD"},
         "TimeTargeting": [
           {"Days": ["MONDAY"], "Hours": {"BidPercent": [0,...,0]}},
           {"Days": ["TUESDAY"], "Hours": {"BidPercent": [0,...,0]}},
@@ -785,6 +790,8 @@ POST /yandex/campaigns/{campaign_id}/time-targeting
   }
 }
 ```
+
+`DailyBudget` включается в preview только если кампания имеет дневной бюджет. `Mode` нормализуется из `SpendMode` (read-side) в `Mode` (write-side). Если бюджет не удалось прочитать, apply отклоняется с 502.
 
 Это literal shape из Direct API v5 docs (см. https://yandex.com/dev/direct/doc/ref-v5/campaigns/update.html), без выдуманных полей. `campaigns.update` для блока `TimeTargeting` — REPLACE-shaped: переданный блок атомарно заменяет предыдущее расписание; остальные поля кампании не затрагиваются.
 

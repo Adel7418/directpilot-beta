@@ -692,6 +692,29 @@ class YandexDirectClient:
     # ------------------------------------------------------------------
 
     _TIME_TARGETING_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "TimeTargeting")
+    _DAILY_BUDGET_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "DailyBudget")
+
+    def campaigns_get_daily_budget(
+        self, campaign_id: int | str
+    ) -> dict[str, Any]:
+        """v5 ``campaigns.get`` reading the ``DailyBudget`` block.
+
+        Returns the standard ``{ok, result, units, error}`` envelope.
+        The ``result.Campaigns[0].DailyBudget`` block (when present)
+        carries ``Amount`` (micro-units) and ``SpendMode`` — Direct's
+        read-side name for the mode field.  The caller normalises
+        ``SpendMode`` → ``Mode`` before including the block in an
+        ``campaigns.update`` payload.
+        """
+        campaign_id = self._direct_id(campaign_id)
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {"Ids": [campaign_id]},
+                "FieldNames": list(self._DAILY_BUDGET_FIELD_NAMES),
+            },
+        }
+        return self._call("campaigns", payload)
 
     def campaigns_get_time_targeting(self, campaign_id: int | str) -> dict[str, Any]:
         """v5 ``campaigns.get`` with the TimeTargeting field set.
@@ -722,6 +745,8 @@ class YandexDirectClient:
         self,
         campaign_id: int | str,
         time_targeting: list[dict[str, Any]],
+        *,
+        daily_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update only the ``TimeTargeting`` block of one campaign.
 
@@ -730,6 +755,14 @@ class YandexDirectClient:
         carrying the canonical 24 ``BidPercent`` integers in the
         0..100 range. The exact shape the v5 service returns from
         ``campaigns.get TimeTargeting``. We never invent field names.
+
+        ``daily_budget`` is an optional ``DailyBudget`` block to
+        include in the ``campaigns.update`` payload. Direct v5
+        requires ``DailyBudget.Mode`` when the campaign has a daily
+        budget; omitting it yields error_code=8000
+        ("Отсутствует обязательный параметр Mode"). The caller reads
+        the current ``DailyBudget`` via ``campaigns_get_daily_budget``
+        and normalises ``SpendMode`` → ``Mode`` before passing.
 
         Direct v5 ``campaigns.update`` is a REPLACE-shaped call for
         the ``TimeTargeting`` block — sending it replaces the
@@ -748,15 +781,16 @@ class YandexDirectClient:
                 f"{len(time_targeting) if hasattr(time_targeting, '__len__') else 'n/a'}"
             )
         campaign_id = self._direct_id(campaign_id)
+        campaign_entry: dict[str, Any] = {
+            "Id": campaign_id,
+            "TimeTargeting": list(time_targeting),
+        }
+        if daily_budget is not None:
+            campaign_entry["DailyBudget"] = dict(daily_budget)
         payload = {
             "method": "update",
             "params": {
-                "Campaigns": [
-                    {
-                        "Id": campaign_id,
-                        "TimeTargeting": list(time_targeting),
-                    }
-                ]
+                "Campaigns": [campaign_entry]
             },
         }
         return self._call("campaigns", payload)
