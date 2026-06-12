@@ -804,3 +804,298 @@ def test_ads_moderate_yandex_error_returns_502():
 
     assert resp.status_code == 502, resp.text
     assert "t-secret" not in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Provider warnings — Yandex Direct API v5 Warnings in response envelope
+# ---------------------------------------------------------------------------
+
+_JSON = __import__("json")
+
+
+def test_call_preserves_yandex_warnings_in_envelope():
+    """``_call`` MUST capture top-level ``Warnings`` from Yandex v5 response
+    and return them alongside ``result`` and ``units``."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {"AddResults": [{"Id": 1}]},
+                "Warnings": [
+                    {
+                        "Code": 10165,
+                        "Message": "Параметр не будет применен",
+                        "Details": "Параметр DisplayUrlPath не поддерживается",
+                    }
+                ],
+            },
+        )
+
+    cl = _client_with_handler(_settings("live_write"), handler)
+    result = cl.ads_add([{"AdGroupId": 1, "TextAd": {"Title": "T", "Text": "B", "Href": "https://example.com"}}])
+
+    assert result["ok"] is True
+    assert result["warnings"] is not None
+    assert len(result["warnings"]) == 1
+    assert result["warnings"][0]["Code"] == 10165
+    assert result["warnings"][0]["Message"] == "Параметр не будет применен"
+    assert "Параметр DisplayUrlPath" in result["warnings"][0]["Details"]
+    assert "t-secret" not in _JSON.dumps(result)
+
+
+def test_call_no_warnings_key_means_empty_list():
+    """When Yandex response has no ``Warnings`` key, ``_call`` returns
+    ``warnings: []`` (not None)."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"result": {"AddResults": [{"Id": 1}]}},
+        )
+
+    cl = _client_with_handler(_settings("live_write"), handler)
+    result = cl.ads_add([{"AdGroupId": 1, "TextAd": {"Title": "T", "Text": "B", "Href": "https://example.com"}}])
+
+    assert result["ok"] is True
+    assert result["warnings"] == []
+
+
+def test_ad_group_ads_add_apply_includes_provider_warnings():
+    """Real ads.add apply with Yandex warnings MUST return them as
+    ``provider_warnings`` in the response."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _JSON.loads(request.content.decode())
+        if body.get("method") == "add":
+            return httpx.Response(
+                200,
+                json={
+                    "result": {"AddResults": [{"Id": 99001}]},
+                    "Warnings": [
+                        {
+                            "Code": 10165,
+                            "Message": "Параметр не будет применен",
+                            "Details": "Параметр DisplayUrlPath не поддерживается в ads.add",
+                        }
+                    ],
+                },
+            )
+        # readback (ads_get_by_ids)
+        return httpx.Response(
+            200,
+            json={"result": {"Ads": [{"Id": 99001, "Status": "DRAFT", "AdGroupId": 1001}]}},
+        )
+
+    settings = _settings("live_write")
+    yc = _client_with_handler(settings, handler)
+    _override(settings, yc)
+
+    resp = client.post(
+        "/yandex/ad-groups/1001/ads",
+        json={
+            "approved": True,
+            "idempotency_key": "test-pw-001",
+            "dry_run": False,
+            "ads": [{"title": "T1", "text": "Body", "href": "https://example.com"}],
+        },
+    )
+
+    _clear_overrides()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["applied"] is True
+    assert body["ad_ids"] == [99001]
+    assert "provider_warnings" in body
+    assert len(body["provider_warnings"]) == 1
+    assert body["provider_warnings"][0]["code"] == 10165
+    assert "Параметр не будет применен" in body["provider_warnings"][0]["message"]
+    assert "DisplayUrlPath" in body["provider_warnings"][0]["details"]
+    assert "t-secret" not in resp.text
+
+
+def test_ad_group_ads_add_audit_includes_provider_warnings():
+    """Audit details for applied ads.add MUST include ``provider_warnings``
+    redacted envelope."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _JSON.loads(request.content.decode())
+        if body.get("method") == "add":
+            return httpx.Response(
+                200,
+                json={
+                    "result": {"AddResults": [{"Id": 99001}]},
+                    "Warnings": [
+                        {
+                            "Code": 10165,
+                            "Message": "Параметр не будет применен",
+                            "Details": "Поле DisplayUrlPath неизвестно сервису",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"result": {"Ads": [{"Id": 99001}]}},
+        )
+
+    settings = _settings("live_write")
+    yc = _client_with_handler(settings, handler)
+    _override(settings, yc)
+
+    resp = client.post(
+        "/yandex/ad-groups/1001/ads",
+        json={
+            "approved": True,
+            "idempotency_key": "test-pw-audit-001",
+            "dry_run": False,
+            "ads": [{"title": "T1", "text": "Body", "href": "https://example.com"}],
+        },
+    )
+
+    _clear_overrides()
+
+    assert resp.status_code == 200, resp.text
+
+    # Read audit log
+    audit_resp = client.get("/audit-log")
+    assert audit_resp.status_code == 200
+    events = audit_resp.json()["items"]
+    applied_events = [
+        e for e in events
+        if e["action"] == "yandex_ad_group_ads_add_applied"
+    ]
+    assert len(applied_events) >= 1
+    details = applied_events[-1]["details"]
+    assert "provider_warnings" in details
+    assert len(details["provider_warnings"]) == 1
+    assert details["provider_warnings"][0]["code"] == 10165
+    assert "t-secret" not in str(details)
+
+
+def test_ads_moderate_apply_includes_provider_warnings():
+    """Real ads.moderate apply with Yandex warnings MUST return them as
+    ``provider_warnings`` in the response."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _JSON.loads(request.content.decode())
+        if body.get("method") == "moderate":
+            return httpx.Response(
+                200,
+                json={
+                    "result": {"ModerateResults": [{"Id": 101, "Status": "MODERATION"}]},
+                    "Warnings": [
+                        {
+                            "Code": 10165,
+                            "Message": "Параметр не будет применен",
+                            "Details": "Неизвестный параметр в запросе",
+                        }
+                    ],
+                },
+            )
+        # readback
+        return httpx.Response(
+            200,
+            json={"result": {"Ads": [{"Id": 101, "Status": "MODERATION"}]}},
+        )
+
+    settings = _settings("live_write")
+    yc = _client_with_handler(settings, handler)
+    _override(settings, yc)
+
+    resp = client.post(
+        "/yandex/ads/moderate",
+        json={
+            "approved": True,
+            "idempotency_key": "mod-pw-001",
+            "dry_run": False,
+            "ad_ids": [101],
+        },
+    )
+
+    _clear_overrides()
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["applied"] is True
+    assert "provider_warnings" in body
+    assert len(body["provider_warnings"]) == 1
+    assert body["provider_warnings"][0]["code"] == 10165
+    assert "t-secret" not in resp.text
+
+
+def test_ads_moderate_audit_includes_provider_warnings():
+    """Audit details for applied ads.moderate MUST include ``provider_warnings``."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _JSON.loads(request.content.decode())
+        if body.get("method") == "moderate":
+            return httpx.Response(
+                200,
+                json={
+                    "result": {"ModerateResults": [{"Id": 101, "Status": "MODERATION"}]},
+                    "Warnings": [
+                        {
+                            "Code": 10165,
+                            "Message": "Параметр не будет применен",
+                            "Details": "Неизвестный параметр",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"result": {"Ads": [{"Id": 101, "Status": "MODERATION"}]}},
+        )
+
+    settings = _settings("live_write")
+    yc = _client_with_handler(settings, handler)
+    _override(settings, yc)
+
+    resp = client.post(
+        "/yandex/ads/moderate",
+        json={
+            "approved": True,
+            "idempotency_key": "mod-pw-audit-001",
+            "dry_run": False,
+            "ad_ids": [101],
+        },
+    )
+
+    _clear_overrides()
+
+    assert resp.status_code == 200, resp.text
+
+    audit_resp = client.get("/audit-log")
+    assert audit_resp.status_code == 200
+    events = audit_resp.json()["items"]
+    applied_events = [
+        e for e in events
+        if e["action"] == "yandex_ads_moderate_applied"
+    ]
+    assert len(applied_events) >= 1
+    details = applied_events[-1]["details"]
+    assert "provider_warnings" in details
+    assert len(details["provider_warnings"]) == 1
+    assert details["provider_warnings"][0]["code"] == 10165
+
+
+def test_provider_warnings_no_token_leakage():
+    """Provider warnings MUST NOT contain OAuth token or Authorization header."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "result": {"AddResults": [{"Id": 1}]},
+                "Warnings": [
+                    {
+                        "Code": 10165,
+                        "Message": "Параметр не будет применен",
+                        "Details": "Field not supported",
+                    }
+                ],
+            },
+        )
+
+    cl = _client_with_handler(_settings("live_write", "my-secret-token"), handler)
+    result = cl.ads_add([{"AdGroupId": 1, "TextAd": {"Title": "T", "Text": "B", "Href": "https://example.com"}}])
+
+    result_str = _JSON.dumps(result)
+    assert "my-secret-token" not in result_str
+    assert "Bearer" not in result_str
+    assert "Authorization" not in result_str

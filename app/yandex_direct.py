@@ -1246,4 +1246,4 @@ class YandexDirectClient:
                 },
                 "units": units,
             }
-        return {"ok": True, "result": body.get("result"), "units": units}
+        return {"ok": True, "result": body.get("result"), "units": units, "warnings": body.get("Warnings") or []}

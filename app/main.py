@@ -88,6 +88,7 @@ from app.models import (
     LiveAdCreateResult,
     AdsModerateRequest,
     AdsModerateResult,
+    ProviderWarning,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError

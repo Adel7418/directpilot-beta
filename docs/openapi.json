@@ -3927,6 +3927,13 @@
             ],
             "title": "Payload Preview"
           },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "type": "array",
+            "title": "Provider Warnings"
+          },
           "yandex_units": {
             "anyOf": [
               {
@@ -5041,6 +5048,13 @@
             "type": "array",
             "title": "Warnings"
           },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "type": "array",
+            "title": "Provider Warnings"
+          },
           "yandex_units": {
             "anyOf": [
               {
@@ -5367,6 +5381,30 @@
           "yandex_payload"
         ],
         "title": "PreviewPayload"
+      },
+      "ProviderWarning": {
+        "properties": {
+          "code": {
+            "type": "integer",
+            "title": "Code"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "details": {
+            "type": "string",
+            "title": "Details",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ProviderWarning",
+        "description": "Upstream Yandex Direct API v5 warning item.\n\nPreserved from the v5 ``Warnings[]`` response envelope with\n``code``, ``message``, and ``details`` (the per-warning text\nDirect attaches; redacted — never contains headers or tokens)."
       },
       "Recommendation": {
         "properties": {

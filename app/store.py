@@ -51,12 +51,45 @@ from app.models import (
     LiveAdCreateWarning,
     AdsModerateRequest,
     AdsModerateResult,
+    ProviderWarning,
 )
 from app.yandex_direct import YandexDirectClient, YandexDirectError
 
 
 def _normalize_phrase(value: str) -> str:
     return " ".join(value.split()).strip().lower()
+
+
+def _provider_warnings_from_result(
+    yandex_result: dict[str, Any],
+) -> list[ProviderWarning]:
+    """Extract provider warnings from a ``_call`` result envelope.
+
+    Returns a list of :class:`ProviderWarning` items, each with
+    ``code``, ``message``, and ``details`` drawn from the v5
+    ``Warnings[]`` array.  The raw envelope is never included —
+    only the three redacted fields per warning.
+    """
+    raw = yandex_result.get("warnings")
+    if not isinstance(raw, list):
+        return []
+    out: list[ProviderWarning] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        code = item.get("Code")
+        message = item.get("Message")
+        details = item.get("Details")
+        if code is None and message is None and details is None:
+            continue
+        out.append(
+            ProviderWarning(
+                code=int(code) if code is not None else 0,
+                message=str(message) if message is not None else "",
+                details=str(details) if details is not None else "",
+            )
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3576,6 +3609,7 @@ class MockStore:
                     f"error_code={err.get('error_code')!r}"
                 )
             sent_units = _safe_units(yandex_result.get("units"))
+            provider_warnings = _provider_warnings_from_result(yandex_result)
 
             # Extract ad ids from AddResults.
             add_results = (
@@ -3610,6 +3644,7 @@ class MockStore:
                     "ad_ids": ad_ids,
                     "yandex_units": sent_units,
                     "warnings": [w.model_dump() for w in warnings],
+                    "provider_warnings": [pw.model_dump() for pw in provider_warnings],
                     "stage": "ads.add",
                     "applied": True,
                 },
@@ -3626,6 +3661,7 @@ class MockStore:
                 readback=readback,
                 payload_preview=payload_preview,
                 warnings=warnings,
+                provider_warnings=provider_warnings,
                 yandex_units=sent_units,
             )
             cached[cache_key] = result
@@ -3763,6 +3799,7 @@ class MockStore:
                     f"error_code={err.get('error_code')!r}"
                 )
             sent_units = _safe_units(yandex_result.get("units"))
+            provider_warnings = _provider_warnings_from_result(yandex_result)
 
             moderate_results = (
                 (yandex_result.get("result") or {}).get("ModerateResults") or []
@@ -3790,6 +3827,7 @@ class MockStore:
                     "ad_ids": payload.ad_ids,
                     "ad_count": len(payload.ad_ids),
                     "yandex_units": sent_units,
+                    "provider_warnings": [pw.model_dump() for pw in provider_warnings],
                     "stage": "ads.moderate",
                     "applied": True,
                 },
@@ -3804,6 +3842,7 @@ class MockStore:
                 moderate_results=moderate_results,
                 readback=readback,
                 payload_preview=payload_preview,
+                provider_warnings=provider_warnings,
                 yandex_units=sent_units,
             )
             cached[cache_key] = result

@@ -666,6 +666,19 @@ class LiveAdCreateWarning(BaseModel):
     severity: Literal["warning", "info"] = "warning"
 
 
+class ProviderWarning(BaseModel):
+    """Upstream Yandex Direct API v5 warning item.
+
+    Preserved from the v5 ``Warnings[]`` response envelope with
+    ``code``, ``message``, and ``details`` (the per-warning text
+    Direct attaches; redacted — never contains headers or tokens).
+    """
+
+    code: int
+    message: str
+    details: str = ""
+
+
 class LiveAdCreateResult(BaseModel):
     """Response for ``POST /yandex/ad-groups/{ad_group_id}/ads``.
 
@@ -687,6 +700,7 @@ class LiveAdCreateResult(BaseModel):
     readback: list[dict] | None = None
     payload_preview: dict | None = None
     warnings: list["LiveAdCreateWarning"] = Field(default_factory=list)
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
     yandex_units: int | None = None
     yandex_error: str | None = None
 
@@ -724,6 +738,7 @@ class AdsModerateResult(BaseModel):
     moderate_results: list[dict] | None = None
     readback: list[dict] | None = None
     payload_preview: dict | None = None
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
     yandex_units: int | None = None
     yandex_error: str | None = None
 
