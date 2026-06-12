@@ -49,7 +49,7 @@ from app.models import (
     YandexTimeTargetingSchedule,
 )
 from app.store import store
-from app.yandex_direct import YandexDirectClient
+from app.yandex_direct import YandexDirectClient, YandexDirectError
 
 
 client = TestClient(app)
@@ -181,6 +181,40 @@ def _ok_readback_envelope(time_targeting: list[dict[str, Any]] | None = None) ->
                     "Name": "Ремонт кондиционеров Казань — поиск",
                     "DailyBudget": {"Amount": 5_000_000, "SpendMode": "STANDARD"},
                     "TimeTargeting": time_targeting,
+                }
+            ]
+        }
+    }
+
+
+def _ok_readback_v5_envelope(
+    hours: list[int] | None = None,
+    campaign_name: str = "Ремонт кондиционеров Казань — поиск",
+    campaign_id: int = 710691939,
+) -> dict[str, Any]:
+    """A successful v5 ``campaigns.get TimeTargeting`` envelope
+    with the v5 TimeTargeting shape (``Schedule.Items`` strings).
+
+    Designed for the GET endpoint which calls
+    ``campaigns_get_time_targeting``.
+    """
+    if hours is None:
+        hours = _hours_8_to_22_full()
+    items = [
+        f"{day_num},{','.join(str(v) for v in hours)}"
+        for day_num in range(1, 8)
+    ]
+    return {
+        "result": {
+            "Campaigns": [
+                {
+                    "Id": campaign_id,
+                    "Name": campaign_name,
+                    "TimeTargeting": {
+                        "Schedule": {"Items": items},
+                        "ConsiderWorkingWeekends": "NO",
+                        "HolidaysSchedule": None,
+                    },
                 }
             ]
         }
@@ -1771,3 +1805,343 @@ def test_time_targeting_string_format_in_dry_run_payload():
     assert "ConsiderWorkingWeekends" in tt
     assert "HolidaysSchedule" in tt
     assert SECRET_TOKEN not in response.text
+
+
+# ============================================================================
+# GET /yandex/campaigns/{campaign_id}/time-targeting — read-only
+# ============================================================================
+
+
+# ---------------------------------------------------------------------------
+# mock mode GET
+# ---------------------------------------------------------------------------
+
+
+def test_get_mock_returns_deterministic_schedule():
+    """GET in mock mode returns source=mock, read_only=true, and a
+    deterministic 7×24 schedule — no network call, no token echo."""
+    settings = _settings("mock")
+    # No Yandex client in mock — pass None to prove no network.
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: None
+    try:
+        response = client.get(
+            "/yandex/campaigns/cmp_mock_local_services/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["campaign_id"] == "cmp_mock_local_services"
+    assert body["source"] == "mock"
+    assert body["read_only"] is True
+    assert body["time_targeting"] is not None
+    assert "Schedule" in body["time_targeting"]
+    items = body["time_targeting"]["Schedule"]["Items"]
+    assert isinstance(items, list)
+    assert len(items) == 7
+    # Each item is "daynum,24_percents"
+    for item in items:
+        assert isinstance(item, str)
+        parts = item.split(",")
+        assert len(parts) == 25  # daynum + 24
+    # Normalized schedule is present.
+    assert body["schedule"] is not None
+    assert len(body["schedule"]["days"]) == 7
+    for day in body["schedule"]["days"]:
+        assert len(day["hours"]) == 24
+    # No write-related fields.
+    assert "approved" not in body
+    assert "idempotency_key" not in body
+    assert "dry_run" not in body
+    assert "applied" not in body
+    # Token never echoed.
+    assert SECRET_TOKEN not in response.text
+
+
+def test_get_mock_no_network_call():
+    """GET in mock mode must NEVER call the network — even with a
+    configured client, mock bypasses it."""
+    settings = _settings("mock")
+    network_called = {"calls": 0}
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        network_called["calls"] += 1
+        return httpx.Response(200, json={})
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/cmp_mock_local_services/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert network_called["calls"] == 0
+
+
+# ---------------------------------------------------------------------------
+# live_readonly / live_write GET — calls campaigns.get only
+# ---------------------------------------------------------------------------
+
+
+def test_get_live_readonly_calls_campaigns_get_only():
+    """GET in live_readonly must call campaigns.get (TimeTargeting)
+    exactly once, and NEVER campaigns.update. No write-like
+    guard fields are checked."""
+    settings = _settings("live_readonly")
+    captured_methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        captured_methods.append(body.get("method"))
+        return httpx.Response(200, json=_ok_readback_v5_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/710691939/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert "get" in captured_methods
+    assert "update" not in captured_methods
+    body = response.json()
+    assert body["source"] == "yandex"
+    assert body["read_only"] is True
+
+
+def test_get_live_write_calls_campaigns_get_only():
+    """GET in live_write also calls only campaigns.get — the mode
+    does not turn GET into a write."""
+    settings = _settings("live_write")
+    captured_methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        captured_methods.append(body.get("method"))
+        return httpx.Response(200, json=_ok_readback_v5_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/710691939/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert "get" in captured_methods
+    assert "update" not in captured_methods
+
+
+def test_get_live_readonly_no_write_gate_fields():
+    """GET response must NOT include write-gate fields (approved,
+    dry_run, applied, idempotency_key) — they are not relevant
+    for a read-only endpoint."""
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_ok_readback_v5_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/710691939/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["read_only"] is True
+    for forbidden in ("approved", "dry_run", "applied", "idempotency_key"):
+        assert forbidden not in body, f"GET response must not include {forbidden!r}"
+
+
+# ---------------------------------------------------------------------------
+# GET response shape — TimeTargeting + normalized schedule
+# ---------------------------------------------------------------------------
+
+
+def test_get_live_returns_raw_time_targeting_and_schedule():
+    """GET in live mode returns both the raw v5 TimeTargeting block
+    AND the normalized 7×24 schedule."""
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_ok_readback_v5_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/710691939/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Raw block present.
+    assert body["time_targeting"] is not None
+    tt = body["time_targeting"]
+    assert "Schedule" in tt
+    assert "Items" in tt["Schedule"]
+    assert len(tt["Schedule"]["Items"]) == 7
+    assert "ConsiderWorkingWeekends" in tt
+    # Schedule normalised.
+    assert body["schedule"] is not None
+    assert len(body["schedule"]["days"]) == 7
+    for day in body["schedule"]["days"]:
+        assert len(day["hours"]) == 24
+    # Campaign name from the envelope.
+    assert body["campaign_name"] == "Ремонт кондиционеров Казань — поиск"
+    assert body["campaign_id"] == "710691939"
+
+
+def test_get_mock_returns_raw_time_targeting_and_schedule():
+    """GET in mock mode also returns raw + normalized schedule."""
+    settings = _settings("mock")
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: None
+    try:
+        response = client.get(
+            "/yandex/campaigns/cmp_mock_remont_kazan/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["time_targeting"] is not None
+    assert body["schedule"] is not None
+    assert len(body["schedule"]["days"]) == 7
+
+
+# ---------------------------------------------------------------------------
+# error handling — upstream errors redacted
+# ---------------------------------------------------------------------------
+
+
+def test_get_upstream_error_is_redacted_no_token_leakage():
+    """When Yandex Direct returns an error, the GET response is 502
+    and the token is NEVER echoed."""
+    settings = _settings("live_readonly")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # Simulate a Yandex auth error with the token as detail.
+        return httpx.Response(
+            200,
+            json={
+                "error": {
+                    "error_code": 53,
+                    "error_detail": f"Invalid OAuth token: {SECRET_TOKEN}",
+                    "error_string": f"Authorization error with {SECRET_TOKEN}",
+                }
+            },
+        )
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/710691939/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502, response.text
+    assert SECRET_TOKEN not in response.text
+
+
+def test_get_yandex_client_exception_is_redacted():
+    """When the Yandex client raises a YandexDirectError (e.g.
+    transport failure), the GET response is 502 and the endpoint
+    does not crash."""
+    settings = _settings("live_readonly")
+    transport_failure = YandexDirectError(
+        "Connection refused to Yandex Direct API",
+        diagnostics={"error_code": 53},
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise transport_failure
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.get(
+            "/yandex/campaigns/710691939/time-targeting"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 502, response.text
+    assert SECRET_TOKEN not in response.text
+
+
+# ---------------------------------------------------------------------------
+# POST behavior unchanged — regression guard
+# ---------------------------------------------------------------------------
+
+
+def test_post_unchanged_after_get_addition():
+    """Adding GET must not change POST behavior — dry-run still
+    works, approved/idempotency_key still required, mock still
+    returns deterministic preview."""
+    settings = _settings("mock")
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: None
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(idempotency_key="tt-post-regr-001"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "mock"
+    assert body["dry_run"] is True
+    assert body["applied"] is False
+    assert body["campaign_id"] == "710691939"
+    assert body["payload_preview"] is not None
+    assert SECRET_TOKEN not in response.text
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI contract — both GET and POST on the same path
+# ---------------------------------------------------------------------------
+
+
+def test_openapi_includes_both_get_and_post_for_time_targeting():
+    """The OpenAPI schema must include GET and POST on
+    /yandex/campaigns/{campaign_id}/time-targeting."""
+    openapi_schema = app.openapi()
+    paths = openapi_schema.get("paths", {})
+    tt_path = "/yandex/campaigns/{campaign_id}/time-targeting"
+    assert tt_path in paths, f"Path {tt_path} missing from OpenAPI"
+    methods = paths[tt_path]
+    assert "get" in methods, (
+        f"GET {tt_path} missing from OpenAPI; methods: {list(methods)}"
+    )
+    assert "post" in methods, (
+        f"POST {tt_path} missing from OpenAPI; methods: {list(methods)}"
+    )

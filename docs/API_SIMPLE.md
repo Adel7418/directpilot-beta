@@ -704,6 +704,56 @@ Reference live launch result: для кампании `710691939` `campaigns.res
 
 ## 12.1. TimeTargeting (расписание показов по часам)
 
+### Чтение текущего расписания
+
+Чисто read-only эндпоинт. Возвращает текущий блок `TimeTargeting` из v5 `campaigns.get` без каких-либо write-гейтов (`approved`, `idempotency_key` не требуются). Доступен во всех режимах: `mock`, `sandbox`, `live_readonly`, `live_write`.
+
+```http
+GET /yandex/campaigns/{campaign_id}/time-targeting
+```
+
+Ответ:
+
+```json
+{
+  "campaign_id": "710691939",
+  "campaign_name": "Ремонт кондиционеров Казань — поиск",
+  "source": "yandex",
+  "read_only": true,
+  "time_targeting": {
+    "Schedule": {
+      "Items": [
+        "1,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0",
+        "2,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0",
+        ...
+        "7,0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0"
+      ]
+    },
+    "ConsiderWorkingWeekends": "NO",
+    "HolidaysSchedule": null
+  },
+  "schedule": {
+    "days": [
+      {"hours": [0,0,0,0,0,0,0,0,100,100,100,100,100,100,100,100,100,100,100,100,100,100,0,0]},
+      ...
+    ]
+  }
+}
+```
+
+Поля:
+- `time_targeting` — сырой блок из v5 (формат `Schedule.Items` со строками);
+- `schedule` — нормализованное 7×24 представление для чтения человеком;
+- `campaign_name` — имя кампании из Direct (live) или mock-метка;
+- `source` — `"yandex"` в live-режимах, `"mock"` в mock-режиме;
+- `read_only` — всегда `true`.
+
+В mock-режиме возвращает детерминированное расписание (будни 08:00-22:00, выходные 10:00-18:00), без сетевых вызовов.
+
+В live-режимах вызывает `campaigns.get` с полем `TimeTargeting` (read-only), никогда не вызывает `campaigns.update`. Ошибки Yandex Direct возвращаются как 502 без токена.
+
+### Обновление расписания (write)
+
 Безопасный write-эндпойнт для обновления `TimeTargeting` (почасовое расписание ставок / расписание показов) существующей кампании через v5 `campaigns.update`. В текущем `live_readonly` режиме реальный apply заблокирован; `dry_run=true` возвращает полный preview v5-пакета, который был бы отправлен.
 
 ```http

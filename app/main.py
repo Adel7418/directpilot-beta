@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.config import Settings, get_settings
 from app.services import check_yandex_direct
 from app.models import (
+    WEEK_DAY_NAMES,
     AdCreate,
     AdGroupCreate,
     AdGroupUpdate,
@@ -70,7 +71,10 @@ from app.models import (
     YandexSearchQueriesReport,
     YandexSearchQuery,
     YandexTimeTargetingRequest,
+    YandexTimeTargetingHourly,
+    YandexTimeTargetingReadResult,
     YandexTimeTargetingResult,
+    YandexTimeTargetingSchedule,
     YandexVCardRequest,
     YandexVCardResult,
 )
@@ -2176,6 +2180,134 @@ def yandex_live_create_campaign(
                 ),
             },
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct campaign TimeTargeting read (GET)
+#
+# ``GET /yandex/campaigns/{campaign_id}/time-targeting`` reads the current
+# ``TimeTargeting`` block from the campaign via v5 ``campaigns.get``
+# with the ``TimeTargeting`` field set. No write gate — this is a
+# pure read-only endpoint available in ``mock``, ``sandbox``,
+# ``live_readonly``, and ``live_write``. No ``approved``, no
+# ``idempotency_key``, no network write call.
+# ---------------------------------------------------------------------------
+
+
+def _parse_v5_time_targeting_to_schedule(
+    time_targeting: dict,
+) -> YandexTimeTargetingSchedule | None:
+    """Parse a v5 ``TimeTargeting`` block into a normalized schedule.
+
+    The v5 shape is ``{Schedule: {Items: [str, ...]}, ...}`` where
+    each item is ``"daynum,percent0,percent1,...,percent23"``.
+    Returns ``None`` if the shape is unparseable.
+    """
+    try:
+        schedule_block = time_targeting.get("Schedule", {})
+        if not isinstance(schedule_block, dict):
+            return None
+        items = schedule_block.get("Items")
+        if not isinstance(items, list) or len(items) != 7:
+            return None
+        days: list[YandexTimeTargetingHourly] = []
+        for item in items:
+            if not isinstance(item, str):
+                return None
+            parts = item.split(",")
+            if len(parts) != 25:  # daynum + 24 percents
+                return None
+            try:
+                hours = [int(p) for p in parts[1:]]
+            except (ValueError, TypeError):
+                return None
+            if len(hours) != 24:
+                return None
+            # Validate range — out-of-range values mean unparseable.
+            if any(h < 0 or h > 100 for h in hours):
+                return None
+            days.append(YandexTimeTargetingHourly(hours=hours))
+        return YandexTimeTargetingSchedule(days=days)
+    except Exception:
+        return None
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/time-targeting",
+    response_model=YandexTimeTargetingReadResult,
+)
+def yandex_time_targeting_read(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexTimeTargetingReadResult:
+    """Read the current TimeTargeting / hourly schedule of a campaign.
+
+    Pure read-only — no ``approved``, no ``idempotency_key``, no
+    network write call. Available in all modes.
+
+    - **mock**: returns a deterministic schedule with
+      ``source="mock"``.
+    - **live** (sandbox / live_readonly / live_write): calls
+      ``campaigns_get_time_targeting`` (v5 ``campaigns.get`` with
+      ``TimeTargeting`` field) and returns the raw ``TimeTargeting``
+      block plus a normalized 7×24 ``schedule``.
+    - Upstream Yandex errors are redacted (no token leakage) and
+      surfaced as 502.
+    """
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.campaigns_get_time_targeting(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        "Yandex Direct rejected campaigns.get (TimeTargeting): "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        result = response.get("result") or {}
+        campaigns = result.get("Campaigns") if isinstance(result, dict) else None
+        if isinstance(campaigns, list) and campaigns and isinstance(campaigns[0], dict):
+            camp = campaigns[0]
+            raw_tt = camp.get("TimeTargeting")
+            campaign_name = camp.get("Name")
+        else:
+            raw_tt = None
+            campaign_name = None
+        schedule = None
+        if isinstance(raw_tt, dict):
+            schedule = _parse_v5_time_targeting_to_schedule(raw_tt)
+            raw_tt = dict(raw_tt)  # defensive copy
+        return YandexTimeTargetingReadResult(
+            campaign_id=campaign_id,
+            campaign_name=str(campaign_name) if campaign_name else None,
+            source="yandex",
+            read_only=True,
+            time_targeting=raw_tt if isinstance(raw_tt, dict) else None,
+            schedule=schedule,
+        )
+
+    # Mock mode (or no client): deterministic local data.
+    mock = mock_yandex.mock_time_targeting(campaign_id)
+    raw_tt = mock.get("time_targeting")
+    schedule = None
+    if isinstance(raw_tt, dict):
+        schedule = _parse_v5_time_targeting_to_schedule(raw_tt)
+    return YandexTimeTargetingReadResult(
+        campaign_id=campaign_id,
+        campaign_name=mock.get("campaign_name"),
+        source="mock",
+        read_only=True,
+        time_targeting=raw_tt if isinstance(raw_tt, dict) else None,
+        schedule=schedule,
+    )
 
 
 # ---------------------------------------------------------------------------

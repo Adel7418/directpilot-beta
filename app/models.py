@@ -1215,3 +1215,43 @@ class YandexTimeTargetingResult(BaseModel):
             "is metadata only and is never sent to v5."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# TimeTargeting read-only GET response
+# ---------------------------------------------------------------------------
+
+
+class YandexTimeTargetingReadResult(BaseModel):
+    """Response envelope for ``GET /yandex/campaigns/{campaign_id}/time-targeting``.
+
+    Returns the current ``TimeTargeting`` block from Yandex Direct
+    (v5 ``campaigns.get`` with ``TimeTargeting`` field). In mock
+    mode returns a deterministic schedule. Always ``read_only=True``
+    — no mutation, no write gate, no ``approved`` / ``idempotency_key``.
+    """
+
+    campaign_id: str
+    campaign_name: str | None = Field(
+        default=None,
+        description="Campaign name from Yandex Direct (live mode) or mock.",
+    )
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = True
+    time_targeting: dict | None = Field(
+        default=None,
+        description=(
+            "Raw ``TimeTargeting`` block as returned by v5 "
+            "``campaigns.get``. Contains ``Schedule.Items`` (7 strings), "
+            "``ConsiderWorkingWeekends``, and ``HolidaysSchedule``. "
+            "``None`` when the read fails or Yandex returns no block."
+        ),
+    )
+    schedule: YandexTimeTargetingSchedule | None = Field(
+        default=None,
+        description=(
+            "Normalized 7 x 24 schedule representation useful for "
+            "human readers. Built from the raw ``TimeTargeting`` when "
+            "available; ``None`` when the raw block cannot be parsed."
+        ),
+    )

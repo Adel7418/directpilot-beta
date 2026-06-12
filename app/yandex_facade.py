@@ -141,6 +141,40 @@ class MockYandexCatalog:
             {"query": "ремонт квартир под ключ", "impressions": 410, "clicks": 9, "ctr": 2.20},
         ]
 
+    # --- time targeting read -------------------------------------------------
+
+    def mock_time_targeting(self, campaign_id: str) -> dict:
+        """Deterministic mock TimeTargeting block for a given campaign.
+
+        Returns a dict with ``campaign_name`` and ``time_targeting``
+        (v5 shape: ``Schedule.Items`` of 7 day-number + 24 bid-percents
+        strings, ``ConsiderWorkingWeekends``, ``HolidaysSchedule``).
+        """
+        # Mon-Fri: 08:00-22:00 (100); Sat-Sun: 10:00-18:00 (100).
+        weekday_hours = [0] * 8 + [100] * 14 + [0] * 2   # 08-22
+        weekend_hours = [0] * 10 + [100] * 8 + [0] * 6   # 10-18
+        all_hours = [weekday_hours] * 5 + [weekend_hours] * 2
+
+        items = [
+            f"{day_num},{','.join(str(v) for v in all_hours[day_num - 1])}"
+            for day_num in range(1, 8)
+        ]
+
+        campaign_names: dict[str, str] = {
+            "cmp_mock_local_services": "Mock: локальные услуги",
+            "cmp_mock_remont_kazan": "Mock: ремонт Казань",
+        }
+        return {
+            "campaign_name": campaign_names.get(
+                campaign_id, f"Mock campaign {campaign_id}"
+            ),
+            "time_targeting": {
+                "Schedule": {"Items": items},
+                "ConsiderWorkingWeekends": "NO",
+                "HolidaysSchedule": None,
+            },
+        }
+
 
 mock_yandex = MockYandexCatalog()
 
