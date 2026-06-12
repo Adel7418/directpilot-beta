@@ -693,6 +693,8 @@ class YandexDirectClient:
 
     _TIME_TARGETING_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "TimeTargeting")
     _DAILY_BUDGET_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "DailyBudget")
+    _STRATEGY_FIELD_NAMES: tuple[str, ...] = ("Id", "Name", "Type", "DailyBudget")
+    _STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES: tuple[str, ...] = ("BiddingStrategy",)
 
     def campaigns_get_daily_budget(
         self, campaign_id: int | str
@@ -712,6 +714,34 @@ class YandexDirectClient:
             "params": {
                 "SelectionCriteria": {"Ids": [campaign_id]},
                 "FieldNames": list(self._DAILY_BUDGET_FIELD_NAMES),
+            },
+        }
+        return self._call("campaigns", payload)
+
+    def campaigns_get_strategy(
+        self, campaign_id: int | str
+    ) -> dict[str, Any]:
+        """v5 ``campaigns.get`` reading campaign Type and
+        TextCampaign.BiddingStrategy.
+
+        Returns the standard ``{ok, result, units, error}`` envelope.
+        The ``result.Campaigns[0]`` block carries ``Type`` (e.g.
+        ``TEXT_CAMPAIGN``), ``DailyBudget`` (null for smart-strategy
+        campaigns), and ``TextCampaign.BiddingStrategy`` (the full
+        strategy block including ``Search`` and ``Network``).
+
+        Direct v5 requires ``TextCampaignFieldNames`` for
+        type-specific fields like ``BiddingStrategy``.
+        """
+        campaign_id = self._direct_id(campaign_id)
+        payload = {
+            "method": "get",
+            "params": {
+                "SelectionCriteria": {"Ids": [campaign_id]},
+                "FieldNames": list(self._STRATEGY_FIELD_NAMES),
+                "TextCampaignFieldNames": list(
+                    self._STRATEGY_TEXT_CAMPAIGN_FIELD_NAMES
+                ),
             },
         }
         return self._call("campaigns", payload)
@@ -747,6 +777,7 @@ class YandexDirectClient:
         time_targeting: list[dict[str, Any]],
         *,
         daily_budget: dict[str, Any] | None = None,
+        text_campaign: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Update only the ``TimeTargeting`` block of one campaign.
 
@@ -763,6 +794,15 @@ class YandexDirectClient:
         ("Отсутствует обязательный параметр Mode"). The caller reads
         the current ``DailyBudget`` via ``campaigns_get_daily_budget``
         and normalises ``SpendMode`` → ``Mode`` before passing.
+
+        ``text_campaign`` is an optional ``TextCampaign`` block to
+        include in the ``campaigns.update`` payload. Required for
+        TEXT_CAMPAIGN smart-strategy campaigns (e.g.
+        WB_MAXIMUM_CONVERSION_RATE) where DailyBudget is null but
+        Direct still requires the BiddingStrategy block. The caller
+        reads the current strategy via ``campaigns_get_strategy``
+        and normalises read-side fields (e.g. ``BudgetType``) to
+        write-side shape before passing.
 
         Direct v5 ``campaigns.update`` is a REPLACE-shaped call for
         the ``TimeTargeting`` block — sending it replaces the
@@ -787,6 +827,8 @@ class YandexDirectClient:
         }
         if daily_budget is not None:
             campaign_entry["DailyBudget"] = dict(daily_budget)
+        if text_campaign is not None:
+            campaign_entry["TextCampaign"] = dict(text_campaign)
         payload = {
             "method": "update",
             "params": {

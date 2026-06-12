@@ -1223,6 +1223,62 @@ class MockStore:
             )
         return YandexTimeTargetingSchedule(days=list(schedule.days))
 
+    # Read-side → write-side normalization for BiddingStrategy.
+    #
+    # Direct v5 ``campaigns.get`` returns extra read-only fields in
+    # BiddingStrategy sub-objects (e.g. ``BudgetType``) that the
+    # ``campaigns.update`` write-side does not accept. We strip
+    # known read-only fields and return a clean write-side dict.
+    # We never invent field names — we only remove fields that the
+    # write-side contract does not document.
+    _STRATEGY_READ_ONLY_FIELDS: frozenset[str] = frozenset({"BudgetType"})
+
+    @classmethod
+    def _normalize_strategy_for_write(
+        cls,
+        strategy: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize a BiddingStrategy block from read-side to
+        write-side shape by removing read-only fields.
+
+        The ``Search`` and ``Network`` sub-objects carry strategy-
+        type-specific params. Read-only fields like ``BudgetType``
+        are stripped from each sub-object's nested strategy params
+        (e.g. ``WbMaximumConversionRate``, ``AverageCpa``, etc.)
+        so the write-side contract is clean.
+        """
+        result: dict[str, Any] = {}
+        for key, value in strategy.items():
+            if isinstance(value, dict):
+                result[key] = cls._normalize_strategy_sub_object(value)
+            else:
+                result[key] = value
+        return result
+
+    @classmethod
+    def _normalize_strategy_sub_object(
+        cls,
+        obj: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize a Search or Network strategy sub-object."""
+        result: dict[str, Any] = {}
+        for key, value in obj.items():
+            if isinstance(value, dict):
+                # Nested strategy param (e.g. WbMaximumConversionRate,
+                # AverageCpa, etc.) — strip read-only fields.
+                cleaned = {
+                    k: v
+                    for k, v in value.items()
+                    if k not in cls._STRATEGY_READ_ONLY_FIELDS
+                }
+                result[key] = cleaned
+            elif key in cls._STRATEGY_READ_ONLY_FIELDS:
+                # Top-level read-only field in the sub-object.
+                continue
+            else:
+                result[key] = value
+        return result
+
     def yandex_time_targeting(
         self,
         campaign_id: str,
@@ -1325,8 +1381,20 @@ class MockStore:
         # Direct returns ``SpendMode`` on ``campaigns.get`` but
         # expects ``Mode`` on ``campaigns.add`` / ``campaigns.update``.
         # We normalise here and document the mapping.
+        #
+        # For TEXT_CAMPAIGN smart-strategy campaigns (e.g.
+        # WB_MAXIMUM_CONVERSION_RATE) where DailyBudget is null,
+        # we ALSO read ``TextCampaign.BiddingStrategy`` via a
+        # separate ``campaigns.get`` call with
+        # ``TextCampaignFieldNames``. Direct v5 requires the
+        # BiddingStrategy block when updating a smart-strategy
+        # campaign; omitting it yields error_code=8000 even when
+        # only TimeTargeting is being changed.
         resolved_daily_budget: dict[str, Any] | None = None
         daily_budget_read_ok = False
+        resolved_strategy: dict[str, Any] | None = None
+        strategy_read_ok = False
+        campaign_type: str | None = None
 
         if is_live and client is not None:
             try:
@@ -1371,12 +1439,53 @@ class MockStore:
                 resolved_daily_budget = None
                 daily_budget_read_ok = False
 
+            # Read campaign Type and TextCampaign.BiddingStrategy.
+            # Required for TEXT_CAMPAIGN smart-strategy campaigns
+            # where DailyBudget is null but Direct still requires
+            # the strategy block in campaigns.update.
+            if daily_budget_read_ok and resolved_daily_budget is None:
+                try:
+                    strategy_response = client.campaigns_get_strategy(
+                        campaign_id
+                    )
+                    if strategy_response.get("ok"):
+                        strategy_result = (
+                            strategy_response.get("result") or {}
+                        )
+                        if isinstance(strategy_result, dict):
+                            strategy_campaigns = (
+                                strategy_result.get("Campaigns") or []
+                            )
+                            if strategy_campaigns and isinstance(
+                                strategy_campaigns[0], dict
+                            ):
+                                camp = strategy_campaigns[0]
+                                tc = camp.get("TextCampaign")
+                                if (
+                                    isinstance(tc, dict)
+                                    and "BiddingStrategy" in tc
+                                ):
+                                    strategy_read_ok = True
+                                    resolved_strategy = self._normalize_strategy_for_write(
+                                        tc["BiddingStrategy"]
+                                    )
+                except Exception:
+                    # Best-effort: if the strategy read fails,
+                    # resolved_strategy stays None.
+                    resolved_strategy = None
+                    strategy_read_ok = False
+
+        # Build the campaigns.update payload entry.
         campaign_entry: dict[str, Any] = {
             "Id": YandexDirectClient._direct_id(campaign_id),
             "TimeTargeting": v5_time_targeting,
         }
         if resolved_daily_budget is not None:
             campaign_entry["DailyBudget"] = resolved_daily_budget
+        if resolved_strategy is not None:
+            campaign_entry["TextCampaign"] = {
+                "BiddingStrategy": resolved_strategy,
+            }
         payload_preview: dict[str, Any] = {
             "method": "campaigns.update",
             "params": {
@@ -1493,11 +1602,47 @@ class MockStore:
                 "without DailyBudget.Mode (would yield error_code=8000)"
             )
 
+        # Fail closed if DailyBudget is null (smart-strategy campaign)
+        # but the BiddingStrategy read returned ambiguous/missing data.
+        # Never invent strategy values.
+        if (
+            is_live
+            and resolved_daily_budget is None
+            and not strategy_read_ok
+        ):
+            self.append_audit(
+                "yandex_time_targeting_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "source": "yandex",
+                    "mode": mode,
+                    "yandex_error": (
+                        "Could not read TextCampaign.BiddingStrategy"
+                    ),
+                },
+            )
+            raise YandexDirectError(
+                "Could not read TextCampaign.BiddingStrategy from "
+                f"campaign {campaign_id!r} (DailyBudget=null, "
+                "likely smart-strategy); refusing to send "
+                "campaigns.update without BiddingStrategy "
+                "(would yield error_code=8000)"
+            )
+
         try:
             yandex_result = client.campaigns_update_time_targeting(
                 campaign_id,
                 list(v5_time_targeting),
                 daily_budget=resolved_daily_budget,
+                text_campaign=(
+                    {"BiddingStrategy": resolved_strategy}
+                    if resolved_strategy is not None
+                    else None
+                ),
             )
             if not yandex_result.get("ok"):
                 err = yandex_result.get("error") or {}

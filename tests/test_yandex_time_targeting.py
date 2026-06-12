@@ -1101,6 +1101,9 @@ def test_daily_budget_null_means_no_daily_budget_apply_allowed():
     not ambiguous: the campaign has no daily budget to preserve (for
     example after switching to a weekly conversion strategy). The
     update payload should omit DailyBudget instead of blocking apply.
+
+    When DailyBudget is null, the store also reads
+    TextCampaign.BiddingStrategy and includes it in the update.
     """
     settings = _settings("live_write")
     captured: dict[str, Any] = {"updates": []}
@@ -1112,17 +1115,7 @@ def test_daily_budget_null_means_no_daily_budget_apply_allowed():
             if "DailyBudget" in fields:
                 return httpx.Response(
                     200,
-                    json={
-                        "result": {
-                            "Campaigns": [
-                                {
-                                    "Id": 710691939,
-                                    "Name": "Weekly Strategy Campaign",
-                                    "DailyBudget": None,
-                                }
-                            ]
-                        }
-                    },
+                    json=_smart_strategy_read_envelope(),
                 )
             return httpx.Response(200, json=_ok_readback_envelope())
         captured["updates"].append(body)
@@ -1234,6 +1227,267 @@ def test_error_8000_regression_daily_budget_mode_required():
     assert body["detail"]["error_type"] == "YandexDirectError"
     assert SECRET_TOKEN not in response.text
     # Audit must record the failure.
+    failed_events = [
+        e for e in store.audit_events
+        if e.action == "yandex_time_targeting_failed"
+    ]
+    assert failed_events, "expected yandex_time_targeting_failed audit event"
+
+
+# ---------------------------------------------------------------------------
+# Smart-strategy BiddingStrategy preservation (error_code=8000 regression
+# for TEXT_CAMPAIGN with WB_MAXIMUM_CONVERSION_RATE and DailyBudget=null)
+# ---------------------------------------------------------------------------
+
+
+def _smart_strategy_read_envelope(
+    *,
+    campaign_id: int = 710691939,
+    strategy_type: str = "WB_MAXIMUM_CONVERSION_RATE",
+    daily_budget: dict[str, Any] | None = None,
+    time_targeting: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a v5 ``campaigns.get`` response that includes
+    ``Type``, ``DailyBudget``, ``TimeTargeting`` and
+    ``TextCampaign.BiddingStrategy`` for a smart-strategy campaign.
+
+    Mirrors the live campaign 710691939 shape:
+    DailyBudget=null, TextCampaign.BiddingStrategy with
+    WB_MAXIMUM_CONVERSION_RATE on search + SERVING_OFF on network.
+    """
+    if daily_budget is None:
+        daily_budget = None  # explicit null for smart-strategy campaigns
+    if time_targeting is None:
+        time_targeting = [
+            {
+                "Days": [WEEK_DAY_NAMES[index]],
+                "Hours": {"BidPercent": _hours_8_to_22_full()},
+            }
+            for index in range(7)
+        ]
+    return {
+        "result": {
+            "Campaigns": [
+                {
+                    "Id": campaign_id,
+                    "Name": "Smart Strategy Campaign",
+                    "Type": "TEXT_CAMPAIGN",
+                    "DailyBudget": daily_budget,
+                    "TimeTargeting": time_targeting,
+                    "TextCampaign": {
+                        "BiddingStrategy": {
+                            "Search": {
+                                "BiddingStrategyType": strategy_type,
+                                "WbMaximumConversionRate": {
+                                    "GoalId": 567732835,
+                                    "WeeklySpendLimit": 7000000000,
+                                    "BudgetType": "WEEKLY_BUDGET",
+                                    "BidCeiling": 1500000000,
+                                },
+                            },
+                            "Network": {
+                                "BiddingStrategyType": "SERVING_OFF",
+                            },
+                        },
+                    },
+                }
+            ]
+        }
+    }
+
+
+def test_smart_strategy_dry_run_preserves_bidding_strategy_in_payload():
+    """A dry-run for a TEXT_CAMPAIGN with WB_MAXIMUM_CONVERSION_RATE
+    and DailyBudget=null MUST include TextCampaign.BiddingStrategy in
+    the payload_preview, with BudgetType removed (write-side shape)
+    and all other strategy fields preserved. No DailyBudget in the
+    preview when the campaign has none.
+    """
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("method") == "get":
+            return httpx.Response(
+                200, json=_smart_strategy_read_envelope()
+            )
+        return httpx.Response(200, json=_ok_update_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(idempotency_key="tt-strategy-dry-001"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    preview = body["payload_preview"]
+    campaigns = preview["params"]["Campaigns"][0]
+    # TimeTargeting MUST be present.
+    assert "TimeTargeting" in campaigns
+    assert len(campaigns["TimeTargeting"]) == 7
+    # DailyBudget MUST NOT be present (campaign has no daily budget).
+    assert "DailyBudget" not in campaigns
+    # TextCampaign.BiddingStrategy MUST be present.
+    assert "TextCampaign" in campaigns, campaigns
+    strategy = campaigns["TextCampaign"]["BiddingStrategy"]
+    assert strategy["Search"]["BiddingStrategyType"] == "WB_MAXIMUM_CONVERSION_RATE"
+    wmcr = strategy["Search"]["WbMaximumConversionRate"]
+    assert wmcr["GoalId"] == 567732835
+    assert wmcr["WeeklySpendLimit"] == 7000000000
+    assert wmcr["BidCeiling"] == 1500000000
+    # BudgetType MUST be removed on write-side.
+    assert "BudgetType" not in wmcr
+    # Network strategy preserved.
+    assert strategy["Network"]["BiddingStrategyType"] == "SERVING_OFF"
+    assert SECRET_TOKEN not in response.text
+
+
+def test_smart_strategy_live_write_apply_includes_bidding_strategy():
+    """In ``live_write`` + apply, the update payload MUST include
+    the TextCampaign.BiddingStrategy (normalized to write shape)
+    so Direct doesn't reject with error_code=8000.
+    """
+    settings = _settings("live_write")
+    captured: dict[str, list[dict[str, Any]]] = {"calls": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        captured["calls"].append(body)
+        if body.get("method") == "get":
+            return httpx.Response(
+                200, json=_smart_strategy_read_envelope()
+            )
+        if body.get("method") == "update":
+            return httpx.Response(200, json=_ok_update_envelope())
+        return httpx.Response(200, json=_ok_readback_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(
+                dry_run=False, idempotency_key="tt-strategy-apply-001"
+            ),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    # Find the update call.
+    update_calls = [c for c in captured["calls"] if c.get("method") == "update"]
+    assert len(update_calls) == 1
+    update_campaign = update_calls[0]["params"]["Campaigns"][0]
+    # TextCampaign.BiddingStrategy MUST be present in the update.
+    assert "TextCampaign" in update_campaign, update_campaign
+    strategy = update_campaign["TextCampaign"]["BiddingStrategy"]
+    assert strategy["Search"]["BiddingStrategyType"] == "WB_MAXIMUM_CONVERSION_RATE"
+    wmcr = strategy["Search"]["WbMaximumConversionRate"]
+    assert wmcr["GoalId"] == 567732835
+    assert "BudgetType" not in wmcr
+    # DailyBudget MUST NOT be present (null on this campaign).
+    assert "DailyBudget" not in update_campaign
+    # TimeTargeting MUST be present.
+    assert "TimeTargeting" in update_campaign
+    assert SECRET_TOKEN not in response.text
+
+
+def test_smart_strategy_budgettype_normalization():
+    """BudgetType from the read-side response MUST be removed on the
+    write-side payload for TextCampaign.BiddingStrategy sub-objects.
+    This covers the read->write normalization that prevents the
+    "unexpected parameter BudgetType" error from Direct.
+    """
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("method") == "get":
+            return httpx.Response(
+                200, json=_smart_strategy_read_envelope()
+            )
+        return httpx.Response(200, json=_ok_update_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(idempotency_key="tt-budgettype-001"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["payload_preview"]
+    strategy = preview["params"]["Campaigns"][0]["TextCampaign"]["BiddingStrategy"]
+    # BudgetType is read-only; write-side should not carry it.
+    wmcr = strategy["Search"].get("WbMaximumConversionRate", {})
+    assert "BudgetType" not in wmcr, (
+        f"BudgetType should be stripped on write-side, got {wmcr}"
+    )
+    assert SECRET_TOKEN not in response.text
+
+
+def test_missing_strategy_read_fails_closed_for_text_campaign():
+    """If the campaign is a TEXT_CAMPAIGN but the BiddingStrategy
+    read returns ambiguous/missing data, the endpoint MUST fail
+    closed with HTTP 502 before calling campaigns.update.
+    Never invent strategy values.
+    """
+    settings = _settings("live_write")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if body.get("method") == "get":
+            fields = body.get("params", {}).get("FieldNames") or []
+            if "DailyBudget" in fields:
+                # Return campaign with Type but missing BiddingStrategy.
+                return httpx.Response(
+                    200,
+                    json={
+                        "result": {
+                            "Campaigns": [
+                                {
+                                    "Id": 710691939,
+                                    "Name": "Broken Campaign",
+                                    "Type": "TEXT_CAMPAIGN",
+                                    "DailyBudget": None,
+                                    # No TextCampaign / BiddingStrategy.
+                                }
+                            ]
+                        }
+                    },
+                )
+            return httpx.Response(200, json=_ok_readback_envelope())
+        return httpx.Response(200, json=_ok_update_envelope())
+
+    yandex = _client_with_handler(settings, handler)
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: yandex
+    try:
+        response = client.post(
+            "/yandex/campaigns/710691939/time-targeting",
+            json=_request_body(
+                dry_run=False, idempotency_key="tt-nostrategy-001"
+            ),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    # Must fail closed -- missing strategy for a TEXT_CAMPAIGN.
+    assert response.status_code == 502, response.text
+    assert SECRET_TOKEN not in response.text
+    # Audit should record the failure.
     failed_events = [
         e for e in store.audit_events
         if e.action == "yandex_time_targeting_failed"
