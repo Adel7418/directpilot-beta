@@ -765,12 +765,25 @@ class YandexDirectClient:
         date_from: str,
         date_to: str,
         field_names: list[str] | None = None,
+        campaign_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         field_names = field_names or ["Date", "CampaignId", "CampaignName", "Impressions", "Clicks", "Cost", "Ctr"]
         report_name = f"directpilot-{report_type.lower().replace('_', '-')}"
+        selection_criteria: dict[str, Any] = {"DateFrom": date_from, "DateTo": date_to}
+        if campaign_ids:
+            # Reports API selection filters campaign ids through Filter items,
+            # not through SelectionCriteria.CampaignIds (that shape belongs to
+            # many JSON v5 entity services and returns HTTP 400 for reports).
+            selection_criteria["Filter"] = [
+                {
+                    "Field": "CampaignId",
+                    "Operator": "IN",
+                    "Values": [str(self._direct_id(campaign_id)) for campaign_id in campaign_ids],
+                }
+            ]
         payload = {
             "params": {
-                "SelectionCriteria": {"DateFrom": date_from, "DateTo": date_to},
+                "SelectionCriteria": selection_criteria,
                 "FieldNames": field_names,
                 "ReportName": report_name,
                 "ReportType": report_type,

@@ -30,7 +30,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
 | Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
-| Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC если доступны |
+| Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC; **live** в `sandbox`/`live_readonly`/`live_write` (источник `CAMPAIGN_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock` |
 | Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи |
 | Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
 | Проверить аудит после публикации | `GET /audit-log` | `live_create_campaign_*`, `live_create_campaign_failed`; для DRAFT-запуска ожидайте отдельный факт отправки ads на модерацию |
@@ -47,6 +47,12 @@ DirectPilot — единая прослойка для маркетолога:
 | Найти id региона | `GET /wordstat/regions-tree` | region id/name |
 | Быстрые ссылки/визитки/креативы/организации | `GET /yandex/sitelinks`, `/yandex/vcards`, `/yandex/ad-images`, `/yandex/creatives`, `/yandex/businesses` | аудит ассетов и контактной привязки |
 | Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
+
+Важно по `GET /yandex/reports/summary`:
+
+- В `sandbox`/`live_readonly`/`live_write` endpoint возвращает `source="yandex"` при рабочей интеграции.
+- `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`.
+- В live-режимах HTTP **409** означает, что Yandex Direct client/токен недоступен; это не скрытая подмена mock-данными.
 
 
 ## Что использовать дополнительно (advanced)

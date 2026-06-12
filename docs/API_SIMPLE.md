@@ -572,6 +572,28 @@ GET /yandex/campaigns/{campaign_id}/keywords
 GET /yandex/reports/summary
 ```
 
+Query-параметры (все опциональны):
+
+- `date_from` — ISO дата начала периода (по умолчанию: 7 дней назад от сегодня).
+- `date_to` — ISO дата конца периода (по умолчанию: сегодня).
+- `campaign_id` — id кампании Yandex Direct; при наличии фильтрует reports-запрос через `SelectionCriteria.Filter` (`Field=CampaignId`, `Operator=IN`).
+
+Возвращает агрегированные `spend / clicks / impressions / ctr / cpc` за выбранный
+период.
+
+- `DIRECTPILOT_MODE=mock` → `source="mock"`, детерминированный fallback payload.
+- `sandbox` / `live_readonly` / `live_write` с настроенным `YANDEX_OAUTH_TOKEN` и
+  доступным Yandex client → `source="yandex"`, `read_only=true`, реальный вызов
+  `CAMPAIGN_PERFORMANCE_REPORT` (поля `Date, CampaignId, CampaignName, Impressions,
+  Clicks, Cost, Ctr`).
+- `sandbox` / `live_readonly` / `live_write` без доступного Yandex client или
+  токена → HTTP **409**. Это осознанный отказ, а не silent mock.
+
+`period` отражает запрошенный диапазон в формате `YYYY-MM-DD..YYYY-MM-DD`.
+
+Пример валидации: если отчёт содержит 1 строку TSV с `impressions=25`, `clicks=0`,
+`spend=0.0`, то endpoint вернёт `CTR=0`, `CPC=0` и `source="yandex"`.
+
 ### Поисковые запросы
 
 ```http

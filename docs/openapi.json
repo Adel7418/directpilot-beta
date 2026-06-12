@@ -6093,7 +6093,64 @@
     },
     "/yandex/reports/summary": {
       "get": {
+        "description": "Live read-only summary from CAMPAIGN_PERFORMANCE_REPORT.\n\nIn non-mock modes (``sandbox`` / ``live_readonly`` / ``live_write``)\nwith an available Yandex Direct client this calls the v5 reports\nendpoint, parses the TSV response, and aggregates spend/clicks/\nimpressions across all returned rows. ``period`` reflects the\nrequested date range (or the default 7-day window). ``source`` is\n``\"yandex\"`` and ``read_only`` is ``True``.\n\nThe mock payload is the fallback ONLY for ``DIRECTPILOT_MODE=mock``\nor when no Yandex client/token is available. Live mode without a\nusable client surfaces HTTP 409 (the same contract used by other\nread-only endpoints), not a silent mock — marketing must not\nmistake mock numbers for live numbers.",
         "operationId": "yandex_reports_summary_yandex_reports_summary_get",
+        "parameters": [
+          {
+            "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
+              "title": "Date From"
+            }
+          },
+          {
+            "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+              "title": "Date To"
+            }
+          },
+          {
+            "description": "Optional Yandex Direct campaign id filter.",
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional Yandex Direct campaign id filter.",
+              "title": "Campaign Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -6104,6 +6161,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Yandex Reports Summary"
