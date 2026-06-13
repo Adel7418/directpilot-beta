@@ -978,10 +978,14 @@ class TestMultiGoalStrategy:
         assert "Items" in pg
         assert len(pg["Items"]) == 3
 
-        # Each item has GoalId and Value (in micros = 1.0 RUB × 1_000_000)
+        # Each item has GoalId, Value (in micros = 1.0 RUB × 1_000_000), and Operation=SET
         for item, gid in zip(pg["Items"], [10, 20, 30]):
             assert item["GoalId"] == gid
             assert item["Value"] == 1_000_000  # 1.0 RUB in micros
+            assert item.get("Operation") == "SET", (
+                "Direct API v5 campaigns.update requires Operation=SET "
+                "in every PriorityGoals.Items element"
+            )
 
         # GoalId=13 in WbMaximumConversionRate
         wb = tc["BiddingStrategy"]["Search"]["WbMaximumConversionRate"]
@@ -1015,8 +1019,10 @@ class TestMultiGoalStrategy:
         items = tc["PriorityGoals"]["Items"]
         assert items[0]["GoalId"] == 100
         assert items[0]["Value"] == 10_000_000  # 10 RUB
+        assert items[0].get("Operation") == "SET"
         assert items[1]["GoalId"] == 200
         assert items[1]["Value"] == 5_000_000  # 5 RUB
+        assert items[1].get("Operation") == "SET"
 
         sa = body["strategy_applied"]
         assert sa["priority_goals"] == [
@@ -1041,7 +1047,9 @@ class TestMultiGoalStrategy:
             "TextCampaign"
         ]["PriorityGoals"]["Items"]
         assert items[0]["Value"] == 1_000_000  # default 1.0 RUB
+        assert items[0].get("Operation") == "SET"
         assert items[1]["Value"] == 7_000_000  # explicit 7 RUB
+        assert items[1].get("Operation") == "SET"
 
     # --- no token leakage -------------------------------------------------
 
@@ -1152,6 +1160,13 @@ class TestMultiGoalStrategy:
             "Single-goal PriorityGoals.Items must be empty list,"
             " not absent — omission semantics are ambiguous"
         )
+        # Single-goal clear must NOT include Operation on any item
+        # (there are no items, and Operation is only required for
+        # multi-goal PriorityGoals.Items elements per Direct API v5).
+        assert "Operation" not in pg, (
+            "Single-goal PriorityGoals with Items=[] must not"
+            " carry Operation — Operation only belongs on individual Items elements"
+        )
 
         # Verify the goal_id is the user's, not the multi-goal constant
         wb = tc["BiddingStrategy"]["Search"]["WbMaximumConversionRate"]
@@ -1191,7 +1206,9 @@ class TestMultiGoalStrategy:
             " not be empty"
         )
         assert items[0]["GoalId"] == 10
+        assert items[0].get("Operation") == "SET"
         assert items[1]["GoalId"] == 20
+        assert items[1].get("Operation") == "SET"
 
 
 # ---------------------------------------------------------------------------

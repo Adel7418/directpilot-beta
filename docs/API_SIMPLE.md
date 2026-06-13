@@ -1014,8 +1014,8 @@ POST /yandex/campaigns/{campaign_id}/strategy
           },
           "PriorityGoals": {
             "Items": [
-              {"GoalId": 567732835, "Value": 1000000000},
-              {"GoalId": 567732836, "Value": 500000000}
+              {"GoalId": 567732835, "Value": 1000000000, "Operation": "SET"},
+              {"GoalId": 567732836, "Value": 500000000, "Operation": "SET"}
             ]
           }
         }
@@ -1025,7 +1025,7 @@ POST /yandex/campaigns/{campaign_id}/strategy
 }
 ```
 
-`WbMaximumConversionRate.GoalId=13` — специальный маркер v5 для приоритетных целей на TEXT_CAMPAIGN. `PriorityGoals.Items` содержит до 30 целей с `Value` в микроединицах Direct (рубли × 1 000 000).
+`WbMaximumConversionRate.GoalId=13` — специальный маркер v5 для приоритетных целей на TEXT_CAMPAIGN. `PriorityGoals.Items` содержит до 30 целей с `Value` в микроединицах Direct (рубли × 1 000 000). Каждый элемент `Items` **обязательно** должен включать `"Operation": "SET"` — без этого поля Direct API v5 `campaigns.update` возвращает `error_code=8000` («отсутствует обязательное поле Operation»).
 
 #### Правила
 
@@ -1035,6 +1035,7 @@ POST /yandex/campaigns/{campaign_id}/strategy
 - `weekly_spend_limit` и `bid_ceiling` — в **рублях** (публичное REST-соглашение). Конвертируются в Direct-микроединицы (× 1 000 000) строго в store-слое;
 - `goal_id` **заменяет** текущий `GoalId` в стратегии кампании. Это не добавление цели в список: повторный вызов с другим `goal_id` переключит стратегию на новую цель;
 - `goal_ids` и `priority_goals` используют `GoalId=13` и `PriorityGoals.Items` — Direct API v5 shape для мультицелевой оптимизации TEXT_CAMPAIGN;
+- каждый элемент `PriorityGoals.Items` в multi-goal режиме **обязательно** содержит `"Operation": "SET"` — без него Direct v5 возвращает `error_code=8000`;
 - `goal_id`, `goal_ids`, и `priority_goals` **взаимоисключающие** — нужно выбрать ровно один режим;
 - `BudgetType` (например `WEEKLY_BUDGET`) сохраняется из readback-блока стратегии. Direct требует его при update; удаление `BudgetType` вызывает `error_code=8000`;
 - Network-стратегия по умолчанию сохраняется из текущего состояния кампании. Endpoint не включает РСЯ молча;

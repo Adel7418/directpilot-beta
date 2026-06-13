@@ -994,8 +994,8 @@ class YandexDirectClient:
         include in the payload. For campaigns switching to a weekly
         conversion strategy this is typically ``None`` (no daily budget).
 
-        ``priority_goals`` is an optional list of ``{GoalId, Value}``
-        dicts (Value in Direct micros) added as
+        ``priority_goals`` is an optional list of ``{GoalId, Value, Operation}``
+        dicts (Value in Direct micros, Operation usually ``SET``) added as
         ``TextCampaign.PriorityGoals.Items`` for multi-goal
         WB_MAXIMUM_CONVERSION_RATE (GoalId=13).
         """

@@ -1854,6 +1854,7 @@ class MockStore:
                 {
                     "GoalId": gid,
                     "Value": int(_DEFAULT_PRIORITY_VALUE_RUB * self._MICROS_PER_RUBLE),
+                    "Operation": "SET",
                 }
                 for gid in payload.goal_ids
             ]
@@ -1866,6 +1867,7 @@ class MockStore:
                         (pg.value if pg.value is not None else _DEFAULT_PRIORITY_VALUE_RUB)
                         * self._MICROS_PER_RUBLE
                     ),
+                    "Operation": "SET",
                 }
                 for pg in payload.priority_goals
             ]
