@@ -26,6 +26,32 @@ A real write is allowed only when all conditions are true:
 
 `dry_run=true` is always preview-only and must return `applied=false`.
 
+**Technical `approved=true` is NOT a self-approval by an agent or script.**
+The field is a protocol gate; the decision to set it must come from a human
+operator who has seen the concrete dry-run preview / diff / impact summary and
+explicitly confirmed the action in chat, ticket, or operator UI.  An agent
+(Marketer, coder, reviewer, or automated script) must never set `approved=true`
+on its own initiative — it prepares recommendations and previews; the operator
+applies after user approval.
+
+## Human Approval Contract
+
+All Direct/Metrika write operations (minuses, keywords, ads, moderation, strategy, bids,
+budgets, time-targeting, autotargeting, goals, UTM, pause/resume, live-create)
+require this sequence before `approved=true`:
+
+1. **Preview** — read-only endpoints + `dry_run=true` to produce a concrete
+   diff of what will change (which entities, expected effect, risk).
+2. **Show** — present the diff to the user in human-readable form.
+3. **Confirm** — the user explicitly approves the exact action.  Silence,
+   an unrelated "ok", or a general instruction is NOT approval.
+4. **Apply** — only then send `approved=true`, `idempotency_key`,
+   `dry_run=false`, with `DIRECTPILOT_MODE=live_write`.
+5. **Readback** — verify what changed via response readback or dedicated follow-up read endpoint.
+
+Marketers prepare recommendations; operators/orchestrators apply after
+confirmation.  No agent self-approves.
+
 ## Idempotency
 
 Write-style operations must use idempotency keys so repeated submissions do not duplicate campaign actions. Tests should cover replay behavior when practical.

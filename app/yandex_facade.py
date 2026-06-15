@@ -104,6 +104,62 @@ class MockYandexCatalog:
         }
         return ads_by_campaign.get(campaign_id, [])
 
+    # --- ads detailed (for UTM audit) --------------------------------------
+
+    def list_ads_detailed(self, campaign_id: str) -> list[dict]:
+        """Mock ads with TextAd fields for UTM audit/plan."""
+        detailed: dict[str, list[dict]] = {
+            "cmp_mock_local_services": [
+                {
+                    "Id": 3001,
+                    "AdGroupId": 1001,
+                    "CampaignId": 100,
+                    "Status": "ACCEPTED",
+                    "State": "ON",
+                    "Type": "TEXT_AD",
+                    "TextAd": {
+                        "Title": "Сантехник на дом — выезд за 30 мин",
+                        "Text": "Услуги сантехника в Казани. Быстро, аккуратно, гарантия.",
+                        "Href": "https://example.ru/santehnik?sort=price#services",
+                        "SitelinkSetId": 5001,
+                    },
+                },
+                {
+                    "Id": 3002,
+                    "AdGroupId": 1002,
+                    "CampaignId": 100,
+                    "Status": "ACCEPTED",
+                    "State": "ON",
+                    "Type": "TEXT_AD",
+                    "TextAd": {
+                        "Title": "Электрик — срочный вызов",
+                        "Text": "Вызов электрика на дом. Срочно, круглосуточно.",
+                        "Href": "https://example.ru/electric?utm_source=yandex&utm_medium=cpc",
+                    },
+                },
+            ],
+        }
+        return detailed.get(campaign_id, [])
+
+    # --- sitelinks mock ----------------------------------------------------
+
+    def list_sitelinks(self, ids: list[int]) -> list[dict]:
+        """Mock sitelink sets for UTM audit."""
+        sets: dict[int, dict] = {
+            5001: {
+                "Id": 5001,
+                "Sitelinks": [
+                    {"Title": "Цены", "Href": "https://example.ru/prices#price-list"},
+                    {"Title": "Отзывы", "Href": "https://example.ru/reviews?sort=new"},
+                ],
+            },
+        }
+        result = []
+        for sid in ids:
+            if sid in sets:
+                result.append(sets[sid])
+        return result
+
     # --- keywords ----------------------------------------------------------
 
     def list_keywords(self, campaign_id: str) -> list[dict]:

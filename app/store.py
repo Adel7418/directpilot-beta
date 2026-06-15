@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
+import json
 import uuid as _uuid
 from itertools import count
 from typing import Any, Iterable, Literal
@@ -63,12 +65,49 @@ from app.models import (
     YandexAutotargetingReadResult,
     YandexAutotargetingRequest,
     YandexAutotargetingResult,
+    # Keyword bids
+    KeywordBidItem,
+    KeywordBidSetItemResult,
+    KeywordBidUpdateRequest,
+    KeywordBidUpdateResult,
+    # UTM
+    UtmAuditItem,
+    UtmAuditResult,
+    UtmApplyRequest,
+    UtmApplyResult,
+    UtmChangeItem,
+    UtmConfig,
+    UtmPlanRequest,
+    UtmPlanResult,
+)
+from app.utm_builder import (
+    DEFAULT_UTM_PARAMS,
+    REQUIRED_UTM_PARAMS,
+    audit_utm_url,
+    build_utm_url,
+    generate_campaign_slug,
 )
 from app.yandex_direct import YandexDirectClient, YandexDirectError
+from app.yandex_facade import mock_yandex
 
 
 def _normalize_phrase(value: str) -> str:
     return " ".join(value.split()).strip().lower()
+
+
+def _keyword_bids_request_fingerprint(v5_items: list[dict[str, Any]]) -> str:
+    """Build a canonical fingerprint for keyword bids payload for idempotency."""
+
+    normalized = sorted(
+        [dict(item) for item in v5_items],
+        key=lambda item: (item.get("KeywordId"), json.dumps(item, sort_keys=True)),
+    )
+    canonical = json.dumps(
+        {"method": "set", "params": {"KeywordBids": normalized}},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _provider_warnings_from_result(
@@ -313,6 +352,125 @@ def _stage_name_from_message(message: str) -> str | None:
     return None
 
 
+def _format_set_result_error(errors: list[Any]) -> str:
+    """Render a v5 ``SetResults[].Errors[]`` array as a redacted one-line
+    summary suitable for an audit event / HTTP detail.
+
+    Same contract as ``_format_add_result_error`` but for ``SetResults``
+    items (``keywordbids.set`` per-item errors).  Keeps only the short
+    ``Code`` and a truncated ``Message`` — never includes raw payload.
+    """
+    if not errors:
+        return "SetResults.Errors present but empty"
+    parts: list[str] = []
+    for err in errors[:3]:
+        if isinstance(err, dict):
+            code = err.get("Code")
+            message = err.get("Message")
+            code_str = f"code={code}" if code is not None else "code=?"
+            msg_str = (
+                f": {str(message)[:120]}"
+                if message is not None
+                else ""
+            )
+            parts.append(f"{code_str}{msg_str}")
+        else:
+            parts.append(str(err)[:120])
+    if len(errors) > 3:
+        parts.append(f"...({len(errors) - 3} more)")
+    return "SetResults.Errors: " + "; ".join(parts)
+
+
+def _extract_set_results(
+    result_payload: Any,
+) -> tuple[list["KeywordBidSetItemResult"] | None, str | None]:
+    """Extract and inspect per-item ``SetResults`` from a v5 ``keywordbids.set`` response.
+
+    Returns ``(set_results, error_summary)`` where:
+    * ``set_results`` — list of :class:`KeywordBidSetItemResult` with
+      per-item outcomes (redacted errors/warnings).  ``None`` when the
+      envelope is missing or malformed.
+    * ``error_summary`` — ``None`` on success; a redacted one-line
+      summary string when one or more items carry ``Errors`` (so the
+      caller can surface it in ``yandex_error`` / audit).
+
+    The raw v5 envelope is never included — only ``code``, ``message``,
+    and ``details`` per warning/error.
+    """
+    if not isinstance(result_payload, dict):
+        return None, None
+    set_results_raw = result_payload.get("SetResults")
+    if not isinstance(set_results_raw, list):
+        # No SetResults to inspect — this happens on dry_run or
+        # when the upstream call failed (ok=false).  Not an error here.
+        return None, None
+
+    item_results: list[KeywordBidSetItemResult] = []
+    error_summaries: list[str] = []
+
+    for item in set_results_raw:
+        if not isinstance(item, dict):
+            continue
+        keyword_id = item.get("Id")
+        if keyword_id is None:
+            # Missing Id — treat as an error item with keyword_id=0
+            keyword_id = 0
+
+        item_errors_raw = item.get("Errors")
+        item_warnings_raw = item.get("Warnings")
+
+        item_errors: list[ProviderWarning] = []
+        item_warnings: list[ProviderWarning] = []
+
+        # Redact errors — only Code / Message / Details
+        if isinstance(item_errors_raw, list) and item_errors_raw:
+            for err in item_errors_raw:
+                if isinstance(err, dict):
+                    item_errors.append(
+                        ProviderWarning(
+                            code=int(err.get("Code") or 0),
+                            message=str(err.get("Message") or ""),
+                            details=str(err.get("Details") or ""),
+                        )
+                    )
+
+        # Redact warnings — same contract
+        if isinstance(item_warnings_raw, list):
+            for warn in item_warnings_raw:
+                if isinstance(warn, dict):
+                    item_warnings.append(
+                        ProviderWarning(
+                            code=int(warn.get("Code") or 0),
+                            message=str(warn.get("Message") or ""),
+                            details=str(warn.get("Details") or ""),
+                        )
+                    )
+
+        has_errors = len(item_errors) > 0
+        has_warnings = len(item_warnings) > 0
+
+        if has_errors:
+            error_summaries.append(
+                f"keyword_id={keyword_id}: "
+                f"{_format_set_result_error(list(item_errors_raw))}"  # type: ignore[arg-type]
+            )
+
+        item_results.append(
+            KeywordBidSetItemResult(
+                keyword_id=keyword_id,
+                has_errors=has_errors,
+                has_warnings=has_warnings,
+                errors=item_errors,
+                warnings=item_warnings,
+            )
+        )
+
+    error_summary: str | None = (
+        "; ".join(error_summaries) if error_summaries else None
+    )
+    return item_results, error_summary
+
+
 class MockStore:
     def __init__(self) -> None:
         self._draft_counter = count(1)
@@ -384,6 +542,10 @@ class MockStore:
         # Autotargeting update results, keyed by (campaign_id, idempotency_key).
         # Mirrors time_targeting_results_by_key / _strategy_results_by_key contract.
         self._autotargeting_results_by_key: dict[str, Any] = {}
+        # Keyword bids update cache records keyed by (campaign_id, idempotency_key).
+        # Stored value includes result + canonical request fingerprint for
+        # payload-equality guard before replay.
+        self._keyword_bids_results_by_key: dict[str, dict[str, Any]] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -436,6 +598,7 @@ class MockStore:
                 monthly_budget=payload.monthly_budget,
                 strategy="manual",
             ),
+            utm_config=payload.utm_config,
         )
         self.drafts[draft_id] = draft
         self.campaigns[draft_id] = Campaign(
@@ -779,6 +942,15 @@ class MockStore:
 
     def preview_draft(self, draft_id: str) -> PreviewPayload:
         draft = self.drafts[draft_id]
+        # Build UTM-augmented ad representations for preview.
+        ads_with_utm: list[dict[str, Any]] = []
+        for a in draft.ads:
+            ad_dict = a.model_dump()
+            utm_href = MockStore._resolve_utm_href(
+                a.landing_url, draft=draft, ad_id=a.id
+            )
+            ad_dict["landing_url"] = utm_href
+            ads_with_utm.append(ad_dict)
         yandex_payload = {
             "method": "create",
             "campaign": {
@@ -790,7 +962,7 @@ class MockStore:
                 "bids": draft.bids.model_dump(exclude_none=True),
             },
             "ad_groups": [g.model_dump() for g in draft.ad_groups],
-            "ads": [a.model_dump() for a in draft.ads],
+            "ads": ads_with_utm,
             "negative_keywords": list(draft.negative_keywords),
             "params": {
                 "Campaign": {
@@ -814,13 +986,33 @@ class MockStore:
                         "AdGroupId": a.ad_group_id,
                         "Title": a.title,
                         "Text": a.text,
-                        "LandingUrl": a.landing_url,
+                        "LandingUrl": MockStore._resolve_utm_href(
+                            a.landing_url, draft=draft, ad_id=a.id
+                        ),
                         "DisplayLinkPath": a.display_link_path,
                     }
                     for a in draft.ads
                 ],
             },
         }
+        # Build PreviewPayload with UTM-augmented ads so the operator
+        # sees the landing_url that will actually be sent to Yandex.
+        from app.models import Ad as AdModel
+        preview_ads: list[Any] = []
+        for a in draft.ads:
+            utm_href = MockStore._resolve_utm_href(
+                a.landing_url, draft=draft, ad_id=a.id
+            )
+            preview_ads.append(
+                AdModel(
+                    id=a.id,
+                    ad_group_id=a.ad_group_id,
+                    title=a.title,
+                    text=a.text,
+                    landing_url=utm_href,
+                    display_link_path=a.display_link_path,
+                )
+            )
         return PreviewPayload(
             draft_id=draft_id,
             name=draft.name or f"{draft.business_type} {draft.region}",
@@ -830,7 +1022,7 @@ class MockStore:
             budget=draft.budget,
             bids=draft.bids,
             ad_groups=draft.ad_groups,
-            ads=draft.ads,
+            ads=preview_ads,
             negative_keywords=draft.negative_keywords,
             yandex_payload=yandex_payload,
             dry_run=True,
@@ -875,6 +1067,650 @@ class MockStore:
             },
         )
         return draft
+
+    # --------------------------------------------------------- UTM audit / plan / apply
+
+    @staticmethod
+    def _resolve_campaign_name(campaign_id: str, *, live: bool, client) -> str:
+        """Resolve a campaign name for slug generation.
+
+        In mock mode, uses the mock catalog. In live modes, attempts
+        a campaigns.get call — falls back to ``"campaign-{id}"`` on
+        any error (the slug remains unique via the id).
+        """
+        if not live or client is None:
+            # Mock mode: name from mock catalog.
+            for c in mock_yandex.list_campaigns():
+                if c["id"] == campaign_id:
+                    return c["name"]
+            return ""
+        try:
+            resp = client.campaigns_get()
+            if resp.get("ok"):
+                result = resp.get("result") or {}
+                for c in result.get("Campaigns") or []:
+                    if str(c.get("Id")) == str(campaign_id):
+                        return str(c.get("Name") or "")
+        except Exception:
+            pass
+        return ""
+
+    def utm_audit(
+        self,
+        campaign_id: str,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> UtmAuditResult:
+        """Read-only UTM audit for all ad and sitelink URLs in a campaign."""
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+
+        ads_raw: list[dict[str, Any]] = []
+        sitelinks_raw: list[dict[str, Any]] = []
+
+        if is_live and client is not None:
+            try:
+                ads_resp = client.ads_get_detailed(campaign_id)
+                if ads_resp.get("ok"):
+                    ads_raw = (ads_resp.get("result") or {}).get("Ads") or []
+            except YandexDirectError:
+                pass
+            # Collect sitelink set ids.
+            sl_set_ids: set[int] = set()
+            for a in ads_raw:
+                if isinstance(a, dict):
+                    ta = a.get("TextAd") or {}
+                    sid = ta.get("SitelinkSetId")
+                    if isinstance(sid, int):
+                        sl_set_ids.add(sid)
+            if sl_set_ids:
+                try:
+                    sl_resp = client.sitelinks_get(ids=sorted(sl_set_ids))
+                    if sl_resp.get("ok"):
+                        sl_result = sl_resp.get("result") or {}
+                        sitelinks_raw = sl_result.get("SitelinksSets") or []
+                except YandexDirectError:
+                    pass
+        else:
+            # Mock mode: use mock catalog.
+            ads_raw = mock_yandex.list_ads_detailed(campaign_id)
+            sl_set_ids: set[int] = set()
+            for a in ads_raw:
+                ta = a.get("TextAd") or {}
+                sid = ta.get("SitelinkSetId")
+                if isinstance(sid, int):
+                    sl_set_ids.add(sid)
+            sitelinks_raw = mock_yandex.list_sitelinks(sorted(sl_set_ids))
+
+        items: list[UtmAuditItem] = []
+        warnings: list[str] = []
+
+        # Audit ad URLs.
+        for a in ads_raw:
+            if not isinstance(a, dict):
+                continue
+            ta = a.get("TextAd") or {}
+            href = ta.get("Href", "")
+            if not href or not isinstance(href, str) or not href.strip():
+                continue
+            ad_id = str(a.get("Id", ""))
+            audit = audit_utm_url(
+                href,
+                required_params=REQUIRED_UTM_PARAMS,
+                expected_values=DEFAULT_UTM_PARAMS,
+            )
+            items.append(
+                UtmAuditItem(
+                    entity_type="ad",
+                    entity_id=ad_id,
+                    url=href,
+                    utm_status=audit["status"],
+                    present_params=audit["present_params"],
+                    missing_params=audit["missing_params"],
+                    wrong_values=audit["wrong_values"],
+                )
+            )
+
+        # Audit sitelink URLs.
+        sitelink_items_count = 0
+        for sl_set in sitelinks_raw:
+            if not isinstance(sl_set, dict):
+                continue
+            for sl in sl_set.get("Sitelinks") or []:
+                if not isinstance(sl, dict):
+                    continue
+                href = sl.get("Href")
+                if not href or not isinstance(href, str) or not href.strip():
+                    continue
+                sl_title = str(sl.get("Title", ""))
+                audit = audit_utm_url(
+                    href,
+                    required_params=REQUIRED_UTM_PARAMS,
+                    expected_values=DEFAULT_UTM_PARAMS,
+                )
+                items.append(
+                    UtmAuditItem(
+                        entity_type="sitelink",
+                        entity_id=f"{sl_set.get('Id', '?')}/{sl_title}",
+                        url=href,
+                        utm_status=audit["status"],
+                        present_params=audit["present_params"],
+                        missing_params=audit["missing_params"],
+                        wrong_values=audit["wrong_values"],
+                    )
+                )
+                sitelink_items_count += 1
+
+        # Count stats.
+        complete = sum(1 for i in items if i.utm_status == "complete")
+        partial = sum(1 for i in items if i.utm_status == "partial")
+        missing = sum(1 for i in items if i.utm_status == "missing")
+        mismatch = sum(1 for i in items if i.utm_status == "mismatch")
+        ads_count = sum(1 for i in items if i.entity_type == "ad")
+
+        return UtmAuditResult(
+            campaign_id=campaign_id,
+            source="yandex" if is_live else "mock",
+            read_only=True,
+            ads_total=ads_count,
+            sitelinks_total=sitelink_items_count,
+            complete_count=complete,
+            partial_count=partial,
+            missing_count=missing,
+            mismatch_count=mismatch,
+            items=items,
+            warnings=warnings,
+        )
+
+    def utm_plan(
+        self,
+        campaign_id: str,
+        payload: UtmPlanRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> UtmPlanResult:
+        """Generate UTM plan/preview — always dry_run, never writes."""
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+
+        ads_raw: list[dict[str, Any]] = []
+        sitelinks_raw: list[dict[str, Any]] = []
+
+        # Resolve campaign slug.
+        campaign_name = self._resolve_campaign_name(campaign_id, live=is_live, client=client)
+        campaign_slug = payload.campaign_slug or generate_campaign_slug(campaign_name, campaign_id)
+
+        if is_live and client is not None:
+            try:
+                ads_resp = client.ads_get_detailed(campaign_id)
+                if ads_resp.get("ok"):
+                    ads_raw = (ads_resp.get("result") or {}).get("Ads") or []
+            except YandexDirectError:
+                pass
+            sl_set_ids: set[int] = set()
+            for a in ads_raw:
+                if isinstance(a, dict):
+                    ta = a.get("TextAd") or {}
+                    sid = ta.get("SitelinkSetId")
+                    if isinstance(sid, int):
+                        sl_set_ids.add(sid)
+            if sl_set_ids and payload.include_sitelinks:
+                try:
+                    sl_resp = client.sitelinks_get(ids=sorted(sl_set_ids))
+                    if sl_resp.get("ok"):
+                        sl_result = sl_resp.get("result") or {}
+                        sitelinks_raw = sl_result.get("SitelinksSets") or []
+                except YandexDirectError:
+                    pass
+        else:
+            ads_raw = mock_yandex.list_ads_detailed(campaign_id)
+            sl_set_ids: set[int] = set()
+            for a in ads_raw:
+                ta = a.get("TextAd") or {}
+                sid = ta.get("SitelinkSetId")
+                if isinstance(sid, int):
+                    sl_set_ids.add(sid)
+            if payload.include_sitelinks:
+                sitelinks_raw = mock_yandex.list_sitelinks(sorted(sl_set_ids))
+
+        items: list[UtmChangeItem] = []
+        sitelink_items: list[UtmChangeItem] = []
+        warnings: list[str] = []
+        not_implemented: list[str] = []
+
+        # Build ad URL changes.
+        v5_ads: list[dict[str, Any]] = []
+        for a in ads_raw:
+            if not isinstance(a, dict):
+                continue
+            ta = a.get("TextAd") or {}
+            href = ta.get("Href", "")
+            if not href or not isinstance(href, str) or not href.strip():
+                continue
+            ad_id = a.get("Id")
+            # Audit current URL.
+            audit = audit_utm_url(
+                href,
+                required_params=REQUIRED_UTM_PARAMS,
+                expected_values=DEFAULT_UTM_PARAMS,
+            )
+            # If UTM already complete and overwrite=False, skip.
+            if audit["status"] == "complete" and not payload.overwrite:
+                warnings.append(
+                    f"Ad {ad_id}: UTM already complete, skipped (overwrite=False). "
+                    f"Set overwrite=True to replace."
+                )
+                continue
+
+            new_url = build_utm_url(
+                href,
+                utm_source="yandex",
+                utm_medium="cpc",
+                utm_campaign=campaign_slug,
+                utm_content=str(ad_id),
+                utm_term="",
+                overwrite=payload.overwrite,
+                custom_params=payload.custom_params,
+            )
+            items.append(
+                UtmChangeItem(
+                    entity_type="ad",
+                    entity_id=str(ad_id),
+                    old_url=href,
+                    new_url=new_url,
+                    utm_status_before=audit["status"],
+                )
+            )
+            # Build v5 ads.update payload item (REPLACE-shaped).
+            v5_ad = {
+                "Id": ad_id,
+                "TextAd": {
+                    "Title": ta.get("Title", ""),
+                    "Text": ta.get("Text", ""),
+                    "Href": new_url,
+                },
+            }
+            # Preserve optional fields.
+            for field in ("SitelinkSetId", "BusinessId", "VCardId", "PreferVCardOverBusiness"):
+                if field in ta and ta[field] is not None:
+                    v5_ad["TextAd"][field] = ta[field]
+            if "Title2" in ta and ta["Title2"] is not None:
+                v5_ad["TextAd"]["Title2"] = ta["Title2"]
+            v5_ads.append(v5_ad)
+
+        # Sitelink URL changes (preview only).
+        if payload.include_sitelinks:
+            for sl_set in sitelinks_raw:
+                if not isinstance(sl_set, dict):
+                    continue
+                sl_set_id = sl_set.get("Id", "?")
+                for sl in sl_set.get("Sitelinks") or []:
+                    if not isinstance(sl, dict):
+                        continue
+                    href = sl.get("Href")
+                    if not href or not isinstance(href, str) or not href.strip():
+                        continue
+                    audit = audit_utm_url(
+                        href,
+                        required_params=REQUIRED_UTM_PARAMS,
+                        expected_values=DEFAULT_UTM_PARAMS,
+                    )
+                    new_url = build_utm_url(
+                        href,
+                        utm_source="yandex",
+                        utm_medium="cpc",
+                        utm_campaign=campaign_slug,
+                        utm_content="",
+                        utm_term="",
+                        overwrite=payload.overwrite,
+                        custom_params=payload.custom_params,
+                    )
+                    sitelink_items.append(
+                        UtmChangeItem(
+                            entity_type="sitelink",
+                            entity_id=f"{sl_set_id}/{sl.get('Title', '?')}",
+                            old_url=href,
+                            new_url=new_url,
+                            utm_status_before=audit["status"],
+                        )
+                    )
+            not_implemented.append(
+                "sitelinks.apply: Sitelink URL update via sitelinks.update is not yet "
+                "implemented in DirectPilot. Sitelink previews are shown for review only."
+            )
+
+        payload_preview = {
+            "method": "ads.update",
+            "params": {"Ads": v5_ads},
+        } if v5_ads else None
+
+        return UtmPlanResult(
+            campaign_id=campaign_id,
+            source="yandex" if is_live else "mock",
+            dry_run=True,
+            applied=False,
+            campaign_slug=campaign_slug,
+            items=items,
+            sitelink_items=sitelink_items,
+            payload_preview=payload_preview,
+            warnings=warnings,
+            not_implemented=not_implemented,
+        )
+
+    def utm_apply(
+        self,
+        campaign_id: str,
+        payload: UtmApplyRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> UtmApplyResult:
+        """Apply UTM URLs to live ads via ads.update — write-gated.
+
+        Gate contract: dry_run=True → preview only. dry_run=False
+        requires live_write + approved + idempotency_key.
+        Sitelink apply is not_implemented.
+        """
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # Idempotency cache.
+        cache_key = f"utm_apply:{campaign_id}:{payload.idempotency_key}:{'dry' if payload.dry_run else 'apply'}"
+        cached = getattr(self, "utm_apply_results_by_key", None)
+        if cached is None:
+            cached = {}
+            self.utm_apply_results_by_key = cached
+        if cache_key in cached:
+            return cached[cache_key]
+
+        # Pre-flight mode gate for real apply.
+        if not payload.dry_run and not can_write:
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch ads.update for UTM"
+            )
+
+        # Resolve campaign slug.
+        campaign_name = self._resolve_campaign_name(campaign_id, live=is_live, client=client)
+        campaign_slug = payload.campaign_slug or generate_campaign_slug(campaign_name, campaign_id)
+
+        # Read ads with full TextAd fields.
+        ads_raw: list[dict[str, Any]] = []
+        if is_live and client is not None:
+            try:
+                ads_resp = client.ads_get_detailed(campaign_id)
+                if ads_resp.get("ok"):
+                    ads_raw = (ads_resp.get("result") or {}).get("Ads") or []
+            except YandexDirectError as exc:
+                raise YandexDirectError(
+                    f"Failed to read ads for UTM apply: {exc}"
+                ) from exc
+        else:
+            ads_raw = mock_yandex.list_ads_detailed(campaign_id)
+
+        # Build v5 ads.update payload.
+        v5_ads: list[dict[str, Any]] = []
+        target_ad_ids: list[int] = []
+        warnings: list[str] = []
+        not_implemented: list[str] = []
+        sitelink_items: list[UtmChangeItem] = []
+
+        for a in ads_raw:
+            if not isinstance(a, dict):
+                continue
+            ta = a.get("TextAd") or {}
+            href = ta.get("Href", "")
+            if not href or not isinstance(href, str) or not href.strip():
+                continue
+            ad_id = a.get("Id")
+            if not isinstance(ad_id, int):
+                continue
+            audit = audit_utm_url(
+                href,
+                required_params=REQUIRED_UTM_PARAMS,
+                expected_values=DEFAULT_UTM_PARAMS,
+            )
+            if audit["status"] == "complete" and not payload.overwrite:
+                warnings.append(
+                    f"Ad {ad_id}: UTM already complete, skipped (overwrite=False)."
+                )
+                continue
+
+            new_url = build_utm_url(
+                href,
+                utm_source="yandex",
+                utm_medium="cpc",
+                utm_campaign=campaign_slug,
+                utm_content=str(ad_id),
+                utm_term="",
+                overwrite=payload.overwrite,
+                custom_params=payload.custom_params,
+            )
+
+            v5_ad: dict[str, Any] = {
+                "Id": ad_id,
+                "TextAd": {
+                    "Title": ta.get("Title", ""),
+                    "Text": ta.get("Text", ""),
+                    "Href": new_url,
+                },
+            }
+            for field in ("SitelinkSetId", "BusinessId", "VCardId", "PreferVCardOverBusiness"):
+                if field in ta and ta[field] is not None:
+                    v5_ad["TextAd"][field] = ta[field]
+            if "Title2" in ta and ta["Title2"] is not None:
+                v5_ad["TextAd"]["Title2"] = ta["Title2"]
+            v5_ads.append(v5_ad)
+            target_ad_ids.append(ad_id)
+
+        # Sitelinks — preview only, apply is not_implemented.
+        if payload.include_sitelinks:
+            sl_set_ids: set[int] = set()
+            for a in ads_raw:
+                ta = a.get("TextAd") or {} if isinstance(a, dict) else {}
+                sid = ta.get("SitelinkSetId")
+                if isinstance(sid, int):
+                    sl_set_ids.add(sid)
+            if sl_set_ids:
+                sitelinks_raw: list[dict[str, Any]] = []
+                if is_live and client is not None:
+                    try:
+                        sl_resp = client.sitelinks_get(ids=sorted(sl_set_ids))
+                        if sl_resp.get("ok"):
+                            sitelinks_raw = (sl_resp.get("result") or {}).get("SitelinksSets") or []
+                    except YandexDirectError:
+                        pass
+                else:
+                    sitelinks_raw = mock_yandex.list_sitelinks(sorted(sl_set_ids))
+                for sl_set in sitelinks_raw:
+                    if not isinstance(sl_set, dict):
+                        continue
+                    for sl in sl_set.get("Sitelinks") or []:
+                        if not isinstance(sl, dict):
+                            continue
+                        href = sl.get("Href")
+                        if not href:
+                            continue
+                        new_sl_url = build_utm_url(
+                            href,
+                            utm_source="yandex",
+                            utm_medium="cpc",
+                            utm_campaign=campaign_slug,
+                            utm_content="",
+                            utm_term="",
+                            overwrite=payload.overwrite,
+                            custom_params=payload.custom_params,
+                        )
+                        sitelink_items.append(
+                            UtmChangeItem(
+                                entity_type="sitelink",
+                                entity_id=f"{sl_set.get('Id', '?')}/{sl.get('Title', '?')}",
+                                old_url=href,
+                                new_url=new_sl_url,
+                                utm_status_before="missing",
+                            )
+                        )
+            not_implemented.append(
+                "sitelinks.apply: sitelink URL update via sitelinks.update is not yet implemented. "
+                "Sitelink previews are shown in sitelink_items for review only."
+            )
+
+        payload_preview = {
+            "method": "ads.update",
+            "params": {"Ads": v5_ads},
+        } if v5_ads else None
+
+        # Dry-run path: never call ads.update.
+        if payload.dry_run:
+            audit = self.append_audit(
+                "utm_apply_requested",
+                campaign_id,
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex" if is_live else "mock",
+                    "campaign_slug": campaign_slug,
+                    "ad_ids": target_ad_ids,
+                    "ad_count": len(target_ad_ids),
+                    "overwrite": payload.overwrite,
+                    "stage": "dry_run_preview",
+                },
+            )
+            result = UtmApplyResult(
+                campaign_id=campaign_id,
+                source="yandex" if is_live else "mock",
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                audit_id=audit.id,
+                campaign_slug=campaign_slug,
+                ad_ids=[],
+                sitelink_items=sitelink_items,
+                payload_preview=payload_preview,
+                warnings=warnings,
+                not_implemented=not_implemented,
+            )
+            return result
+
+        # Real apply: gate already validated.
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required for live UTM apply writes"
+            )
+
+        if not v5_ads:
+            raise YandexDirectError(
+                "No ads with URLs to update — all ads either have no URL "
+                "or already have complete UTM with overwrite=False"
+            )
+
+        try:
+            yandex_result = client.ads_update(v5_ads)
+            if not yandex_result.get("ok"):
+                err = yandex_result.get("error") or {}
+                raise YandexDirectError(
+                    f"Yandex Direct rejected ads.update for UTM: "
+                    f"error_code={err.get('error_code')!r}"
+                )
+            sent_units = _safe_units(yandex_result.get("units"))
+            provider_warnings = _provider_warnings_from_result(yandex_result)
+
+            # Readback: confirm new URLs.
+            readback: list[dict[str, Any]] | None = None
+            try:
+                rb_resp = client.ads_get_by_ids(target_ad_ids)
+                if rb_resp.get("ok"):
+                    rb_ads = (rb_resp.get("result") or {}).get("Ads") or []
+                    readback = [
+                        {
+                            "Id": a.get("Id"),
+                            "Href": (a.get("TextAd") or {}).get("Href", ""),
+                        }
+                        for a in rb_ads
+                        if isinstance(a, dict)
+                    ]
+            except YandexDirectError:
+                readback = None
+
+            audit = self.append_audit(
+                "utm_apply_requested",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "source": "yandex",
+                    "campaign_slug": campaign_slug,
+                    "ad_ids": target_ad_ids,
+                    "ad_count": len(target_ad_ids),
+                    "overwrite": payload.overwrite,
+                    "stage": "ads.update",
+                    "applied": True,
+                    "yandex_units": sent_units,
+                },
+            )
+            result = UtmApplyResult(
+                campaign_id=campaign_id,
+                source="yandex",
+                mode=mode,
+                dry_run=False,
+                applied=True,
+                audit_id=audit.id,
+                campaign_slug=campaign_slug,
+                ad_ids=target_ad_ids,
+                sitelink_items=sitelink_items,
+                payload_preview=payload_preview,
+                readback=readback,
+                provider_warnings=provider_warnings,
+                warnings=warnings,
+                not_implemented=not_implemented,
+                yandex_units=sent_units,
+            )
+            cached[cache_key] = result
+            return result
+        except YandexDirectError as exc:
+            self.append_audit(
+                "utm_apply_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "campaign_slug": campaign_slug,
+                    "ad_ids": target_ad_ids,
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+        except Exception as exc:
+            safe = YandexDirectError(
+                f"unexpected error during UTM apply: {type(exc).__name__}: {exc}"
+            )
+            self.append_audit(
+                "utm_apply_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "campaign_slug": campaign_slug,
+                    "ad_ids": target_ad_ids,
+                    "yandex_error": str(safe),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise safe from exc
 
     # ----------------------------------------------------- yandex control
 
@@ -1223,7 +2059,7 @@ class MockStore:
         """Build the v5 ``TimeTargeting`` block from a canonical schedule.
 
         The result is a dictionary with ``Schedule.Items`` (array of
-        strings ``\"D,bid0,bid1,...,bid23\"`` where D is 1-7 for
+        strings ``"D,bid0,bid1,...,bid23"`` where D is 1-7 for
         Monday-Sunday), ``ConsiderWorkingWeekends`` (required), and
         ``HolidaysSchedule`` (required by the v5 contract).
 
@@ -1809,7 +2645,7 @@ class MockStore:
     # (multiply by 1_000_000) before building the v5 payload.
     #
     # The ``Network`` strategy is preserved from readback when the
-    # request omits the ``network`` field. When ``network=\"SERVING_OFF\"``
+    # request omits the ``network`` field. When ``network="SERVING_OFF"``
     # is set explicitly, it is applied as requested. The endpoint never
     # silently turns networks ON.
     #
@@ -2324,10 +3160,53 @@ class MockStore:
         return campaign
 
     @staticmethod
+    def _resolve_utm_href(
+        href: str,
+        *,
+        draft: "CampaignDraft",
+        ad_id: str = "",
+        utm_config_override: "UtmConfig | None" = None,
+    ) -> str:
+        """Apply UTM params to *href* using the draft's ``utm_config``
+        or an explicit override.
+
+        When ``utm_config_override`` is provided, it takes precedence
+        over ``draft.utm_config``.  This allows ``LiveCreateCampaignRequest``
+        to supply a different UTM config at creation time without
+        mutating the stored draft.
+
+        When the effective UTM config is None or ``enabled=False``,
+        returns *href* unchanged.  Otherwise builds the UTM-tagged URL
+        using the same builder as the UTM audit/plan/apply endpoints.
+
+        *ad_id* is used as ``utm_content`` (the ad's local draft id).
+        For live-create, this is the local ad id — the Yandex ad id is
+        not yet known at creation time.  The response and docs surface
+        this limitation.
+        """
+        utm = utm_config_override if utm_config_override is not None else draft.utm_config
+        if utm is None or not utm.enabled:
+            return href
+        slug = utm.campaign_slug or generate_campaign_slug(
+            draft.name or draft.business_type or "campaign", draft.id
+        )
+        return build_utm_url(
+            href,
+            utm_source="yandex",
+            utm_medium="cpc",
+            utm_campaign=slug,
+            utm_content=ad_id or "{ad_id}",
+            utm_term="",  # keyword-level mapping not yet implemented
+            overwrite=utm.overwrite,
+            custom_params=utm.custom_params,
+        )
+
+    @staticmethod
     def _build_v5_chain_payloads(
         draft: "CampaignDraft",
         *,
         campaign_id: int | str | None,
+        utm_config_override: "UtmConfig | None" = None,
     ) -> dict[str, dict[str, Any]]:
         """Build the v5 stage payloads for stages 2..4 of the
         live-create chain.
@@ -2389,7 +3268,7 @@ class MockStore:
         negative_items = [
             phrase
             for phrase in (draft.negative_keywords or [])
-            if "/" not in phrase and "\\" not in phrase
+            if phrase and "/" not in phrase
         ]
 
         # Stage 2 — adgroups.add. ``CampaignId`` may be ``None`` in
@@ -2424,10 +3303,11 @@ class MockStore:
         # from stage 2 via the local→Yandex map.
         ads_param: list[dict[str, Any]] = []
         for ad in draft.ads or []:
+            href = MockStore._resolve_utm_href(ad.landing_url, draft=draft, ad_id=ad.id, utm_config_override=utm_config_override)
             text_ad: dict[str, Any] = {
                 "Title": ad.title,
                 "Text": ad.text,
-                "Href": ad.landing_url,
+                "Href": href,
             }
             if ad.display_link_path:
                 # Direct v5 ``ads.add`` for TextAd currently rejects
@@ -2623,7 +3503,7 @@ class MockStore:
         # :class:`YandexDirectError` here so the operator sees
         # the same failure mode in dry-run and apply.
         chain_preview = self._build_v5_chain_payloads(
-            draft, campaign_id=None
+            draft, campaign_id=None, utm_config_override=payload.utm_config
         )
         # Flat preview — stage 1 + chain. The dry-run
         # ``payload_preview`` keeps the stage-1 envelope as the
@@ -2755,7 +3635,7 @@ class MockStore:
             # Rebuild the chain payload with the real Yandex
             # campaign id so ``CampaignId`` is correct.
             chain_payloads = self._build_v5_chain_payloads(
-                draft, campaign_id=new_campaign_id
+                draft, campaign_id=new_campaign_id, utm_config_override=payload.utm_config
             )
             ad_groups_param = chain_payloads["adgroups.add"]["params"]["AdGroups"]
             new_ad_group_ids: list[str] = []
@@ -4757,6 +5637,273 @@ class MockStore:
                 },
             )
             raise safe from exc
+
+
+    # --------------------------------------------------- keyword bids update
+    #
+    # ``POST /yandex/campaigns/{campaign_id}/bids`` updates SearchBid /
+    # ContextBid for existing keywords via v5 ``keywordbids.set``.
+    # The gate contract is identical to the rest of the product:
+    # ``dry_run=True`` is preview-only; real apply requires
+    # ``live_write``, ``approved=True``, ``idempotency_key``, and
+    # ``dry_run=False``.
+    #
+    # ``search_bid_rub`` / ``context_bid_rub`` are received in RUBLES
+    # (public REST convention) and converted to Direct micros
+    # (multiply by 1_000_000) before building the v5 payload.
+    #
+    # The minimal v5 item shape for known keyword ids is
+    # ``KeywordId + SearchBid`` / ``KeywordId + ContextBid`` — no
+    # CampaignId / AdGroupId in the item (Direct returns error_code=9300
+    # for that form on batch updates).
+    #
+    # After apply, read back keyword bids for the campaign and return
+    # the changed keyword ids with current Bid/ContextBid.
+
+    def yandex_keyword_bids_update(
+        self,
+        campaign_id: str,
+        payload: "KeywordBidUpdateRequest",
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "KeywordBidUpdateResult":
+        """Apply keyword bid changes for an existing campaign."""
+
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        # --- Idempotency cache check ----------------------------------------
+        cache_key = f"keyword_bids:{campaign_id}:{payload.idempotency_key}"
+
+        # --- Build v5 payload -----------------------------------------------
+        v5_items: list[dict[str, Any]] = [
+            item.to_direct_micros_item() for item in payload.items
+        ]
+        payload_preview: dict = {"method": "set", "params": {"KeywordBids": v5_items}}
+        payload_fingerprint = _keyword_bids_request_fingerprint(v5_items)
+
+        # --- Idempotency cache check ----------------------------------------
+        if cache_key in self._keyword_bids_results_by_key:
+            cache_record = self._keyword_bids_results_by_key[cache_key]
+            cached = cache_record["result"]
+            cached_fingerprint = cache_record.get("request_fingerprint")
+
+            if cached.dry_run != payload.dry_run:
+                raise ValueError(
+                    f"Idempotency key {payload.idempotency_key!r} was "
+                    f"previously used with dry_run={cached.dry_run}; "
+                    f"replay with dry_run={payload.dry_run} is not allowed"
+                )
+            if cached_fingerprint != payload_fingerprint:
+                raise ValueError(
+                    f"Idempotency key {payload.idempotency_key!r} was "
+                    "previously used with a different keyword bids payload; "
+                    "replay is rejected"
+                )
+            return cached
+
+        # --- Mock mode ------------------------------------------------------
+        if not is_live:
+            audit = self.append_audit(
+                "yandex_keyword_bids_requested",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "item_count": len(payload.items),
+                    "source": "mock",
+                },
+            )
+            result = KeywordBidUpdateResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=payload.dry_run,
+                applied=False,
+                source="mock",
+                audit_id=audit.id,
+                payload_preview=payload_preview if payload.dry_run else None,
+            )
+            self._keyword_bids_results_by_key[cache_key] = {
+                "result": result,
+                "request_fingerprint": payload_fingerprint,
+            }
+            return result
+
+        # --- Dry-run in live modes ------------------------------------------
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_keyword_bids_requested",
+                campaign_id,
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "item_count": len(payload.items),
+                    "source": "yandex",
+                    "mode": mode,
+                },
+            )
+            result = KeywordBidUpdateResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                source="yandex",
+                audit_id=audit.id,
+                payload_preview=payload_preview,
+            )
+            self._keyword_bids_results_by_key[cache_key] = {
+                "result": result,
+                "request_fingerprint": payload_fingerprint,
+            }
+            return result
+
+        # --- Write gate -----------------------------------------------------
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; use live_write"
+            )
+
+        if client is None:
+            raise YandexDirectError(
+                "Yandex Direct client is required for live keyword bids updates"
+            )
+
+        # --- Real apply -----------------------------------------------------
+        try:
+            response = client.keywordbids_set(v5_items)
+        except YandexDirectError:
+            raise
+        except Exception as exc:
+            raise YandexDirectError(
+                f"keywordbids.set failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        # Extract top-level warnings (v5 ``Warnings[]``)
+        provider_warnings = _provider_warnings_from_result(response)
+
+        top_level_ok = response.get("ok", False)
+        yandex_error: str | None = None
+        if not top_level_ok:
+            error_block = response.get("error") or {}
+            error_code = error_block.get("error_code") or error_block.get("Code")
+            error_detail = (
+                error_block.get("error_detail")
+                or error_block.get("error_string")
+                or error_block.get("Message")
+                or "keywordbids.set failed"
+            )
+            raise YandexDirectError(
+                f"keywordbids.set failed: {error_code or 'unknown'}",
+                diagnostics={
+                    "error_code": error_code,
+                    "error_detail": str(error_detail)[:500],
+                    "payload_preview": payload_preview,
+                },
+            )
+
+        # --- Per-item SetResults inspection ---------------------------------
+        v5_result = response.get("result") if isinstance(response, dict) else None
+        set_results, set_error_summary = _extract_set_results(v5_result)
+
+        partial_failure = False
+        if set_error_summary:
+            # At least one item has Errors — the apply is not fully successful.
+            partial_failure = True
+            # Surface the item-level error summary alongside any top-level
+            # error so the operator sees both levels.
+            if yandex_error:
+                yandex_error = f"{yandex_error}; item-level: {set_error_summary}"
+            else:
+                yandex_error = f"item-level: {set_error_summary}"
+
+        # Collect item-level warnings into provider_warnings
+        if set_results:
+            for item in set_results:
+                if item.has_warnings:
+                    for w in item.warnings:
+                        # Avoid duplicating warnings already surfaced at top level
+                        already_present = any(
+                            pw.code == w.code and pw.message == w.message
+                            for pw in provider_warnings
+                        )
+                        if not already_present:
+                            provider_warnings.append(w)
+
+        # --- Readback -------------------------------------------------------
+        changed_keyword_ids = [item.keyword_id for item in payload.items]
+        readback: list[dict] | None = None
+        # Only attempt readback when top-level ok AND no item-level errors
+        if top_level_ok and not partial_failure and client is not None:
+            try:
+                # Use keywords_get to read back current bids
+                keywords_response = client.keywords_get(campaign_id)
+                if keywords_response.get("ok"):
+                    kw_result = keywords_response.get("result") or {}
+                    if isinstance(kw_result, dict):
+                        all_keywords = kw_result.get("Keywords") or []
+                        readback = [
+                            {
+                                "KeywordId": kw["Id"],
+                                "Bid": kw.get("Bid"),
+                                "ContextBid": kw.get("ContextBid"),
+                            }
+                            for kw in all_keywords
+                            if isinstance(kw, dict) and kw.get("Id") in changed_keyword_ids
+                        ]
+            except Exception:
+                readback = None  # readback is best-effort
+
+        # Determine overall applied flag:
+        # applied=True only when top-level ok AND no item-level errors
+        applied = top_level_ok and not partial_failure
+
+        audit = self.append_audit(
+            "yandex_keyword_bids_applied",
+            campaign_id,
+            dry_run=False,
+            details={
+                "approved": payload.approved,
+                "idempotency_key": payload.idempotency_key,
+                "reason": payload.reason,
+                "item_count": len(payload.items),
+                "keyword_ids": changed_keyword_ids,
+                "source": "yandex",
+                "mode": mode,
+                "ok": top_level_ok,
+                "partial_failure": partial_failure,
+                "set_error_summary": set_error_summary,
+                "yandex_error": yandex_error,
+            },
+        )
+
+        result = KeywordBidUpdateResult(
+            campaign_id=campaign_id,
+            mode=mode,
+            dry_run=False,
+            applied=applied,
+            source="yandex",
+            audit_id=audit.id,
+            readback=readback,
+            provider_warnings=provider_warnings,
+            set_results=set_results,
+            partial_failure=partial_failure,
+            yandex_units=_try_int(response.get("units")) if response.get("units") is not None else None,
+            yandex_error=yandex_error,
+        )
+        self._keyword_bids_results_by_key[cache_key] = {
+            "result": result,
+            "request_fingerprint": payload_fingerprint,
+        }
+        return result
 
 
 def _try_int(value: str | int) -> int | None:

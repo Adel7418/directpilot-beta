@@ -43,7 +43,10 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть стратегию кампании | `GET /yandex/campaigns/{campaign_id}/strategy` | тип, статус, бюджет, цели, BiddingStrategy; read-only |
 | Обновить стратегию кампании | `POST /yandex/campaigns/{campaign_id}/strategy` | `dry_run=true` для preview (рубли); для live-apply нужны `approved=true`, `idempotency_key`; выбрать один `goal_id` ИЛИ `goal_ids` (равновесные цели) ИЛИ `priority_goals` (явные ценности) из `GET /metrika/counters/{counter_id}/goals` (counter_id берется из `GET /yandex/campaigns/{campaign_id}/strategy -> counter_ids`). Одна цель заменяет текущую; `goal_ids`/`priority_goals` используют Direct API `PriorityGoals` + `GoalId=13` |
 | Посмотреть автотаргетинг | `GET /yandex/campaigns/{campaign_id}/autotargeting` | категории и бренд-опции автотаргетинга по группам; read-only |
-| Настроить автотаргетинг | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; дефолтный пресет `exact_narrow` (Exact+Narrow only); `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key`; не включать все категории по умолчанию — спрашивать пользователя |
+|| Настроить автотаргетинг | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; дефолтный пресет `exact_narrow` (Exact+Narrow only); `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key`; не включать все категории по умолчанию — спрашивать пользователя |
+|| Аудит UTM-разметки | `GET /yandex/campaigns/{campaign_id}/utm-audit` | статус UTM по каждому объявлению и быстрой ссылке; complete/partial/missing/mismatch; **read-only**, без write-гейтов |
+|| Спланировать UTM (preview) | `POST /yandex/campaigns/{campaign_id}/utm-plan` | old_url → new_url для каждого объявления; **всегда dry_run**, никогда не пишет в Яндекс; показывает payload для будущего apply |
+|| Применить UTM | `POST /yandex/campaigns/{campaign_id}/utm-apply` | `dry_run=true` для preview; `dry_run=false` требует `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`; для быстрых ссылок — apply `not_implemented` (только preview) |
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
@@ -102,6 +105,27 @@ DirectPilot — единая прослойка для маркетолога:
 - `/yandex/account/balance`, `/yandex/campaigns/finance`
 - `/metrika/counters`, `/metrika/counters/{counter_id}/goals`, `/metrika/counters/{counter_id}/summary`, `/metrika/counters/{counter_id}/traffic-sources`
 - `/wordstat/top`, `/wordstat/dynamics`, `/wordstat/regions`, `/wordstat/regions-tree`
+
+### Изменение ставок на живых ключах
+
+`POST /yandex/campaigns/{campaign_id}/bids` — безопасное изменение SearchBid/ContextBid
+для живых ключей. Ставки в рублях, конвертация в Direct micros автоматическая.
+
+**Процесс для маркетолога:**
+1. Сначала `dry_run=true` — получить `payload_preview` (точный v5 payload, который *был бы* отправлен).
+2. Показать diff пользователю.
+3. Только после явного подтверждения — apply с `dry_run=false`, `approved=true`, `DIRECTPILOT_MODE=live_write`.
+
+**Когда НЕ менять per-keyword ставки:**
+- Кампания на автостратегии `WB_MAXIMUM_CONVERSION_RATE` — Direct может проигнорировать
+  ставки с warning 10160. Вместо этого управляйте расходами через `WeeklySpendLimit`/`BidCeiling`
+  через `/yandex/campaigns/{campaign_id}/strategy`.
+- РСЯ выключена (`SERVING_OFF`) — не задавайте `context_bid_rub`.
+
+**После live apply:** проверяйте `set_results` — per-item исход по каждому keyword_id.
+Если `partial_failure=true` или `has_errors=true` у отдельных item, ставки не применены.
+Item-ошибки редиректятся (только `code`/`message`/`details`), сырой v5 payload не показывается.
+Предупреждения (код 10160 и др.) дублируются в `provider_warnings` и `set_results[].warnings`.
 
 ## Scope rule: конкретная кампания vs весь аккаунт
 
@@ -219,4 +243,84 @@ DirectPilot — единая прослойка для маркетолога:
 - короткую интерпретацию без сырых API-дампов;
 - список действий и ожидаемый эффект;
 - явное разделение фактов из DirectPilot и гипотез;
-- отсутствие секретов и raw-токенов.
+
+## UTM workflow (Яндекс Директ)
+
+### Для чего нужен UTM
+
+UTM-метки — это параметры в URL, которые позволяют Яндекс Метрике и другим системам аналитики различать источники трафика. Без UTM вы не сможете точно определить, какие кампании/объявления/ключевые слова приносят заявки и продажи.
+
+### Конвенция DirectPilot по умолчанию
+
+| Параметр | Значение | Описание |
+|---|---|---|
+| `utm_source` | `yandex` | Источник — Яндекс Директ (фиксировано) |
+| `utm_medium` | `cpc` | Тип трафика — оплата за клик (фиксировано) |
+| `utm_campaign` | `<slug>` | Уникальный slug кампании (генерируется из названия + id или задаётся вручную) |
+| `utm_content` | `{ad_id}` | ID объявления (автоподстановка из данных кампании) |
+| `utm_term` | `{keyword}` / текущая ограничение | Планируется keyword-level mapping; до его реализации поле остаётся пустым |
+
+### Пошаговый workflow
+
+**Для существующих кампаний (existing campaigns):**
+
+1. **Аудит:** `GET /yandex/campaigns/{campaign_id}/utm-audit`
+   - Показывает текущий статус UTM по каждому объявлению и каждой быстрой ссылке.
+   - Статусы: `complete` (все 5 параметров), `partial` (часть есть), `missing` (нет ни одного), `mismatch` (есть, но значения не совпадают с ожидаемыми).
+
+2. **План/preview:** `POST /yandex/campaigns/{campaign_id}/utm-plan`
+   - Всегда dry_run — **никогда не пишет** в Яндекс.
+   - Показывает конкретный diff/impact: `old_url -> new_url` для каждого объявления (и `sitelink_items` для быстрых ссылок).
+   - Если `campaign_slug` не передан — генерируется безопасно из названия кампании + id.
+   - `overwrite=false` (по умолчанию) — сохраняет существующие UTM и query/fragment.
+   - `overwrite=true` — перезаписывает все UTM-параметры.
+   - `custom_params` — дополнительные параметры (напр. `utm_custom=extra`).
+   - Быстрые ссылки — preview в `sitelink_items`, `apply` сейчас `not_implemented` (fail-closed).
+
+3. **Подтверждение пользователя (HUMAN APPROVAL CONTRACT):**
+   - Показать пользователю конкретный diff (old_url → new_url для каждого объявления).
+   - Явно спросить про slug, overwrite, sitelinks.
+   - **Не применять изменения без явного подтверждения пользователя.**
+   - `approved=true` в запросе — это технический флаг, а не самоодобрение агента.
+
+4. **Применение:** `POST /yandex/campaigns/{campaign_id}/utm-apply`
+   - **Требования для реальной записи:**
+     - `DIRECTPILOT_MODE=live_write`
+     - `approved=true`
+     - `idempotency_key` (>= 6 символов, уникальный ключ)
+     - `dry_run=false`
+   - `dry_run=true` — только preview, без записи.
+   - После успешного apply возвращает `ad_ids`, `readback` (проверка новых URL).
+   - Быстрые ссылки — **только preview**, apply not_implemented.
+
+5. **Readback:** проверить подтверждённые URL в `readback` ответа.
+
+**Для новых кампаний (live-create):**
+
+- Передайте `utm_config` в `POST /yandex/campaigns/live-create`, чтобы
+  объявления родились сразу с UTM-разметкой.
+- `LiveCreateCampaignRequest.utm_config` **переопределяет** `draft.utm_config`:
+  если передан — используется он; если не передан — fallback на драфт.
+- Это позволяет задать UTM при создании кампании, даже если драфт был создан
+  без UTM, или переопределить slug на лету без изменения драфта.
+- `enabled=false` в переопределении отключает UTM-разметку, даже если в драфте
+  UTM был включён.
+
+### Когда агент/маркетолог должен спросить пользователя
+
+- **Campaign slug:** если неочевидно, какой slug использовать — спросить. По умолчанию генерируется из названия кампании + id.
+  **Важно для кириллических названий:** если название кампании состоит только из
+  кириллицы (например, «Турбины Ростов»), автоматический генератор slug
+  выдаст ``campaign-{id}``, так как транслитерация отбрасывает не-ASCII символы.
+  Чтобы в отчётах Метрики было читаемое название (а не ``campaign-12345``),
+  **попросите пользователя явно указать ``campaign_slug``** — латинскую
+  транслитерацию или смысловой slug (например, ``turbiny-rostov``).
+- **Overwrite:** если часть UTM уже стоит — спросить, перезаписывать ли (overwrite=true) или сохранить существующие (overwrite=false).
+- **Sitelinks:** если нужны UTM на быстрых ссылках — предупредить, что apply для sitelinks пока не реализован.
+
+### Безопасность
+
+- Все write-операции используют `ads.update` (REPLACE-shaped) — **все обязательные поля** (Title, Text, Href) переотправляются.
+- `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` сохраняются при обновлении.
+- Токены и секреты **никогда** не появляются в ответах, логах и preview.
+- `live_readonly` блокирует реальные записи **до** любого сетевого вызова (HTTP 409).

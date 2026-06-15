@@ -18,6 +18,9 @@ Use this skill when working on DirectPilot code, docs, tests, or examples.
 - Real writes require `DIRECTPILOT_MODE=live_write`.
 - Write requests require `approved=true` and an `idempotency_key`.
 - `dry_run=true` must never mutate Yandex state.
+- Human approval contract for *all* write paths: preview/diff → explicit user confirmation → apply → readback.
+- `approved=true` is a technical gate, not agent self-approval.
+- Marketer/agent role never executes final live writes alone; they prepare recommendations and dry-run/preview outputs. Apply is done after explicit user confirmation by operator/orchestrator.
 - Secrets stay in local `.env` only and must never be committed or pasted into issues/PRs.
 
 ## Workflow
@@ -52,6 +55,9 @@ For read-only marketing work:
    - `POST /yandex/ads/moderate` — отправить объявления на модерацию (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
    - `GET /yandex/campaigns/{campaign_id}/autotargeting` — посмотреть настройки автотаргетинга (категории + brand-опции) каждой группы; read-only
    - `POST /yandex/campaigns/{campaign_id}/autotargeting` — обновить автотаргетинг (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
+   - `GET /yandex/campaigns/{campaign_id}/utm-audit` — аудит UTM-разметки (read-only; статус по объявлениям и быстрым ссылкам)
+   - `POST /yandex/campaigns/{campaign_id}/utm-plan` — план UTM (всегда dry_run; old_url → new_url preview; payload_preview для apply)
+   - `POST /yandex/campaigns/{campaign_id}/utm-apply` — применить UTM (dry_run default; apply — `live_write` + `approved` + `idempotency_key`; sitelinks apply not_implemented)
 
 Scope rule for operators/agents:
 
@@ -145,17 +151,38 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Network strategy defaults to preserve-from-readback. Explicit `network="SERVING_OFF"` is supported. Endpoint never silently turns networks ON.
 - Before applying, read current campaign state via the GET endpoint to verify the selected goal(s) against `/metrika/counters/{counter_id}/goals`.
 
-- For live bid updates through Direct v5 `keywordbids.set`, concrete known keywords should use the minimal item shape:
-  ```json
-  {"KeywordId": 57440007797, "SearchBid": 250000000}
-  ```
-  `SearchBid` is in Direct micros: `250000000` = `250 ₽`.
-- Do not mix `CampaignId + AdGroupId + KeywordId + SearchBid` in each item for a concrete-keyword batch update. A live 30-keyword update returned `error_code=9300` for that form; retrying with `KeywordId + SearchBid` succeeded.
-- For autotargeting rows, add `AutotargetingSearchBidIsAuto="NO"` when setting a manual search bid.
-- Do not set `NetworkBid` when the campaign must remain search-only (`Network.BiddingStrategyType=SERVING_OFF`).
-- Switching a text campaign from manual `HIGHEST_POSITION` to `WB_MAXIMUM_CONVERSION_RATE` uses `TextCampaign.BiddingStrategy.Search.WbMaximumConversionRate` with `GoalId`, `WeeklySpendLimit`, and optional `BidCeiling`; keep `Network.BiddingStrategyType=SERVING_OFF` for search-only campaigns.
-- Direct can return warning `10162` / `Дневной бюджет сброшен` when switching to weekly conversion strategy. This is expected: `DailyBudget` is meaningful for manual strategies; the conversion strategy uses `WeeklySpendLimit`.
-- When adding keywords under `WB_MAXIMUM_CONVERSION_RATE`, Direct can return warning `10160` / `Ставка не будет применена`: `Bid` is ignored by the auto-budget strategy, and `ContextBid` is ignored when Network is `SERVING_OFF`. This is expected; control spend through `WeeklySpendLimit` and `BidCeiling`.
+### Keyword bids update (SearchBid / ContextBid)
+
+- Use `POST /yandex/campaigns/{campaign_id}/bids` for safe live bid changes.
+  - `dry_run=true` (default): preview-only, no network write. Returns `payload_preview`
+    with exact v5 `keywordbids.set` payload.
+  - `dry_run=false`: requires `DIRECTPILOT_MODE=live_write` + `approved=true` +
+    `idempotency_key`. Returns `applied=true` with `readback` only on fully successful apply.
+  - `approved=false` is rejected with HTTP 409 before any network call.
+  - `live_readonly` blocks real writes with HTTP 409.
+  - same `idempotency_key` with different `dry_run`/payload is rejected with HTTP 409 before network write.
+  - top-level Yandex/`keywordbids.set` failure returns HTTP 502 with redacted diagnostics.
+- Request items are in RUBLES at the REST boundary (`search_bid_rub`/`context_bid_rub`);
+  the store converts to Direct micros (× 1 000 000).
+- Minimal v5 item shape for known keyword ids: `KeywordId + SearchBid` /
+  `KeywordId + ContextBid`. Do NOT include `CampaignId` / `AdGroupId` in
+  the item — Direct returns `error_code=9300` for that form on batch updates.
+- For autotargeting rows, `AutotargetingSearchBidIsAuto="NO"` is added
+  automatically when setting a manual search bid. Set
+  `autotargeting_search_bid_is_auto=true` explicitly to suppress.
+- Do not set `NetworkBid` / `context_bid_rub` when the campaign must remain
+  search-only (`Network.BiddingStrategyType=SERVING_OFF`).
+- After fully successful apply, endpoint reads back keyword bids via `keywords.get` and returns
+  `readback` with changed `KeywordId` + current `Bid`/`ContextBid` in Direct micros
+  (250_000_000 = 250 ₽). On `partial_failure=true`, readback is not attempted.
+- Idempotency: replay with same key returns cached result only when `dry_run` and
+  payload/material item set are equivalent; same `idempotency_key` with a different
+  payload (including different `dry_run`) is rejected with HTTP 409.
+- Direct can return warning `10160` / `Ставка не будет применена` for
+  auto-strategy campaigns (`WB_MAXIMUM_CONVERSION_RATE`): per-keyword bids
+  are ignored. Control spend through `WeeklySpendLimit`/`BidCeiling` via
+  `/yandex/campaigns/{campaign_id}/strategy`. Check `provider_warnings` in
+  the response.
 - Direct can return warning `10165` / `Параметр не будет применен`: one of the request fields was ignored by the API. The `details` field names the specific parameter. Check `provider_warnings` in the DirectPilot response to find which parameter was dropped.
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
@@ -176,6 +203,51 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Endpoint does read-before-write: `keywords.get` → find `---autotargeting` rows → build `keywords.update` by keyword `Id`.
 - If an ad group lacks an autotargeting row, the endpoint skips it (reports in `skipped_ad_group_ids`) when `create_missing=False`. Set `create_missing=True` to create new `---autotargeting` rows via `keywords.add` (gated: requires dry-run preview, then `live_write` + `approved` + `idempotency_key`).
 - See `docs/API_SIMPLE.md` section 13 and `docs/MARKETER_GUIDE.md` for full marketing guidance.
+
+### UTM operations
+
+UTM workflow for Yandex Direct campaigns:
+
+**Existing campaigns — audit → plan → user approval → apply → readback:**
+
+1. **Audit first:** `GET /yandex/campaigns/{campaign_id}/utm-audit` — read-only inventory of UTM status per ad/sitelink.
+2. **Plan/preview:** `POST /yandex/campaigns/{campaign_id}/utm-plan` — always dry_run, shows old_url→new_url. Never writes.
+3. **User approval (HUMAN APPROVAL CONTRACT):** show the concrete diff to the user. Ask about:
+   - `campaign_slug` — if ambiguous, generate from campaign name+id (safe default).
+   - `overwrite` — whether to replace existing UTM (default: false, preserve existing).
+   - sitelinks — warn that apply is not_implemented (preview only).
+   Do NOT apply without explicit user confirmation. `approved=true` is a technical
+   flag, not agent self-approval.
+4. **Apply:** `POST /yandex/campaigns/{campaign_id}/utm-apply` with `approved=true`, `idempotency_key`, `DIRECTPILOT_MODE=live_write`, `dry_run=false`.
+5. **Readback:** response includes `readback` with confirmed new URLs after successful apply.
+
+**New campaigns (live-create) — UTM at birth:**
+
+- Include `utm_config` in `POST /yandex/campaigns/live-create` so ads are born with UTM.
+- `LiveCreateCampaignRequest.utm_config` **overrides** `draft.utm_config` when both are set:
+  - If passed — the request-level config takes precedence (draft is not mutated).
+  - If omitted — `draft.utm_config` is the fallback.
+  - `enabled=false` in the override suppresses UTM even if the draft has it enabled.
+- This allows UTM to be set at creation time without editing the draft, and allows
+  per-creation slug/overwrite choices.
+
+**When to ask the user:**
+- Campaign slug/naming is unclear.
+- Overwrite of existing UTM is requested.
+- Sitelinks UTM apply is desired (currently preview-only, `not_implemented`).
+
+Default UTM convention:
+- `utm_source=yandex`, `utm_medium=cpc` (fixed).
+- `utm_campaign=<slug>` (from campaign name+id, or operator-provided).
+- `utm_content=<ad_id>` (auto-filled from ad data).
+- `utm_term` left empty (keyword-level mapping not yet implemented).
+
+Safety:
+- `ads.update` is REPLACE-shaped: Title, Text, Href MUST be re-sent.
+- `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` are preserved from readback.
+- `live_readonly` blocks writes with HTTP 409 before any network call.
+- Custom params supported but never override core five UTM params.
+- Sitelink apply is `not_implemented` — sitelinks are preview-only (fail-closed).
 
 ## Verification checklist
 

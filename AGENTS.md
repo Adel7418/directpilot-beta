@@ -30,6 +30,64 @@ Purpose: quick onboarding for external humans and generic agents (including codi
 - Marketing / semantic tasks: use `docs/MARKETER_GUIDE.md` and corresponding DirectPilot endpoints.
 - If a direct Yandex API method exists in DirectPilot, **do not** call raw Yandex endpoints (`api.direct.yandex.com`, `api-metrika.yandex.net`, AI Studio/Search API) directly.
 
+## Human Approval Contract (mandatory for all write operations)
+
+Technical `approved=true` in a request body is NOT a self-approval by an agent.
+For any **real Direct/Metrika write** (minuses, keywords, ads, moderation,
+strategy, bids, budgets, time-targeting, autotargeting, goals, UTM, pause/resume,
+live-create, bids modifiers, etc.) the agent/marketer/script MUST follow this
+sequence:
+
+1. **Read-only / dry-run preview** — gather current state via read endpoints and
+   `dry_run=true` previews. Produce a concrete diff/impact summary (what entities,
+   what will change, expected effect, risk).
+2. **Show to user** — present the preview and diff in chat, ticket, or operator
+   UI. Never skip this step.
+3. **Get explicit user confirmation** — the user must explicitly approve the
+   action in the conversation/ticket/UI. The agent must not interpret silence,
+   an unrelated "ok", or a general instruction as approval for a specific write.
+4. **Apply only after confirmation** — only then send the write with
+   `approved=true`, `idempotency_key`, `dry_run=false`, and
+   `DIRECTPILOT_MODE=live_write`.
+5. **Readback** — verify what changed using the operation readback in the
+   response or a dedicated follow-up read endpoint.
+
+Marketers do NOT apply live writes themselves. They prepare recommendations and
+read-only/dry-run outputs only. The apply step is performed by an operator or
+orchestrator after explicit user approval.
+
+## UTM workflow for external agents (summary)
+
+UTM is the primary mechanism for tracking ad performance in Yandex Metrika.
+Every external agent (marketing, coding, reviewer) must follow this workflow:
+
+**Existing campaigns:**
+1. `GET /yandex/campaigns/{campaign_id}/utm-audit` — read-only audit
+2. `POST /yandex/campaigns/{campaign_id}/utm-plan` — always dry_run, preview only; preserves query/fragment and emits concrete old_url → new_url
+3. **User approval** (see Human Approval Contract above) — confirm slug, overwrite, sitelinks
+4. `POST /yandex/campaigns/{campaign_id}/utm-apply` — with gates
+5. Readback — verify confirmed URLs from response
+
+**New campaigns (live-create):**
+- Include `utm_config` in the `POST /yandex/campaigns/live-create` request to
+  tag ads with UTM at birth.
+- `LiveCreateCampaignRequest.utm_config` overrides `draft.utm_config` when both
+  are set — the request-level config takes precedence.
+- If `utm_config` is omitted, the draft's stored `utm_config` is used as fallback.
+
+**When to ask the user:**
+- Campaign slug/naming is unclear.
+- **Cyrillic campaign names:** when the campaign name contains only Cyrillic
+  characters, the automatic slug generator falls back to ``campaign-{id}``
+  because transliteration drops non-ASCII chars.  For readable Metrika reports,
+  ask the user to provide an explicit ``campaign_slug`` (Latin transliteration
+  or semantic slug, e.g. ``turbiny-rostov`` instead of ``campaign-12345``).
+- Overwrite of existing UTM is requested.
+- Sitelinks UTM apply is desired; `sitelink` part is preview-only and apply is currently `not_implemented` (fail-closed).
+
+See `docs/MARKETER_GUIDE.md` (UTM section) and `docs/API_SIMPLE.md`
+for the full endpoint contracts.
+
 ## Public skill vs private local skills
 - This repository is self-contained for external humans and agents. Start with `AGENTS.md`, then read `skills/directpilot-operations/SKILL.md` and the docs listed above.
 - Private Hermes skills such as a maintainer's local `yandex-direct-api` skill are convenience memory for that maintainer only. They are not required to operate or contribute to this repository.

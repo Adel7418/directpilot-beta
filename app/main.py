@@ -96,6 +96,17 @@ from app.models import (
     YandexAutotargetingReadResult,
     YandexAutotargetingRequest,
     YandexAutotargetingResult,
+    # UTM
+    UtmAuditResult,
+    UtmApplyRequest,
+    UtmApplyResult,
+    UtmConfig,
+    UtmPlanRequest,
+    UtmPlanResult,
+    # Keyword bids
+    KeywordBidItem,
+    KeywordBidUpdateRequest,
+    KeywordBidUpdateResult,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError
@@ -3131,6 +3142,212 @@ def yandex_autotargeting_update(
                 ),
             },
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Keyword bids update — live-safe SearchBid / ContextBid changes
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/bids",
+    response_model=KeywordBidUpdateResult,
+    responses={
+        409: {
+            "description": "Safety gate or idempotency conflict: missing approval, non-live_write apply, or replay payload mismatch.",
+        },
+        502: {
+            "description": "Upstream Yandex Direct keywordbids.set / readback failure, with redacted diagnostics only.",
+        },
+    },
+)
+def yandex_keyword_bids_update(
+    campaign_id: str,
+    payload: KeywordBidUpdateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> KeywordBidUpdateResult:
+    """Update SearchBid / ContextBid for existing keywords via v5 ``keywordbids.set``.
+
+    Standard product gate contract:
+    ``dry_run=True`` (default) is preview-only and never performs a network
+    write; the response includes the exact v5 ``keywordbids.set`` payload
+    that WOULD be sent, with ``applied=False``.
+
+    ``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,
+    ``approved=True`` and a valid ``idempotency_key``.
+
+    Request items use RUBLES at the REST boundary; the store converts to
+    Direct micros (× 1 000 000). The minimal v5 item shape is
+    ``KeywordId + SearchBid`` / ``KeywordId + ContextBid`` — no
+    CampaignId / AdGroupId in the item.
+
+    After apply, the endpoint reads back keyword bids for the campaign
+    and returns the changed keyword ids with current Bid/ContextBid.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before keyword bids update",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"keyword bids apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_keyword_bids_update(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        try:
+            store.append_audit(
+                "yandex_keyword_bids_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in keyword bids endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during keyword bids update: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Yandex Direct UTM — audit / plan / apply
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/utm-audit",
+    response_model=UtmAuditResult,
+)
+def yandex_utm_audit(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> UtmAuditResult:
+    """Read-only UTM audit for all ad and sitelink URLs in a campaign.
+
+    In mock mode, returns deterministic mock data. In sandbox/live modes,
+    reads real ads and sitelinks from Yandex Direct (no writes).
+    """
+    return store.utm_audit(
+        campaign_id,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/utm-plan",
+    response_model=UtmPlanResult,
+)
+def yandex_utm_plan(
+    campaign_id: str,
+    payload: UtmPlanRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> UtmPlanResult:
+    """Generate UTM plan/preview — always dry_run, never writes.
+
+    Returns the list of URL changes (old → new with UTM) and a
+    preview of the v5 ``ads.update`` payload that WOULD be sent on apply.
+    Sitelink previews are included but apply is not_implemented.
+    """
+    return store.utm_plan(
+        campaign_id,
+        payload,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/utm-apply",
+    response_model=UtmApplyResult,
+)
+def yandex_utm_apply(
+    campaign_id: str,
+    payload: UtmApplyRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> UtmApplyResult:
+    """Apply UTM URLs to live ads — write-gated.
+
+    * ``dry_run=True`` → preview only, ``applied=False``.
+    * ``dry_run=False`` requires:
+      1. ``DIRECTPILOT_MODE=live_write``
+      2. ``approved=true``
+      3. ``idempotency_key`` (>= 6 chars)
+
+    Uses ``ads.update`` (REPLACE-shaped) to safely update TextAd.Href.
+    Sitelink apply is not_implemented — surfaced in ``not_implemented``.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before UTM apply",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"UTM apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.utm_apply(
+            campaign_id,
+            payload,
+            settings=settings,
+            client=client,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
 
 
 # ---------------------------------------------------------------------------

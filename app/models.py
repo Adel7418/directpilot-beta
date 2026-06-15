@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
@@ -60,6 +62,10 @@ class CampaignDraftRequest(BaseModel):
     region: str = Field(..., min_length=2)
     monthly_budget: float = Field(..., gt=0)
     landing_url: str
+    utm_config: UtmConfig | None = Field(
+        default=None,
+        description="Optional UTM configuration — when enabled, ads get UTM-tagged Hrefs.",
+    )
 
 
 class CampaignDraftBaseUpdate(BaseModel):
@@ -215,6 +221,10 @@ class CampaignDraft(BaseModel):
     bids: BidSettings = Field(default_factory=BidSettings)
     risk_level: Literal["low", "medium", "high"] = "medium"
     requires_approval: bool = True
+    utm_config: UtmConfig | None = Field(
+        default=None,
+        description="UTM configuration stored from draft creation. Used by preview and live-create.",
+    )
 
 
 class CampaignDraftList(BaseModel):
@@ -281,6 +291,41 @@ class AuditLog(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class UtmConfig(BaseModel):
+    """Optional UTM configuration for campaign drafts and live-create.
+
+    When ``enabled=True``, the UTM builder is applied to every ad's Href
+    at creation time (campaign draft preview + live-create payload).
+
+    ``campaign_slug`` — if not provided, is generated from draft name + id
+    (same logic as the UTM audit/plan/apply endpoints).
+
+    ``overwrite`` — if False (default), existing UTM params on the landing
+    URL are preserved. If True, all existing UTM params are replaced.
+
+    ``custom_params`` — additional query params injected after core UTM;
+    never override the core five (utm_source/medium/campaign/content/term).
+
+    ``enabled`` — master switch. When False (default), the draft/live-create
+    flow builds ads with the raw landing URL unchanged.
+    """
+
+    enabled: bool = False
+    campaign_slug: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Slug for utm_campaign. Generated from draft name+id when omitted.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Replace existing UTM params when True; preserve when False.",
+    )
+    custom_params: dict[str, str] | None = Field(
+        default=None,
+        description="Additional query params injected after core UTM.",
+    )
+
+
 class UtmGenerateRequest(BaseModel):
     landing_url: HttpUrl
     campaign: str = Field(..., min_length=1)
@@ -291,6 +336,170 @@ class UtmGenerateRequest(BaseModel):
 class UtmGenerateResult(BaseModel):
     url: str
     requires_approval: bool = False
+
+
+class UtmAuditItem(BaseModel):
+    """Single URL UTM audit result for an ad or sitelink."""
+
+    entity_type: Literal["ad", "sitelink"]
+    entity_id: str
+    url: str
+    utm_status: Literal["complete", "partial", "missing", "mismatch"]
+    present_params: dict[str, str] = Field(default_factory=dict)
+    missing_params: list[str] = Field(default_factory=list)
+    wrong_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class UtmAuditResult(BaseModel):
+    """Response for ``GET /yandex/campaigns/{campaign_id}/utm-audit``."""
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "mock"
+    read_only: bool = True
+    ads_total: int = 0
+    sitelinks_total: int = 0
+    complete_count: int = 0
+    partial_count: int = 0
+    missing_count: int = 0
+    mismatch_count: int = 0
+    items: list[UtmAuditItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class UtmPlanRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/{campaign_id}/utm-plan``.
+
+    Always dry_run — never mutates Yandex state. Returns the URLs
+    that WOULD be changed with the proposed UTM params.
+    """
+
+    campaign_slug: str | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Slug for utm_campaign. If not provided, generated from "
+            "campaign name + id (safe, unambiguous)."
+        ),
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Replace existing UTM params when True; preserve existing when False.",
+    )
+    custom_params: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Additional query params to inject (e.g. utm_custom=extra, ref=dp). "
+            "Never override the five core UTM params."
+        ),
+    )
+    include_sitelinks: bool = Field(
+        default=True,
+        description="Include sitelink URLs in the plan. Sitelink apply is not_implemented.",
+    )
+
+
+class UtmChangeItem(BaseModel):
+    """One planned URL change: old → new with UTM."""
+
+    entity_type: Literal["ad", "sitelink"]
+    entity_id: str
+    old_url: str
+    new_url: str
+    utm_status_before: Literal["complete", "partial", "missing", "mismatch"]
+
+
+class UtmPlanResult(BaseModel):
+    """Response for ``POST /yandex/campaigns/{campaign_id}/utm-plan``.
+
+    Always ``dry_run=True``, ``applied=False``, no network writes.
+    """
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "mock"
+    dry_run: bool = True
+    applied: bool = False
+    campaign_slug: str = ""
+    items: list[UtmChangeItem] = Field(default_factory=list)
+    sitelink_items: list[UtmChangeItem] = Field(
+        default_factory=list,
+        description="Sitelink URL changes (preview only — sitelink apply is not_implemented).",
+    )
+    payload_preview: dict | None = Field(
+        default=None,
+        description="The v5 ``ads.update`` payload that WOULD be sent on apply.",
+    )
+    warnings: list[str] = Field(default_factory=list)
+    not_implemented: list[str] = Field(default_factory=list)
+
+
+class UtmApplyRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/{campaign_id}/utm-apply``.
+
+    Write-gate contract (mandatory):
+    * ``dry_run=True`` — preview only, never mutates Yandex state.
+    * ``dry_run=False`` requires ALL of:
+      1. ``DIRECTPILOT_MODE=live_write``
+      2. ``approved=true``
+      3. ``idempotency_key`` (>= 6 chars)
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    campaign_slug: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Slug for utm_campaign param.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Replace existing UTM when True.",
+    )
+    custom_params: dict[str, str] | None = Field(
+        default=None,
+        description="Additional query params injected after core UTM.",
+    )
+    include_sitelinks: bool = Field(
+        default=True,
+        description=(
+            "Request sitelink URL changes. Sitelink apply is not_implemented "
+            "and will be surfaced in warnings/not_implemented even if True."
+        ),
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Human-readable reason for the audit log.",
+    )
+
+
+class UtmApplyResult(BaseModel):
+    """Response for ``POST /yandex/campaigns/{campaign_id}/utm-apply``.
+
+    * ``dry_run=True`` → ``applied=False``, ``ad_ids=[]``,
+      ``payload_preview`` populated.
+    * ``dry_run=False`` + ``live_write`` → ``applied=True``,
+      ``ad_ids`` populated, ``readback`` may be populated.
+    """
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    dry_run: bool
+    applied: bool
+    audit_id: str
+    campaign_slug: str = ""
+    ad_ids: list[int] = Field(default_factory=list)
+    sitelink_items: list[UtmChangeItem] = Field(
+        default_factory=list,
+        description="Sitelink URL previews (apply not_implemented).",
+    )
+    payload_preview: dict | None = None
+    readback: list[dict] | None = None
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    not_implemented: list[str] = Field(default_factory=list)
+    yandex_units: int | None = None
+    yandex_error: str | None = None
 
 
 class BudgetSimulationRequest(BaseModel):
@@ -1029,6 +1238,14 @@ class LiveCreateCampaignRequest(BaseModel):
     counter_ids: list[int] = Field(
         default_factory=list,
         description="Optional Metrika counter ids for conversion attribution.",
+    )
+    utm_config: UtmConfig | None = Field(
+        default=None,
+        description=(
+            "Optional UTM configuration for ad Hrefs at creation time. "
+            "When enabled=True, every ad's Href is tagged with UTM params. "
+            "If not provided here, the draft's stored utm_config is used."
+        ),
     )
     reason: str | None = None
 
@@ -1995,5 +2212,186 @@ class YandexAutotargetingResult(BaseModel):
         ),
     )
     provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Keyword bids update — live-safe endpoint for SearchBid / ContextBid
+# ---------------------------------------------------------------------------
+
+_MICROS_PER_RUBLE: int = 1_000_000
+
+
+class KeywordBidItem(BaseModel):
+    """A single keyword bid update item in a batch request.
+
+    At minimum ``keyword_id`` + ``search_bid_rub`` and/or
+    ``context_bid_rub`` must be supplied.
+
+    ``search_bid_rub`` / ``context_bid_rub`` are in RUBLES at the
+    REST boundary — the store converts to Direct micros.
+
+    ``autotargeting_search_bid_is_auto`` is optional; when the item
+    targets an autotargeting row and the caller sets a manual
+    ``search_bid_rub``, DirectPilot adds
+    ``AutotargetingSearchBidIsAuto=\"NO\"`` by default. Set it to
+    ``True`` explicitly to keep auto mode.
+    """
+
+    keyword_id: int = Field(..., ge=1, description="Yandex Direct KeywordId")
+    search_bid_rub: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Search bid in RUBLES. Converted to micros internally.",
+    )
+    context_bid_rub: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Context bid in RUBLES. Converted to micros internally.",
+    )
+    autotargeting_search_bid_is_auto: bool | None = Field(
+        default=None,
+        description=(
+            "If the item targets an autotargeting row and this is unset, "
+            "``AutotargetingSearchBidIsAuto=\"NO\"`` is added when "
+            "``search_bid_rub`` is supplied. Set to ``True`` to keep auto mode."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_at_least_one_bid(self) -> "KeywordBidItem":
+        if self.search_bid_rub is None and self.context_bid_rub is None:
+            raise ValueError(
+                "At least one of search_bid_rub or context_bid_rub is required"
+            )
+        return self
+
+    def to_direct_micros_item(self) -> dict:
+        """Build the minimal v5 ``KeywordBids`` item for this keyword."""
+        item: dict = {"KeywordId": self.keyword_id}
+        if self.search_bid_rub is not None:
+            item["SearchBid"] = int(round(self.search_bid_rub * _MICROS_PER_RUBLE))
+            # When setting manual search bid on an autotargeting row,
+            # include AutotargetingSearchBidIsAuto="NO" unless
+            # explicitly opted out.
+            if self.autotargeting_search_bid_is_auto is not True:
+                item["AutotargetingSearchBidIsAuto"] = "NO"
+        if self.context_bid_rub is not None:
+            item["ContextBid"] = int(round(self.context_bid_rub * _MICROS_PER_RUBLE))
+        return item
+
+
+class KeywordBidUpdateRequest(BaseModel):
+    """Body of ``POST /yandex/campaigns/{campaign_id}/bids``.
+
+    Standard product gate contract:
+    ``dry_run=True`` (default) is preview-only — no external write.
+    ``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,
+    ``approved=True`` and a valid ``idempotency_key``.
+
+    ``items`` is a non-empty list of per-keyword bid changes.
+    """
+
+    dry_run: bool = True
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    items: list[KeywordBidItem] = Field(..., min_length=1, max_length=500)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_items_unique_keyword_ids(self) -> "KeywordBidUpdateRequest":
+        seen: set[int] = set()
+        for item in self.items:
+            if item.keyword_id in seen:
+                raise ValueError(
+                    f"Duplicate keyword_id {item.keyword_id} in items; "
+                    f"each keyword_id must appear at most once per request"
+                )
+            seen.add(item.keyword_id)
+        return self
+
+
+class KeywordBidSetItemResult(BaseModel):
+    """Per-item outcome from v5 ``keywordbids.set`` ``SetResults``.
+
+    Each ``SetResults`` entry carries the keyword id and optional
+    ``Errors`` / ``Warnings`` arrays.  This model surfaces those
+    per-item outcomes in a redacted form — only ``code``, ``message``,
+    and ``details`` per warning/error; the raw v5 envelope is never
+    included.
+
+    * ``has_errors=True`` means this item was **not** applied —
+      the overall ``applied`` flag will be ``False`` when any item
+      has errors.
+    * ``has_warnings=True`` means the item was applied but Direct
+      returned non-fatal warnings (e.g. 10160 — ставка не будет
+      применена при auto-стратегии).
+    """
+
+    keyword_id: int
+    has_errors: bool = False
+    has_warnings: bool = False
+    errors: list["ProviderWarning"] = Field(default_factory=list)
+    warnings: list["ProviderWarning"] = Field(default_factory=list)
+
+
+class KeywordBidUpdateResult(BaseModel):
+    """Response for ``POST /yandex/campaigns/{campaign_id}/bids``.
+
+    * ``dry_run=True`` returns ``applied=False`` with ``payload_preview``
+      (the exact v5 ``keywordbids.set`` payload that WOULD be sent).
+    * ``dry_run=False`` + ``live_write`` returns ``applied=True``
+      with ``readback``.
+    * ``provider_warnings`` surfaces upstream Direct warnings
+      (e.g. 10160 — ставка не будет применена при auto-стратегии).
+    * ``set_results`` surfaces per-item outcomes from the v5
+      ``SetResults`` envelope (populated on live apply only).
+      If any item in ``set_results`` has ``has_errors=True``,
+      ``applied`` is ``False`` and ``partial_failure`` is ``True``.
+    """
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = False
+    audit_id: str
+
+    payload_preview: dict | None = Field(
+        default=None,
+        description=(
+            "The v5 ``keywordbids.set`` payload that WOULD be sent. "
+            "Present on dry_run; ``None`` on a successful live apply."
+        ),
+    )
+    readback: list[dict] | None = Field(
+        default=None,
+        description=(
+            "Current keyword bids read back after apply. "
+            "Only the changed keyword ids with Bid/ContextBid."
+        ),
+    )
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    set_results: list["KeywordBidSetItemResult"] | None = Field(
+        default=None,
+        description=(
+            "Per-item outcomes from the v5 ``SetResults`` envelope. "
+            "Populated on live apply (``source=\"yandex\"``, ``dry_run=False``). "
+            "Each item carries ``keyword_id``, ``has_errors``, ``has_warnings``, "
+            "and redacted ``errors`` / ``warnings`` arrays."
+        ),
+    )
+    partial_failure: bool = Field(
+        default=False,
+        description=(
+            "``True`` when the top-level v5 call succeeded (``ok=true``) "
+            "but one or more items in ``SetResults`` carry ``Errors``. "
+            "In this case ``applied`` is ``False`` and ``set_results`` "
+            "details which items failed."
+        ),
+    )
+    not_implemented: list[str] = Field(default_factory=list)
     yandex_units: int | None = None
     yandex_error: str | None = None

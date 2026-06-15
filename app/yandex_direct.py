@@ -286,6 +286,39 @@ class YandexDirectClient:
             },
         )
 
+    # ------------------------------------------------------------------
+    # keywordbids.set — update SearchBid / ContextBid per keyword
+    #
+    # Direct API v5 ``keywordbids`` service, method ``set`` (see
+    # https://yandex.com/dev/direct/doc/ref-v5/keywordbids/set.html)
+    # updates bids for existing keywords. The minimal item shape for
+    # concrete keywords is ``KeywordId + SearchBid`` / ``KeywordId +
+    # ContextBid`` (or both). Do NOT include ``CampaignId`` /
+    # ``AdGroupId`` in the item — Direct returns error_code=9300 for
+    # that form on batch updates.
+    #
+    # ``SearchBid`` / ``ContextBid`` are in Direct micros
+    # (1/1_000_000 of currency). 250000000 = 250 ₽.
+    #
+    # For autotargeting rows, add ``AutotargetingSearchBidIsAuto="NO"``
+    # when setting a manual search bid.
+    # ------------------------------------------------------------------
+
+    def keywordbids_set(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Set keyword bids via v5 ``keywordbids.set``.
+
+        ``items`` must be a list of ``{"KeywordId": int, ...}``
+        dictionaries (at minimum ``KeywordId`` + ``SearchBid`` and/or
+        ``ContextBid``). The helper forwards the payload to the v5
+        ``keywordbids`` service with ``method=set`` and returns the
+        same ``{ok, result, units, error, warnings}`` envelope used
+        by the rest of the client.
+        """
+        return self._call(
+            "keywordbids",
+            {"method": "set", "params": {"KeywordBids": list(items)}},
+        )
+
     def changes_check(self) -> dict[str, Any]:
         return self._call("changes", {"method": "check", "params": {}})
 

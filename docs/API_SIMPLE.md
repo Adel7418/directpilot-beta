@@ -331,9 +331,22 @@ POST /yandex/campaigns/live-create
   "dry_run": false,
   "start_date": "2026-06-11",
   "counter_ids": [123456],
+  "utm_config": {
+    "enabled": true,
+    "campaign_slug": "kondicziony-kzn",
+    "overwrite": false
+  },
   "reason": "Подготовка новой кампании после ревью"
 }
 ```
+
+`utm_config` (необязательно):
+- Если передан — **переопределяет** `draft.utm_config` для этой цепочки,
+  не меняя сам драфт. Позволяет задать UTM при создании, даже если драфт
+  был создан без UTM, или переопределить slug/overwrite на лету.
+- Если не передан — используется `draft.utm_config` как fallback.
+- `enabled=false` в переопределении отключает UTM-разметку для этой цепочки,
+  даже если в драфте UTM был включён.
 
 Поведение:
 
@@ -433,39 +446,108 @@ PATCH /campaign-drafts/{draft_id}/bids
 
 ### Live Direct: изменить ставки существующих ключей
 
-Для живой кампании Direct v5 используйте `KeywordBids.set`.
+```http
+POST /yandex/campaigns/{campaign_id}/bids
+```
 
-Правильная минимальная форма для известных `KeywordId`:
+Безопасное изменение SearchBid и ContextBid для живых ключей по KeywordId.
+Ставки указываются в **рублях** — конвертация в Direct micros (× 1 000 000) происходит внутри.
+
+**Dry-run preview (по умолчанию, всегда безопасно):**
 
 ```json
 {
-  "method": "set",
-  "params": {
-    "KeywordBids": [
-      {
-        "KeywordId": 57440007797,
-        "SearchBid": 250000000
-      }
-    ]
-  }
+  "approved": true,
+  "idempotency_key": "bids-demo-001",
+  "dry_run": true,
+  "items": [
+    {"keyword_id": 57440007797, "search_bid_rub": 250.0},
+    {"keyword_id": 57440007798, "context_bid_rub": 100.0}
+  ]
 }
 ```
 
-Где `SearchBid` указывается в микроденежных единицах Direct: `250000000` = `250 ₽`.
+Ответ с `dry_run=true`: `applied=false`, `payload_preview` содержит точный v5 payload, который *был бы* отправлен (без реальной записи).
 
-**Pitfall:** не смешивайте `CampaignId` + `AdGroupId` + `KeywordId` в одном item при массовом обновлении, если обновляете конкретные ключи. На live-проверке Direct вернул `error_code=9300` / `Превышено ограничение на количество объектов в одном запросе` для batch формы с `CampaignId`, `AdGroupId`, `KeywordId`, `SearchBid` на 30 items. Корректный retry по `KeywordId + SearchBid` применился ко всем 30 ключам без per-item ошибок.
-
-Для автотаргетинга добавляйте явный флаг, если задаёте ручную поисковую ставку:
+**Live apply (требует `DIRECTPILOT_MODE=live_write` + `approved=true`):**
 
 ```json
 {
-  "KeywordId": 205759917809,
-  "SearchBid": 250000000,
-  "AutotargetingSearchBidIsAuto": "NO"
+  "approved": true,
+  "idempotency_key": "bids-apply-001",
+  "dry_run": false,
+  "items": [
+    {"keyword_id": 57440007797, "search_bid_rub": 250.0}
+  ],
+  "reason": "Повышаем ставку на конверсионный ключ"
 }
 ```
 
-Не меняйте `NetworkBid`, если РСЯ должна оставаться выключенной (`Network.BiddingStrategyType=SERVING_OFF`).
+После полностью успешного apply endpoint читает текущие ставки ключей кампании и возвращает
+`readback` с изменёнными `KeywordId` и текущими `Bid`/`ContextBid` в единицах Яндекс Директа
+(**micros**, 250 000 000 = 250 ₽). При `partial_failure=true` readback не выполняется.
+
+**Idempotency:** повтор с тем же `idempotency_key` возвращает кешированный
+результат только при совпадении `dry_run` и эквивалентного тела запроса;
+если payload/material item set отличается — возвращается `HTTP 409` (без повторного
+write и без утечки тела/токена в ошибке).
+
+**Safety gates:**
+- `approved=false` → HTTP 409 до любого сетевого вызова.
+- `dry_run=false` в `live_readonly` → HTTP 409.
+- replay с тем же `idempotency_key`, но другим `dry_run`/payload → HTTP 409 до сетевого write.
+- top-level failure от `keywordbids.set` / upstream Direct error → HTTP 502 с редактированными diagnostics.
+- `dry_run=true` всегда разрешён, никогда не пишет.
+
+**Human Approval Contract:**
+`approved=true` — технический флаг, а не самосогласование агента.
+Оператор/агент обязан сначала показать dry-run diff и получить явное
+подтверждение пользователя перед apply.
+
+**Форма v5 payload:**
+
+Минимальный item для известного `KeywordId` (без `CampaignId`/`AdGroupId`):
+
+```json
+{"KeywordId": 57440007797, "SearchBid": 250000000}
+```
+
+Где `SearchBid` = `250 000 000` micros = `250 ₽`.
+
+**Pitfalls:**
+- Не смешивайте `CampaignId` + `AdGroupId` + `KeywordId` в одном item —
+  Direct возвращает `error_code=9300`.
+- Для автотаргетинга `AutotargetingSearchBidIsAuto="NO"` добавляется
+  автоматически при ручной search-ставке (можно переопределить явно).
+- Не меняйте `NetworkBid`, если РСЯ выключена (`SERVING_OFF`).
+- При автостратегии (`WB_MAXIMUM_CONVERSION_RATE`) Direct может
+  проигнорировать per-keyword ставки с warning 10160 —
+  `provider_warnings` в ответе содержит предупреждения.
+  Используйте `WeeklySpendLimit`/`BidCeiling` через strategy endpoint.
+
+**Per-item SetResults (live apply):**
+
+После live apply (`source="yandex"`, `dry_run=False`) ответ содержит
+`set_results` — per-item исход каждого keyword из v5 `SetResults`:
+
+```json
+"set_results": [
+  {"keyword_id": 1, "has_errors": false, "has_warnings": false, "errors": [], "warnings": []},
+  {"keyword_id": 2, "has_errors": true,  "has_warnings": false,
+   "errors": [{"code": 52, "message": "Ставка не задана", "details": ""}], "warnings": []}
+]
+```
+
+- `has_errors=true` — этот keyword **не был изменён**. Если хотя бы один item
+  имеет ошибки, общий `applied=false` и `partial_failure=true`.
+- `has_warnings=true` — keyword изменён, но Direct вернул нефатальные
+  предупреждения (например, `10160` — ставка проигнорирована автостратегией).
+  Эти предупреждения также попадают в `provider_warnings`.
+- Ошибки/предупреждения редиректятся: только `code`, `message`, `details`;
+  сырой v5 envelope не включается.
+- Если `SetResults` отсутствует в успешном ответе, `set_results=null`.
+- Если верхний уровень v5 вернул `ok=false` / provider error, endpoint возвращает HTTP 502 и не считает apply успешным.
+- `partial_failure=false` + `applied=true` — все item'ы применены успешно.
 
 ### Live Direct: стратегия максимум конверсий
 
@@ -1685,3 +1767,125 @@ Dry-run (и apply) всегда отправляет все пять катег�
 3. **Не использует** deprecated поле `AutotargetingCategories` — только `AutotargetingSettings` с `Categories` + `BrandOptions`.
 4. `ad_group_ids` (опционально) — список ID групп для таргетинга. Если не указан — обрабатываются все группы кампании с автотаргетинг-строками.
 5. Пустой `ad_group_ids` отклоняется валидацией (HTTP 422).
+
+---
+
+## UTM-разметка (audit / plan / apply)
+
+UTM-метки — параметры в URL для отслеживания источников трафика в Яндекс Метрике и других системах аналитики.
+
+### Конвенция по умолчанию
+
+| Параметр | Значение |
+|---|---|
+| `utm_source` | `yandex` |
+| `utm_medium` | `cpc` |
+| `utm_campaign` | `<campaign_slug>` (генерируется из названия + id кампании, или задаётся вручную) |
+| `utm_content` | `{ad_id}` (автоподстановка из данных объявления) |
+| `utm_term` | `{keyword}` *(planned)* — в текущей версии лимит: авто-заполнение keyword-level не реализовано, поле обычно пустое |
+
+Поддерживаются `custom_params` — дополнительные параметры запроса (напр. `utm_custom=extra`, `ref=dp`), которые не переопределяют пять основных UTM.
+
+### Аудит
+
+```http
+GET /yandex/campaigns/{campaign_id}/utm-audit
+```
+
+Read-only. Возвращает статус UTM по каждому объявлению (`entity_type=ad`) и каждой быстрой ссылке (`entity_type=sitelink`):
+
+```json
+{
+  "campaign_id": "710382063",
+  "source": "yandex",
+  "read_only": true,
+  "ads_total": 3,
+  "sitelinks_total": 4,
+  "complete_count": 1,
+  "partial_count": 1,
+  "missing_count": 5,
+  "mismatch_count": 0,
+  "items": [
+    {
+      "entity_type": "ad",
+      "entity_id": "12345",
+      "url": "https://example.com/page",
+      "utm_status": "missing",
+      "present_params": {},
+      "missing_params": ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"],
+      "wrong_values": {}
+    }
+  ],
+  "warnings": []
+}
+```
+
+### План/preview
+
+```http
+POST /yandex/campaigns/{campaign_id}/utm-plan
+```
+
+**Всегда dry_run** — никогда не пишет в Яндекс. Всегда `applied=false`.
+
+```json
+{
+  "campaign_slug": "remont-kvartir-710382063",
+  "overwrite": false,
+  "custom_params": {"utm_custom": "extra"},
+  "include_sitelinks": true
+}
+```
+
+Ответ: `UtmPlanResult` с `items` (объявления), `sitelink_items` (быстрые ссылки — preview only), `payload_preview` (v5 `ads.update` payload), `warnings`, `not_implemented`.
+
+Если `campaign_slug` не передан — генерируется автоматически из названия + id кампании.
+**Кириллические названия:** если имя кампании содержит только кириллицу,
+автоматический slug вырождается в ``campaign-{id}`` (транслитерация отбрасывает
+не-ASCII символы). Для читаемых отчётов в Метрике передавайте `campaign_slug`
+явно — латиницей или смысловым slug.
+
+### Применение
+
+```http
+POST /yandex/campaigns/{campaign_id}/utm-apply
+```
+
+Write-gated:
+- `dry_run=true` — preview, `applied=false`.
+- `dry_run=false` требует **всех** условий:
+  1. `DIRECTPILOT_MODE=live_write`
+  2. `approved=true`
+  3. `idempotency_key` (>= 6 символов)
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "utm-2026-06-14-001",
+  "dry_run": false,
+  "campaign_slug": "remont-kvartir-710382063",
+  "overwrite": false,
+  "include_sitelinks": true,
+  "reason": "Плановая разметка UTM для кампании апрель 2026"
+}
+```
+
+Ответ: `UtmApplyResult` с `ad_ids`, `readback` (подтверждение новых URL), `provider_warnings`, `sitelink_items` (preview), `not_implemented`.
+
+### Обработка URL
+
+- Сохраняются существующие query-параметры и fragment (`#prices`, `#services`).
+- `overwrite=false` (по умолчанию) — не трогает существующие UTM-параметры.
+- `overwrite=true` — перезаписывает все UTM-параметры.
+- Если UTM уже complete и `overwrite=false` — объявление пропускается с warning.
+
+### Безопасность
+
+- `ads.update` (REPLACE-shaped) — все обязательные поля (Title, Text, Href) переотправляются.
+- `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` сохраняются.
+- Токены никогда не появляются в ответах, логах или preview.
+
+### Не реализовано (not_implemented)
+
+- **Sitelinks apply:** быстрые ссылки — только preview. Apply через `sitelinks.update` не реализован (требует изучения v5 контракта и отдельного helper'а).
+- **utm_term автоподстановка:** параметр `utm_term={keyword}` пока не заполняется автоматически — требуется keyword-level mapping.
