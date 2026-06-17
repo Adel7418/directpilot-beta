@@ -79,21 +79,41 @@ def client_with_client() -> TestClient:
 
 
 def _search_query_tsv(
-    rows: list[tuple[str, str, str, str, str, str, str]] | None = None,
+    rows: list[tuple[str, ...]] | None = None,
+    include_campaign_name: bool = True,
 ) -> str:
     """Build a minimal SEARCH_QUERY_PERFORMANCE_REPORT TSV.
 
-    Default column order matches the field set the handler requests from
-    YandexDirectClient.report:
-    Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost.
+    By default the fixture includes optional CampaignName to prove the parser
+    tolerates a provider response that returns it, while the requested
+    FieldNames contract remains Query, CampaignId, AdGroupId, Impressions,
+    Clicks, Ctr, Cost.
     """
     if rows is None:
         rows = [
-            ("ремонт квартир казань", "710691939", "1001", "540", "22", "4.07", "660.00"),
-            ("сантехник на дом", "710691939", "1001", "320", "11", "3.44", "320.00"),
+            ("ремонт квартир казань", "710691939", "Локальный сервис", "1001", "540", "22", "4.07", "660.00"),
+            ("сантехник на дом", "710691939", "Эвристический", "1001", "320", "11", "3.44", "320.00"),
         ]
-    lines = ["Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost"]
-    lines.extend("\t".join(r) for r in rows)
+
+    normalized_rows: list[tuple[str, ...]] = []
+    for row in rows:
+        if len(row) == 7 and include_campaign_name:
+            query, campaign_id, ad_group_id, impressions, clicks, ctr, cost = row
+            normalized_rows.append((query, campaign_id, "Локальный сервис", ad_group_id, impressions, clicks, ctr, cost))
+            continue
+        if len(row) == 7:
+            normalized_rows.append(row)
+            continue
+        if len(row) != 8:
+            raise ValueError(f"Expected 7 or 8 columns, got {len(row)}: {row!r}")
+        normalized_rows.append(row)
+
+    header = ["Query", "CampaignId"]
+    if include_campaign_name:
+        header.append("CampaignName")
+    header.extend(["AdGroupId", "Impressions", "Clicks", "Ctr", "Cost"])
+    lines = ["\t".join(header)]
+    lines.extend("\t".join(r) for r in normalized_rows)
     return "\n".join(lines) + "\n"
 
 
@@ -172,10 +192,19 @@ def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_ts
     # недорого / ремонт квартир под ключ).
     assert len(body["items"]) == 2
     assert body["items"][0]["query"] == "ремонт квартир казань"
+    assert body["items"][0]["campaign_id"] == "710691939"
+    assert body["items"][0]["campaign_name"] == "Локальный сервис"
+    assert body["items"][0]["ad_group_id"] == "1001"
+    assert body["items"][0]["cost"] == 660.0
     assert body["items"][0]["impressions"] == 540
     assert body["items"][0]["clicks"] == 22
+    assert body["items"][0]["cost"] == 660.0
     assert abs(body["items"][0]["ctr"] - 4.07) < 0.01
     assert body["items"][1]["query"] == "сантехник на дом"
+    assert body["items"][1]["campaign_id"] == "710691939"
+    assert body["items"][1]["campaign_name"] == "Эвристический"
+    assert body["items"][1]["ad_group_id"] == "1001"
+    assert body["items"][1]["cost"] == 320.0
     # The mock fixture queries must not leak into a live response.
     for q in ("сантехник на дом казань", "вызов электрика недорого", "ремонт квартир под ключ"):
         for item in body["items"]:
@@ -192,15 +221,65 @@ def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_ts
     # Token must not leak into the response or the captured Authorization.
     assert "LRO-SECRET" not in response.text
     assert captured["authorization"] == "Bearer LRO-SECRET"
-    # FieldNames should include the columns the parser depends on.
+    # FieldNames should match the live contract.
     fields = captured["body"]["params"]["FieldNames"]
-    assert "Query" in fields
-    assert "CampaignId" in fields
-    assert "AdGroupId" in fields
-    assert "Impressions" in fields
-    assert "Clicks" in fields
-    assert "Ctr" in fields
-    assert "Cost" in fields
+    assert fields == [
+        "Query",
+        "CampaignId",
+        "AdGroupId",
+        "Impressions",
+        "Clicks",
+        "Ctr",
+        "Cost",
+    ]
+
+
+def test_search_queries_live_raw_endpoint_uses_search_query_field_names(
+    client_with_client: TestClient,
+):
+    """The raw diagnostic endpoint must request actual search-query rows.
+
+    Regression: it previously called SEARCH_QUERY_PERFORMANCE_REPORT with the
+    default campaign-summary field set, so Direct returned an empty TSV even
+    while the parsed endpoint and Direct UI had real search-query data.
+    """
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(
+            200,
+            content=_search_query_tsv(include_campaign_name=False),
+            headers={"Units": "RUB", "Content-Type": "text/tab-separated-values"},
+        )
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get(
+            "/yandex/reports/search-queries-live",
+            params={"date_from": "2026-05-19", "date_to": "2026-06-17"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "yandex"
+    assert body["read_only"] is True
+    assert body["method"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
+    assert "Query\tCampaignId\tAdGroupId" in body["data"]
+    assert captured["body"]["params"]["ReportType"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
+    assert captured["body"]["params"]["FieldNames"] == [
+        "Query",
+        "CampaignId",
+        "AdGroupId",
+        "Impressions",
+        "Clicks",
+        "Ctr",
+        "Cost",
+    ]
 
 
 def test_search_queries_empty_live_report_returns_empty_items_with_yandex_source(
@@ -354,6 +433,91 @@ def test_search_queries_campaign_id_filter_drops_non_matching_rows(
     queries = [item["query"] for item in body["items"]]
     assert "ремонт квартир казань" in queries
     assert "чужой запрос" not in queries
+
+
+def test_search_queries_campaign_id_filter_works_for_specific_report_ids(
+    client_with_client: TestClient,
+):
+    """Regression coverage for known report campaign IDs with normalized filtering."""
+    tsv = _search_query_tsv(
+        rows=[
+            ("ремонт 1", "710691939", "1111", "10", "1", "10.00", "100.00"),
+            ("ремонт 2", " 710382063 ", "2222", "20", "2", "10.00", "200.00"),
+            ("ремонт 3", "706306618", "3333", "30", "3", "10.00", "300.00"),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=tsv)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        cases = [
+            ("710691939", ["ремонт 1"]),
+            ("710382063", ["ремонт 2"]),
+            ("706306618", ["ремонт 3"]),
+        ]
+        for campaign_id, expected_queries in cases:
+            response = client_with_client.get(
+                "/yandex/reports/search-queries",
+                params={"campaign_id": campaign_id},
+            )
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert [item["query"] for item in body["items"]] == expected_queries
+            assert all(
+                item["campaign_id"] == campaign_id for item in body["items"]
+            )
+    finally:
+        cleanup()
+
+
+def test_search_queries_campaign_name_fallbacks_to_campaigns_get_when_missing(
+    client_with_client: TestClient,
+):
+    """If CampaignName is missing in TSV rows, resolve it from campaigns.get."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/campaigns"):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "Campaigns": [
+                            {"Id": "710691939", "Name": "Локальный сервис"},
+                            {"Id": "710382063", "Name": "Эвристический"},
+                        ]
+                    },
+                    "ok": True,
+                },
+            )
+
+        report_payload = _search_query_tsv(
+            rows=[
+                ("ремонт 1", "710691939", "1001", "10", "1", "10.00", "100.00"),
+                ("ремонт 2", "710382063", "1002", "20", "2", "10.00", "200.00"),
+            ],
+            include_campaign_name=False,
+        )
+
+        return httpx.Response(200, content=report_payload)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/search-queries")
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    items = body["items"]
+    assert len(items) == 2
+    assert items[0]["campaign_name"] in {"Локальный сервис", "Эвристический"}
+    assert items[1]["campaign_name"] in {"Локальный сервис", "Эвристический"}
 
 
 def test_search_queries_live_readonly_without_client_returns_409(

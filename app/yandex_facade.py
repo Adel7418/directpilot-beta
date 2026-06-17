@@ -192,9 +192,36 @@ class MockYandexCatalog:
 
     def search_queries(self) -> list[dict]:
         return [
-            {"query": "сантехник на дом казань", "impressions": 540, "clicks": 22, "ctr": 4.07},
-            {"query": "вызов электрика недорого", "impressions": 320, "clicks": 11, "ctr": 3.44},
-            {"query": "ремонт квартир под ключ", "impressions": 410, "clicks": 9, "ctr": 2.20},
+            {
+                "query": "сантехник на дом казань",
+                "campaign_id": "710691939",
+                "campaign_name": "cmp_mock_local_services",
+                "ad_group_id": "1001",
+                "impressions": 540,
+                "clicks": 22,
+                "ctr": 4.07,
+                "cost": 12.34,
+            },
+            {
+                "query": "вызов электрика недорого",
+                "campaign_id": "710691940",
+                "campaign_name": "cmp_mock_el_service",
+                "ad_group_id": "1002",
+                "impressions": 320,
+                "clicks": 11,
+                "ctr": 3.44,
+                "cost": 8.55,
+            },
+            {
+                "query": "ремонт квартир под ключ",
+                "campaign_id": "710691939",
+                "campaign_name": "cmp_mock_remont_kazan",
+                "ad_group_id": "2001",
+                "impressions": 410,
+                "clicks": 9,
+                "ctr": 2.20,
+                "cost": 5.11,
+            },
         ]
 
     # --- time targeting read -------------------------------------------------

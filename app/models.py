@@ -573,9 +573,13 @@ class YandexKeywordList(BaseModel):
 
 class YandexSearchQuery(BaseModel):
     query: str
+    campaign_id: str
+    campaign_name: str | None = None
+    ad_group_id: str
     impressions: int
     clicks: int
     ctr: float
+    cost: float | None = None
 
 
 class YandexSearchQueriesReport(BaseModel):
@@ -913,6 +917,77 @@ class LiveAdCreateResult(BaseModel):
     yandex_units: int | None = None
     yandex_error: str | None = None
 
+
+
+# ---------------------------------------------------------------------------
+# Live existing-campaign ad groups — group negatives + adgroups.add
+# ---------------------------------------------------------------------------
+
+
+class YandexAdGroupNegativeKeywords(BaseModel):
+    ad_group_id: str
+    campaign_id: str
+    name: str
+    status: str
+    negative_keywords: list[str] = Field(default_factory=list)
+    has_negative_keywords: bool = False
+    source: Literal["mock", "yandex"] = "mock"
+    read_only: bool = True
+
+
+class YandexAdGroupNegativeKeywordsList(BaseModel):
+    items: list[YandexAdGroupNegativeKeywords]
+    source: Literal["mock", "yandex"] = "mock"
+    read_only: bool = True
+
+
+class YandexAdGroupNegativeKeywordsRequest(BaseModel):
+    negative_keywords: list[str] = Field(..., min_length=1)
+    operation: Literal["add", "replace"] = "add"
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    reason: str | None = None
+
+
+class YandexAdGroupNegativeKeywordsResult(BaseModel):
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    campaign_id: str
+    ad_group_id: str
+    operation: Literal["add", "replace"]
+    negative_keywords: list[str] = Field(default_factory=list)
+    previous_negative_keywords: list[str] = Field(default_factory=list)
+    payload_preview: dict | None = None
+    provider_response: dict | None = None
+
+
+class LiveAdGroupCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    region_ids: list[int] = Field(..., min_length=1)
+    negative_keywords: list[str] = Field(default_factory=list)
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    reason: str | None = None
+
+
+class LiveAdGroupCreateResult(BaseModel):
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    campaign_id: str
+    ad_group_ids: list[int] = Field(default_factory=list)
+    payload_preview: dict | None = None
+    add_results: list[dict] | None = None
+    provider_response: dict | None = None
+    readback: list[dict] | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # ads.moderate — send ads to moderation

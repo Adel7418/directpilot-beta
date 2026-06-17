@@ -30,8 +30,12 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
 | Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
+| Посмотреть минус-слова по группам | `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords` | текущие `negative_keywords` и `has_negative_keywords` по `ad_group_id` |
+| Создать группу в существующей кампании | `POST /yandex/campaigns/{campaign_id}/ad-groups` | создаёт только ad-group: name/region_ids/optional negative_keywords; затем отдельные шаги для `ads`, ключей и модерации |
+| Обновить минус-слова группы | `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords` | `operation=add|replace`, `approved=true`, `idempotency_key`, `dry_run`; `dry_run=false` только в `live_write`; preview/readback через ответ endpoint |
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC; **live** в `sandbox`/`live_readonly`/`live_write` (источник `CAMPAIGN_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock` |
-| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные запросы, минус-слова, новые ключи; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; пустой live-отчёт = `items=[]` с `source="yandex"` (не mock-fallback) |
+| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные поисковые запросы с разрезом на `campaign_id` / `campaign_name` / `ad_group_id`; `cost` в ₽, `impressions`, `clicks`, `ctr` — для fast breakdown; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; пустой live-отчёт = `items=[]` с `source="yandex"` (не mock-fallback) | Data shape: `query`, `campaign_id`, `campaign_name` (nullable), `ad_group_id`, `impressions`, `clicks`, `ctr`, `cost` |
+
 | Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
 | Добавить объявления в существующую группу | `POST /yandex/ad-groups/{ad_group_id}/ads` | `dry_run=true` для preview; в ответе смотрите `warnings` — наследование BusinessId/SitelinkSetId; ключи/минуса отдельно; также проверяйте `provider_warnings` для нефатальных отклонений Яндекса (напр. `code: 10165` — параметр проигнорирован) — `details` покажет какой именно параметр не был применён; `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key` |
 | Отправить объявления на модерацию | `POST /yandex/ads/moderate` | `dry_run=true` для preview; `dry_run=false` + `live_write` для живой отправки; для новой DRAFT-кампании используйте **этот** endpoint, **не** `campaigns.resume`; `campaigns.resume` — только для already-created stopped/suspended кампаний |
@@ -43,10 +47,10 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть стратегию кампании | `GET /yandex/campaigns/{campaign_id}/strategy` | тип, статус, бюджет, цели, BiddingStrategy; read-only |
 | Обновить стратегию кампании | `POST /yandex/campaigns/{campaign_id}/strategy` | `dry_run=true` для preview (рубли); для live-apply нужны `approved=true`, `idempotency_key`; выбрать один `goal_id` ИЛИ `goal_ids` (равновесные цели) ИЛИ `priority_goals` (явные ценности) из `GET /metrika/counters/{counter_id}/goals` (counter_id берется из `GET /yandex/campaigns/{campaign_id}/strategy -> counter_ids`). Одна цель заменяет текущую; `goal_ids`/`priority_goals` используют Direct API `PriorityGoals` + `GoalId=13` |
 | Посмотреть автотаргетинг | `GET /yandex/campaigns/{campaign_id}/autotargeting` | категории и бренд-опции автотаргетинга по группам; read-only |
-|| Настроить автотаргетинг | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; дефолтный пресет `exact_narrow` (Exact+Narrow only); `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key`; не включать все категории по умолчанию — спрашивать пользователя |
-|| Аудит UTM-разметки | `GET /yandex/campaigns/{campaign_id}/utm-audit` | статус UTM по каждому объявлению и быстрой ссылке; complete/partial/missing/mismatch; **read-only**, без write-гейтов |
-|| Спланировать UTM (preview) | `POST /yandex/campaigns/{campaign_id}/utm-plan` | old_url → new_url для каждого объявления; **всегда dry_run**, никогда не пишет в Яндекс; показывает payload для будущего apply |
-|| Применить UTM | `POST /yandex/campaigns/{campaign_id}/utm-apply` | `dry_run=true` для preview; `dry_run=false` требует `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`; для быстрых ссылок — apply `not_implemented` (только preview) |
+| Настроить автотаргетинг | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; дефолтный пресет `exact_narrow` (Exact+Narrow only); `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key`; не включать все категории по умолчанию — спрашивать пользователя |
+| Аудит UTM-разметки | `GET /yandex/campaigns/{campaign_id}/utm-audit` | статус UTM по каждому объявлению и быстрой ссылке; complete/partial/missing/mismatch; **read-only**, без write-гейтов |
+| Спланировать UTM (preview) | `POST /yandex/campaigns/{campaign_id}/utm-plan` | old_url → new_url для каждого объявления; **всегда dry_run**, никогда не пишет в Яндекс; показывает payload для будущего apply |
+| Применить UTM | `POST /yandex/campaigns/{campaign_id}/utm-apply` | `dry_run=true` для preview; `dry_run=false` требует `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`; для быстрых ссылок — apply `not_implemented` (только preview) |
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
@@ -68,25 +72,57 @@ DirectPilot — единая прослойка для маркетолога:
 - В `sandbox`/`live_readonly`/`live_write` endpoint возвращает `source="yandex"` при рабочей интеграции.
 - `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`.
 - В live-режимах HTTP **409** означает, что Yandex Direct client/токен недоступен; это не скрытая подмена mock-данными.
-
 Важно по `GET /yandex/reports/search-queries`:
 
-- В `sandbox`/`live_readonly`/`live_write` с настроенной интеграцией endpoint
-  возвращает `source="yandex"` и реальный результат
-  `SEARCH_QUERY_PERFORMANCE_REPORT` (`Query / CampaignId / AdGroupId /
-  Impressions / Clicks / Ctr / Cost`). Источник: `SEARCH_QUERY_PERFORMANCE_REPORT`.
+- В `sandbox` / `live_readonly` / `live_write` с настроенной интеграцией endpoint
+  возвращает `source="yandex"` и реальный результат `SEARCH_QUERY_PERFORMANCE_REPORT` (`Query / CampaignId / CampaignName / AdGroupId /
+  Impressions / Clicks / Ctr / Cost`). В ответе API-контрактные поля:
+  `query`, `campaign_id`, `campaign_name`, `ad_group_id`, `impressions`, `clicks`, `ctr`, `cost` (где `cost` может быть `null`/`0`, `campaign_name` — nullable).
+  Если `CampaignName` отсутствует, endpoint дополняет имя через
+  `campaigns.get` по `CampaignId`.
+  Источник: `SEARCH_QUERY_PERFORMANCE_REPORT`.
 - `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`; если в
-  live-режиме вы видите старые mock-фразы (`сантехник на дом казань`,
+  live-режимах вы видите старые mock-фразы (`сантехник на дом казань`,
   `вызов электрика недорого`, `ремонт квартир под ключ`) — это баг
   конфигурации, а не ожидаемое поведение.
 - Пустой live-отчёт (нет строк за период) — **валидный** ответ:
   `items=[]`, `source="yandex"`, `read_only=true`. Не 502, не mock-fallback.
-- В live-режимах HTTP **409** означает, что Yandex Direct client/токен
-  недоступен.
 - Фильтр `campaign_id` уходит в Reports API как
   `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN",
   Values: ["..."]}]`, **не** `SelectionCriteria.CampaignIds` (эта форма
   возвращает HTTP 400 на reports endpoint).
+
+### Как анализировать search-queries по разрезам (campaign / ad_group)
+
+Шаблонный маркетинговый workflow:
+
+1. Получите общий срез:
+
+```http
+GET /yandex/reports/search-queries?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+```
+
+2. Отсортируйте/агрегируйте по `campaign_id`, `campaign_name`:
+
+- `cost` и `impressions` по кампании.
+- Выявите кампании с дисбалансом `cost` vs `clicks` или нулевой конверсией в клики.
+
+3. Для каждой проблемной кампании сделайте drill-down:
+
+```http
+GET /yandex/reports/search-queries?campaign_id=<campaign_id>&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
+```
+
+4. Смотрите `ad_group_id` в ответе:
+
+- high-`cost` / high-`impressions` + `clicks==0` → кандидаты для минус-слов;
+- низкий `ctr` при заметном трафике → пересмотреть объявления/соответствие оффера;
+- низкая конкуренция (малый impressions, нулевой cost) обычно отбрасывать из срочных правок, пока нет статистики.
+
+5. Подготовьте 1:1 рекомендации: список query→action (keep / add as key / minus / needs data).
+
+Не интерпретируйте `items=[]` как ошибку интеграции — это валидный «пустой» live период.
+
 
 
 ## Что использовать дополнительно (advanced)
@@ -96,6 +132,9 @@ DirectPilot — единая прослойка для маркетолога:
 - `/yandex/campaigns/{campaign_id}/bids`
 - `/yandex/campaigns/{campaign_id}/bid-modifiers`
 - `/yandex/campaigns/{campaign_id}/negative-keywords`
+- `/yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
+- `/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
+- `/yandex/campaigns/{campaign_id}/ad-groups`
 - `/yandex/changes`, `/yandex/changes/check`
 - `/yandex/dictionaries`
 - `/yandex/retargeting-lists`, `/yandex/campaigns/{campaign_id}/audience-targets`
@@ -213,7 +252,7 @@ Item-ошибки редиректятся (только `code`/`message`/`detai
    - проверять смежные ложные смыслы сферы (например смежные сервисы/использования, которые часто перетягивают нецелевой трафик).
    - группировать минуса по причинам: DIY, работа/обучение, покупка/запчасти, другая техника/услуга, конкуренты/бренды, география;
    - конкурентов/бренды (`айсберг`, `iceberg` и т.п.) добавлять точечно или после подтверждения поисковыми запросами; не минусовать широкие коммерческие слова вроде `компания`/`сервис`, если они могут быть полезным интентом;
-   - перед live-write читать фактический список через `/yandex/campaigns/{campaign_id}/negative-keywords` или read-only `adgroups.get`.
+   - перед live-write читать фактический список через `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`; при работе со shared-контрольной моделью дополнительно использовать `GET /yandex/campaigns/{campaign_id}/negative-keywords`.
 9. Сформировать вывод:
    - что работает;
    - где потери;

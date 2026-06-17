@@ -50,6 +50,9 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/ad-groups`
    - `GET /yandex/campaigns/{campaign_id}/ads`
    - `GET /yandex/campaigns/{campaign_id}/keywords`
+   - `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
+   - `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
+   - `POST /yandex/campaigns/{campaign_id}/ad-groups`
    - `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида (заголовки, тексты, быстрые ссылки, организации, визитки)
    - `POST /yandex/ad-groups/{ad_group_id}/ads` — добавить объявления в существующую группу (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
    - `POST /yandex/ads/moderate` — отправить объявления на модерацию (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
@@ -84,14 +87,29 @@ Scope rule for operators/agents:
    - expected fallback: HTTP 409 in `sandbox`/`live_readonly`/`live_write` if the Yandex client/token is unavailable
 8. For `/yandex/reports/search-queries`, the live contract mirrors `summary`:
    - `source="yandex"`, `read_only=true` in `sandbox`/`live_readonly`/`live_write` with a configured `YANDEX_OAUTH_TOKEN` and available Yandex client
-   - source: `SEARCH_QUERY_PERFORMANCE_REPORT` v5 reports, fields `Query / CampaignId / AdGroupId / Impressions / Clicks / Ctr / Cost`
+   - source: `SEARCH_QUERY_PERFORMANCE_REPORT` v5 reports, fields `Query / CampaignId / CampaignName / AdGroupId / Impressions / Clicks / Ctr / Cost`
+   - if CampaignName is missing in report rows, resolve name via `campaigns.get` by CampaignId
    - optional query params: `date_from`, `date_to` (YYYY-MM-DD), `campaign_id`
    - an empty live report is a valid response: `items=[]` with `source="yandex"`, NOT a mock fallback and NOT a 502
+   - Use `/yandex/reports/search-queries-live?date_from=...&date_to=...` for raw TSV diagnostics; it must use the same search-query field set `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`, not the generic campaign-summary defaults.
    - `source="mock"` is reserved for `DIRECTPILOT_MODE=mock` only — never silent in live modes
    - HTTP 409 in `sandbox`/`live_readonly`/`live_write` if the Yandex client/token is unavailable
-   - Reports API pitfall: campaign filter MUST be sent as
-     `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`,
-     NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 for the reports endpoint).
+   - Reports API pitfalls:
+     - campaign filter MUST be sent as
+       `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`,
+       NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 for the reports endpoint).
+     - `ReportName` should be stable per contract (`ReportType + SelectionCriteria + FieldNames`) to avoid `error_code=4000` collisions.
+   - Use campaign and group breakdown:
+     1) Run base scope:
+        `GET /yandex/reports/search-queries?date_from=...&date_to=...`.
+     2) For candidate campaign, run:
+        `GET /yandex/reports/search-queries?campaign_id=<id>&date_from=...&date_to=...`.
+     3) Group by `campaign_id` / `campaign_name`, then by `ad_group_id`; compare `cost`, `impressions`, `clicks`, `ctr`.
+     4) Build recommendation actions:
+        - `keep` (query приносит клики/CTR и релевантен цели),
+        - `add as key` (есть intent и стабильный traffic),
+        - `minus` (высокий noise / низкая отдача),
+        - `needs data` (слишком мало статистики).
 9. Use Wordstat endpoints for demand, seasonality, regions, and semantic expansion. See `docs/MARKETER_GUIDE.md` for the endpoint map.
 10. Separate facts from hypotheses in the final answer:
 
@@ -111,7 +129,15 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 
 - Ask or decide whether to reuse the existing BusinessId (default: reuse if existing ads already use one).
 - Ask or decide whether to reuse the existing SitelinkSetId for quick links (default: reuse if relevant, verify via campaign-specific readback).
-- Keywords and negative keywords are NOT per-ad — they are managed at campaign/ad-group level. If a new ad angle needs extra keywords/minuses, propose a separate semantic-change task.
+- Keywords and negative keywords are NOT per-ad — they are managed at campaign/ad-group level.
+  For group-level negative updates use:
+  - `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords` — read/audit every group with `negative_keywords`, `has_negative_keywords`, `source`, `read_only`.
+  - `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords` — `operation=add|replace`, `dry_run=true` by default; real apply requires `DIRECTPILOT_MODE=live_write`, `approved=true`, `idempotency_key`, `dry_run=false`.
+  - For `operation=add`, DirectPilot reads current `NegativeKeywords.Items`, strips leading `-`, dedupes preserving order, then sends merged `adgroups.update` because Yandex Direct treats `NegativeKeywords.Items` as replace-style.
+  - Fail closed on provider business-error envelopes (`ok=false`) from pre-read or write calls: return HTTP 502 before constructing `applied=true` results or caching idempotency success. Never continue an add/merge after a failed `adgroups.get` pre-read because the write is replace-style.
+  - `POST /yandex/campaigns/{campaign_id}/ad-groups` — create a new group in an existing campaign when structure must change first; `region_ids` is required and maps to Direct `RegionIds`; this endpoint creates only the group, not ads/keywords/moderation.
+  If a new ad angle needs extra keywords/minuses, propose a separate semantic-change or ad-group operation task.
+
 - Technical and niche-specific phrasing in ad text is allowed as creative copy — do not treat it as the same as adding a key term in keyword targeting.
 - If niche-specific terms can attract off-intent/DIY traffic, flag the risk and handle mitigation via separate keyword/minus workflows.
 - After adding ads (or after live-create), send them to moderation via ``POST /yandex/ads/moderate`` — do NOT use ``campaigns.resume`` for new DRAFT campaigns.

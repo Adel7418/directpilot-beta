@@ -684,22 +684,35 @@ Query-параметры (все опциональны):
 GET /yandex/reports/search-queries?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&campaign_id=...
 ```
 
-Возвращает реальные поисковые запросы (`Query / Impressions / Clicks / Ctr`) за
-период, агрегированные по запросам. Источник — `SEARCH_QUERY_PERFORMANCE_REPORT`
-v5 reports.
+Возвращает реальные поисковые запросы за период с агрегацией на уровне query.
+
+В каждом элементе включаются (или не включаются при пустых/недоступных данных):
+`query`, `campaign_id`, `campaign_name` (nullable), `ad_group_id`, `impressions`, `clicks`, `ctr`, `cost`.
+
+`cost` — это денежные затраты в ₽, уже в валюте отчёта (`Cost` из Yandex v5 report).
+`campaign_name` заполняется из поля `CampaignName`, а если оно пустое/не передано,
+сервис делает `campaigns.get` и добирает имя через `CampaignId`.
+
+Endpoint использует источник `SEARCH_QUERY_PERFORMANCE_REPORT` v5 reports.
+
+Источник/режимы:
 
 - `DIRECTPILOT_MODE=mock` → `source="mock"`, детерминированный fallback payload.
 - `sandbox` / `live_readonly` / `live_write` с настроенным `YANDEX_OAUTH_TOKEN` и
   доступным Yandex client → `source="yandex"`, `read_only=true`, реальный вызов
-  `SEARCH_QUERY_PERFORMANCE_REPORT` (поля `Query, CampaignId, AdGroupId,
-  Impressions, Clicks, Ctr, Cost`).
+  `SEARCH_QUERY_PERFORMANCE_REPORT` (`Query, CampaignId, CampaignName, AdGroupId, Impressions, Clicks, Ctr, Cost`).
 - `sandbox` / `live_readonly` / `live_write` без доступного Yandex client или
   токена → HTTP **409**. Это осознанный отказ, а не silent mock.
-- Пустой live-отчёт (нет строк за период) — **валидный** ответ: `items=[]`,
-  `source="yandex"`, `read_only=true`. Это не 502 и не silent mock-fallback.
-  Если у кампании реально нет поисковых показов за период, маркетолог видит
-  пустой список, а не старые mock-фразы (`сантехник на дом казань`,
-  `вызов электрика недорого`, `ремонт квартир под ключ`).
+
+Поведение для маркетинговой декомпозиции:
+
+- `ad_group_id` есть всегда при валидной строке отчёта; если его нет в строке TSV — строка отбрасывается.
+- `campaign_id` после парсинга нормализуется в строковый id (например `710691939`).
+- `campaign_name` fallback может быть `null`, если не удалось собрать имя по `CampaignId`.
+- Неудалённые/битые строки TSV (не число в `Impressions/Clicks/Ctr` или короткая строка)
+  отбрасываются, но endpoint всё равно возвращает 200.
+- Если для периода реально нет показов — валидный ответ `items=[]`, `source="yandex"`,
+  `read_only=true` (не 502 и не mock-fallback).
 
 Опциональные query-параметры:
 
@@ -717,21 +730,36 @@ v5 reports.
   `ReportType + SelectionCriteria + FieldNames`, чтобы внешний агент не
   повторял эту ошибку.
 
+Практический разбор для маркетинга (campaign breakdown):
+
+1. `GET /yandex/reports/search-queries?date_from=...&date_to=...` — получить все запросы.
+2. Сверху сгруппировать по `campaign_id`/`campaign_name`; это даёт вклад каждой кампании.
+3. Для выбранной кампании выполнить повторный вызов с `campaign_id=...` и
+   сгруппировать дополнительно по `ad_group_id`.
+4. Для каждого `query` считать эффективность: `cost`, `impressions`, `clicks`, `ctr`.
+   - `clicks == 0` при заметном `impressions` + `cost > 0` → кандидаты в минусы/правку объявления/цели.
+   - Высокий `cost` + низкий `ctr` при малом числе `impressions` часто означает
+     смещение в нецелевые intent-запросы.
+   - Учитывай только живые query-перечни в текущем периоде; пустой отчёт = отсутствие трафика по поисковым запросам, а не ошибка.
+5. Сформировать roadmap только по фактам отчёта + гипотезы по ключам/минусам.
+
 `period` отражает запрошенный диапазон в формате `YYYY-MM-DD..YYYY-MM-DD`; в
 mock-режиме `period="last_7_days"`.
 
 Пример валидации: если отчёт содержит 1 строку TSV с
-`Query=ремонт квартир казань, CampaignId=710691939, AdGroupId=1001,
+`Query=ремонт квартир казань, CampaignId=710691939, CampaignName=Локальный сервис, AdGroupId=1001,
 Impressions=540, Clicks=22, Ctr=4.07, Cost=660.00`, endpoint вернёт
-`items=[{query: "ремонт квартир казань", impressions: 540, clicks: 22,
-ctr: 4.07}]` с `source="yandex"`.
+`items=[{query: "ремонт квартир казань", campaign_id: "710691939", campaign_name: "Локальный сервис", ad_group_id: "1001", impressions: 540, clicks: 22, cost: 660.0, ctr: 4.07}]` с `source="yandex"`.
 
 > **Маркетинговый контракт.** В live-режимах mock-фразы никогда не возвращаются.
 > Видеть `source="mock"` в `sandbox` / `live_readonly` / `live_write` — баг
 > конфигурации, а не ожидаемое поведение.
 
 Также доступен raw-эндпоинт `GET /yandex/reports/search-queries-live?date_from=...&date_to=...`
-(возвращает `YandexRawResult` с TSV-телом ответа).
+(возвращает `YandexRawResult` с TSV-телом ответа). В отличие от универсального
+`/yandex/reports/live/{REPORT_TYPE}`, этот diagnostic endpoint запрашивает именно
+search-query поля `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`,
+чтобы не получить пустой отчёт из-за campaign-summary field set.
 
 ---
 
@@ -1502,6 +1530,73 @@ Scope rule: если пользователь спрашивает про **ко
 ---
 
 ## 11. Работа с объявлениями в существующих live-кампаниях
+
+### Просмотр и аудит минус-слов по группам кампании
+
+```http
+GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords
+```
+
+Возвращает все группы кампании с текущим списком `negative_keywords` на уровне группы (из `NegativeKeywords.Items`) и флагом `has_negative_keywords`. Это read-only, write-гейты не применяются.
+
+Ответные поля (каждый элемент):
+
+- `ad_group_id` — id группы;
+- `campaign_id` — id кампании;
+- `name`, `status`;
+- `negative_keywords` — нормализованный список;
+- `has_negative_keywords` — есть ли ключи после нормализации;
+- `source` (`mock`/`yandex`), `read_only=true`.
+
+### Обновить минус-слова существующей группы
+
+```http
+POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords
+```
+
+Обновляет `NegativeKeywords` для конкретной группы кампании через Direct v5 `adgroups.update`.
+
+```json
+{
+  "negative_keywords": ["минус1", "минус2"],
+  "operation": "add",
+  "approved": true,
+  "idempotency_key": "neg-2026-001",
+  "dry_run": true
+}
+```
+
+- `operation`: `add` (по умолчанию, дополняет текущий список с дедупликацией) или `replace` (полная замена).
+- `negative_keywords` нормализуются: удаляется префикс `-`, trim, пустые и дублирующиеся значения отбрасываются.
+- `dry_run=true`: preview-only, `applied=false`, `payload_preview` содержит `method="adgroups.update"` и `params.AdGroups[]` без сетевого вызова.
+- `dry_run=false`: требует `approved=true`, `idempotency_key` и `DIRECTPILOT_MODE=live_write`.
+- В `live_readonly/sandbox/mock` при `dry_run=false` — HTTP 409 до сети.
+- На apply endpoint выполняет `adgroups.update`, возвращает `negative_keywords` (итог), `previous_negative_keywords` (исходный список), `provider_response` при успехе.
+
+### Создать отдельную группу в существующей кампании
+
+```http
+POST /yandex/campaigns/{campaign_id}/ad-groups
+```
+
+Создаёт **только** ad-group в существующей кампании (`adgroups.add`). Не создаёт объявления, ключи и не запускает модерацию.
+
+```json
+{
+  "name": "Ремонт по кухням",
+  "region_ids": [213],
+  "negative_keywords": ["дешево", "сделай сам"],
+  "approved": true,
+  "idempotency_key": "grp-2026-001",
+  "dry_run": true
+}
+```
+
+- `region_ids` обязателен и пробрасывается в `RegionIds`.
+- `negative_keywords` (если есть) отправляются как `NegativeKeywords.Items` после нормализации.
+- `dry_run=true`: preview-only, `payload_preview` + `warnings` о том, что создаётся только группа.
+- `dry_run=false`: требует `approved=true`, `idempotency_key`, `DIRECTPILOT_MODE=live_write`; выполняется `adgroups.add`.
+- Ответ: `ad_group_ids`, `add_results`, `provider_response`.
 
 ### Добавить объявления в live-группу
 

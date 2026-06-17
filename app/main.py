@@ -89,6 +89,12 @@ from app.models import (
     YandexStrategyResult,
     LiveAdCreateRequest,
     LiveAdCreateResult,
+    YandexAdGroupNegativeKeywords,
+    YandexAdGroupNegativeKeywordsList,
+    YandexAdGroupNegativeKeywordsRequest,
+    YandexAdGroupNegativeKeywordsResult,
+    LiveAdGroupCreateRequest,
+    LiveAdGroupCreateResult,
     AdsModerateRequest,
     AdsModerateResult,
     ProviderWarning,
@@ -580,6 +586,27 @@ def _yandex_error_to_502(exc: YandexDirectError) -> HTTPException:
     )
 
 
+def _yandex_business_error_to_502(response: dict[str, Any], action: str) -> HTTPException:
+    """Translate a Direct API ok-false envelope into HTTP 502.
+
+    The helper keeps upstream machine-readable keys and avoids leaking
+    provider payload. Missing fields are passed as None rather than
+    interpolated into a potentially sensitive message.
+    """
+    error = response.get("error") if isinstance(response, dict) else None
+    if not isinstance(error, dict):
+        error = {}
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error_type": "YandexDirectError",
+            "error_code": error.get("error_code"),
+            "error_detail": error.get("error_detail") or error.get("error_string"),
+            "message": f"Yandex Direct rejected {action}",
+        },
+    )
+
+
 # --- mapping helpers --------------------------------------------------------
 #
 # These helpers are intentionally permissive: Direct API v5 may omit
@@ -637,6 +664,71 @@ def _extract_ad_groups(result: dict[str, Any] | None) -> list[dict[str, Any]]:
             }
         )
     return items
+
+
+def _normalize_negative_keyword(value: str) -> str:
+    return value.strip().lstrip("-").strip()
+
+
+def _normalize_negative_keywords(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for raw in values:
+        item = _normalize_negative_keyword(str(raw))
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _negative_keywords_from_adgroup(group: dict[str, Any]) -> list[str]:
+    raw = group.get("NegativeKeywords") or group.get("negativeKeywords") or {}
+    if isinstance(raw, dict):
+        values = raw.get("Items") or raw.get("items") or []
+    elif isinstance(raw, list):
+        values = raw
+    else:
+        values = []
+    return _normalize_negative_keywords([str(v) for v in values])
+
+
+def _extract_ad_group_negative_keywords(
+    result: dict[str, Any] | None, *, source: str, read_only: bool
+) -> list[YandexAdGroupNegativeKeywords]:
+    items: list[YandexAdGroupNegativeKeywords] = []
+    if not isinstance(result, dict):
+        return items
+    raw = result.get("AdGroups") or result.get("adgroups") or []
+    for g in raw:
+        if not isinstance(g, dict):
+            continue
+        negatives = _negative_keywords_from_adgroup(g)
+        items.append(
+            YandexAdGroupNegativeKeywords(
+                ad_group_id=str(g.get("Id") or g.get("id") or ""),
+                campaign_id=str(g.get("CampaignId") or g.get("campaignId") or ""),
+                name=str(g.get("Name") or g.get("name") or ""),
+                status=str(g.get("Status") or g.get("status") or "UNKNOWN"),
+                negative_keywords=negatives,
+                has_negative_keywords=bool(negatives),
+                source=source,
+                read_only=read_only,
+            )
+        )
+    return items
+
+
+def _require_live_write_for_apply(settings: Settings, *, dry_run: bool, approved: bool) -> None:
+    if not approved:
+        raise HTTPException(status_code=409, detail="Action requires explicit approval before apply")
+    if dry_run:
+        return
+    if settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail="Live writes require DIRECTPILOT_MODE=live_write; current mode blocks mutation",
+        )
 
 
 def _extract_ads(result: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -761,6 +853,47 @@ def yandex_ad_groups(
         )
     items = [YandexAdGroup(**g) for g in mock_yandex.list_ad_groups(campaign_id)]
     return YandexAdGroupList(items=items, source="mock", read_only=True)
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/ad-groups/negative-keywords",
+    response_model=YandexAdGroupNegativeKeywordsList,
+)
+def yandex_ad_group_negative_keywords(
+    campaign_id: str,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdGroupNegativeKeywordsList:
+    if _is_live_read_mode(settings) and client is not None:
+        try:
+            response = client.adgroups_get(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            err = response.get("error") or {}
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "YandexDirectError",
+                    "message": (
+                        f"Yandex Direct rejected adgroups.get: "
+                        f"error_code={err.get('error_code')!r}"
+                    ),
+                },
+            )
+        return YandexAdGroupNegativeKeywordsList(
+            items=_extract_ad_group_negative_keywords(
+                response.get("result"), source="yandex", read_only=True
+            ),
+            source="yandex",
+            read_only=True,
+        )
+    mock_groups = {"AdGroups": mock_yandex.list_ad_groups(campaign_id)}
+    return YandexAdGroupNegativeKeywordsList(
+        items=_extract_ad_group_negative_keywords(mock_groups, source="mock", read_only=True),
+        source="mock",
+        read_only=True,
+    )
 
 
 @app.get("/yandex/campaigns/{campaign_id}/ads", response_model=YandexAdList)
@@ -1210,6 +1343,157 @@ def yandex_ads_business_attach(
 
 
 @app.post(
+    "/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords",
+    response_model=YandexAdGroupNegativeKeywordsResult,
+)
+def yandex_ad_group_negative_keywords_update(
+    campaign_id: str,
+    ad_group_id: str,
+    payload: YandexAdGroupNegativeKeywordsRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdGroupNegativeKeywordsResult:
+    _require_live_write_for_apply(settings, dry_run=payload.dry_run, approved=payload.approved)
+    requested = _normalize_negative_keywords(payload.negative_keywords)
+    if not requested:
+        raise HTTPException(status_code=422, detail="negative_keywords must contain at least one non-empty item")
+
+    current: list[str] = []
+    if client is not None and _is_live_read_mode(settings):
+        try:
+            response = client.adgroups_get(campaign_id)
+        except YandexDirectError as exc:
+            raise _yandex_error_to_502(exc) from exc
+        if not response.get("ok"):
+            raise _yandex_business_error_to_502(response, "adgroups.get")
+        for group in (response.get("result") or {}).get("AdGroups") or []:
+            if str(group.get("Id")) == str(ad_group_id):
+                current = _negative_keywords_from_adgroup(group)
+                break
+    merged = _normalize_negative_keywords(current + requested) if payload.operation == "add" else requested
+    update_item = {
+        "Id": int(ad_group_id) if str(ad_group_id).isdigit() else ad_group_id,
+        "NegativeKeywords": {"Items": merged},
+    }
+    preview = {"method": "adgroups.update", "params": {"AdGroups": [update_item]}}
+    audit = store.append_audit(
+        "yandex_ad_group_negative_keywords_preview" if payload.dry_run else "yandex_ad_group_negative_keywords_apply",
+        str(ad_group_id),
+        dry_run=payload.dry_run,
+        details={"campaign_id": campaign_id, "operation": payload.operation},
+    )
+    if payload.dry_run:
+        return YandexAdGroupNegativeKeywordsResult(
+            dry_run=True,
+            applied=False,
+            source="yandex" if _is_live_read_mode(settings) else "mock",
+            mode=settings.directpilot_mode,
+            audit_id=audit.id,
+            campaign_id=campaign_id,
+            ad_group_id=ad_group_id,
+            operation=payload.operation,
+            negative_keywords=merged,
+            previous_negative_keywords=current,
+            payload_preview=preview,
+        )
+    if payload.idempotency_key in store.apply_results_by_key:
+        return store.apply_results_by_key[payload.idempotency_key]
+    if client is None:
+        raise HTTPException(status_code=409, detail="Yandex client is required for live_write apply")
+    try:
+        response = client.adgroups_update([update_item])
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        raise _yandex_business_error_to_502(response, "negative keyword update")
+    result = YandexAdGroupNegativeKeywordsResult(
+        dry_run=False,
+        applied=True,
+        source="yandex",
+        mode=settings.directpilot_mode,
+        audit_id=audit.id,
+        campaign_id=campaign_id,
+        ad_group_id=ad_group_id,
+        operation=payload.operation,
+        negative_keywords=merged,
+        previous_negative_keywords=current,
+        provider_response=response.get("result") if response.get("ok") else response,
+    )
+    store.apply_results_by_key[payload.idempotency_key] = result
+    return result
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/ad-groups",
+    response_model=LiveAdGroupCreateResult,
+)
+def yandex_campaign_ad_group_create(
+    campaign_id: str,
+    payload: LiveAdGroupCreateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> LiveAdGroupCreateResult:
+    _require_live_write_for_apply(settings, dry_run=payload.dry_run, approved=payload.approved)
+    ad_group = {
+        "Name": payload.name,
+        "CampaignId": int(campaign_id) if str(campaign_id).isdigit() else campaign_id,
+        "RegionIds": payload.region_ids,
+    }
+    negatives = _normalize_negative_keywords(payload.negative_keywords)
+    if negatives:
+        ad_group["NegativeKeywords"] = {"Items": negatives}
+    preview = {"method": "adgroups.add", "params": {"AdGroups": [ad_group]}}
+    audit = store.append_audit(
+        "yandex_ad_group_create_preview" if payload.dry_run else "yandex_ad_group_create_apply",
+        str(campaign_id),
+        dry_run=payload.dry_run,
+        details={"name": payload.name},
+    )
+    if payload.dry_run:
+        return LiveAdGroupCreateResult(
+            dry_run=True,
+            applied=False,
+            source="yandex" if _is_live_read_mode(settings) else "mock",
+            mode=settings.directpilot_mode,
+            audit_id=audit.id,
+            campaign_id=campaign_id,
+            payload_preview=preview,
+            warnings=["Creates only an ad group; ads, keywords, and moderation are separate next steps."],
+        )
+    if payload.idempotency_key in store.apply_results_by_key:
+        return store.apply_results_by_key[payload.idempotency_key]
+    if client is None:
+        raise HTTPException(status_code=409, detail="Yandex client is required for live_write apply")
+    try:
+        response = client.adgroups_add([ad_group])
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        raise _yandex_business_error_to_502(response, "ad-group create")
+    add_results = []
+    ad_group_ids: list[int] = []
+    if response.get("ok"):
+        add_results = (response.get("result") or {}).get("AddResults") or []
+        for item in add_results:
+            if isinstance(item, dict) and item.get("Id") is not None:
+                ad_group_ids.append(int(item["Id"]))
+    result = LiveAdGroupCreateResult(
+        dry_run=False,
+        applied=True,
+        source="yandex",
+        mode=settings.directpilot_mode,
+        audit_id=audit.id,
+        campaign_id=campaign_id,
+        ad_group_ids=ad_group_ids,
+        add_results=add_results,
+        provider_response=response.get("result") if response.get("ok") else response,
+        warnings=["Creates only an ad group; ads, keywords, and moderation are separate next steps."],
+    )
+    store.apply_results_by_key[payload.idempotency_key] = result
+    return result
+
+
+@app.post(
     "/yandex/ad-groups/{ad_group_id}/ads",
     response_model=LiveAdCreateResult,
 )
@@ -1417,7 +1701,12 @@ def yandex_search_queries_live(
         client,
         "reports",
         "SEARCH_QUERY_PERFORMANCE_REPORT",
-        lambda c: c.report("SEARCH_QUERY_PERFORMANCE_REPORT", date_from=date_from, date_to=date_to),
+        lambda c: c.report(
+            "SEARCH_QUERY_PERFORMANCE_REPORT",
+            date_from=date_from,
+            date_to=date_to,
+            field_names=list(_SEARCH_QUERY_REPORT_FIELDS),
+        ),
     )
 
 @app.get(
@@ -1575,7 +1864,7 @@ def _aggregate_campaign_performance_tsv(
 
 
 # Default field set for SEARCH_QUERY_PERFORMANCE_REPORT. The order matches
-# what we request from Yandex and what the parser expects:
+# what we request from Yandex and what the parser expects by default:
 # Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost.
 _SEARCH_QUERY_REPORT_FIELDS: tuple[str, ...] = (
     "Query",
@@ -1588,48 +1877,134 @@ _SEARCH_QUERY_REPORT_FIELDS: tuple[str, ...] = (
 )
 
 
+def _normalize_direct_id(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    try:
+        return str(int(normalized))
+    except ValueError:
+        return normalized
+
+
+def _find_search_query_column(
+    column_name: str,
+    header_map: dict[str, int] | None,
+    fallback_index: int,
+) -> int:
+    if header_map and column_name in header_map:
+        return header_map[column_name]
+    return fallback_index
+
+
+def _lookup_search_query_campaign_names(
+    client: YandexDirectClient,
+    campaign_ids: set[str],
+) -> dict[str, str]:
+    """Map requested campaign ids to names using ``campaigns.get``.
+
+    Network failures here must never fail report parsing in the happy path,
+    so callers should treat an empty mapping as a non-blocking fallback.
+    """
+    try:
+        campaigns_result = client.campaigns_get()
+    except YandexDirectError:
+        return {}
+    if not campaigns_result.get("ok"):
+        return {}
+
+    result_payload = campaigns_result.get("result")
+    if not isinstance(result_payload, dict):
+        return {}
+
+    names_by_id: dict[str, str] = {}
+    for campaign in _extract_campaigns(result_payload):
+        campaign_id = campaign.get("id")
+        if not isinstance(campaign_id, str):
+            continue
+        campaign_name = campaign.get("name")
+        if campaign_id in campaign_ids and isinstance(campaign_name, str) and campaign_name:
+            names_by_id[campaign_id] = campaign_name
+    return names_by_id
+
+
 def _aggregate_search_query_tsv(
-    tsv_text: str, campaign_id: str | None = None
+    tsv_text: str,
+    campaign_id: str | None = None,
+    campaign_name_map: dict[str, str] | None = None,
 ) -> list[YandexSearchQuery]:
     """Parse a SEARCH_QUERY_PERFORMANCE_REPORT TSV into YandexSearchQuery items.
 
-    Expected column order (matches ``_SEARCH_QUERY_REPORT_FIELDS`` above):
-        Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost
+    Expected input is the default field order requested from Yandex
+    (Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost),
+    but the parser is tolerant of legacy payloads that include CampaignName.
 
-    Rows whose ``CampaignId`` does not match the optional ``campaign_id``
-    filter are dropped. Malformed rows are skipped silently (the endpoint
-    surfaces 502 only on transport / envelope errors, not on per-row parse
-    noise). Empty input returns an empty list — a real live report with
-    no rows is a valid response, not a 502 and not a mock fallback.
+    Rows whose ``CampaignId`` does not match the optional ``campaign_id`` filter
+    are dropped. Numeric parse errors on metric columns do not fail the endpoint;
+    malformed rows are skipped silently, while empty input remains a valid
+    response with ``items=[]``.
     """
+    normalized_filter = _normalize_direct_id(campaign_id)
+
+    rows = [line.strip() for line in tsv_text.splitlines() if line.strip()]
+    if not rows:
+        return []
+
+    header_map: dict[str, int] | None = None
+    first_columns = rows[0].split("\t")
+    if first_columns and first_columns[0].lower() == "query":
+        header_map = {name: idx for idx, name in enumerate(first_columns) if name}
+        rows = rows[1:]
+
     items: list[YandexSearchQuery] = []
-    for raw_line in tsv_text.splitlines():
-        line = raw_line.strip()
-        if not line:
+    for cols in [row.split("\t") for row in rows]:
+        query_idx = _find_search_query_column("Query", header_map, 0)
+        campaign_id_idx = _find_search_query_column("CampaignId", header_map, 1)
+        ad_group_id_idx = _find_search_query_column("AdGroupId", header_map, 2)
+        impressions_idx = _find_search_query_column("Impressions", header_map, 3)
+        clicks_idx = _find_search_query_column("Clicks", header_map, 4)
+        ctr_idx = _find_search_query_column("Ctr", header_map, 5)
+        cost_idx = _find_search_query_column("Cost", header_map, 6)
+        campaign_name_idx = _find_search_query_column("CampaignName", header_map, -1)
+
+        if len(cols) <= max(campaign_id_idx, ad_group_id_idx, impressions_idx, clicks_idx, ctr_idx):
             continue
-        cols = line.split("\t")
-        # Need at least Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost
-        # i.e. index 6 (Cost) reachable.
-        if len(cols) < 7:
+        row_campaign_id = _normalize_direct_id(cols[campaign_id_idx])
+        if row_campaign_id is None:
+            row_campaign_id = cols[campaign_id_idx]
+        if normalized_filter is not None and row_campaign_id != normalized_filter:
             continue
-        # Skip the header row (TSV first line repeats the field names).
-        if cols[0].lower() == "query":
-            continue
-        if campaign_id is not None and cols[1] != campaign_id:
-            continue
+
         try:
-            impressions = int(cols[3])
-            clicks = int(cols[4])
-            ctr = float(cols[5])
-        except ValueError:
-            # Malformed numeric — skip the row, do not raise.
+            impressions = int(cols[impressions_idx])
+            clicks = int(cols[clicks_idx])
+            ctr = float(cols[ctr_idx])
+        except (IndexError, ValueError):
             continue
+
+        campaign_name = cols[campaign_name_idx] if campaign_name_idx >= 0 and len(cols) > campaign_name_idx else None
+        if not campaign_name and campaign_name_map is not None:
+            campaign_name = campaign_name_map.get(_normalize_direct_id(row_campaign_id) or row_campaign_id)
+
+        cost: float | None = None
+        if len(cols) > cost_idx:
+            cost_text = cols[cost_idx].strip()
+            if cost_text:
+                try:
+                    cost = float(cost_text)
+                except ValueError:
+                    cost = None
+
         items.append(
             YandexSearchQuery(
-                query=cols[0],
+                query=cols[query_idx],
+                campaign_id=row_campaign_id,
+                campaign_name=campaign_name,
+                ad_group_id=cols[ad_group_id_idx],
                 impressions=impressions,
                 clicks=clicks,
                 ctr=round(ctr, 4),
+                cost=cost,
             )
         )
     return items
@@ -1727,6 +2102,23 @@ def yandex_search_queries(
     # (it contains customer search query data); parse and aggregate.
     tsv_text = response.get("result") or ""
     items = _aggregate_search_query_tsv(tsv_text, campaign_id=campaign_id)
+    missing_campaign_name_ids = {
+        item.campaign_id for item in items if not item.campaign_name
+    }
+    if missing_campaign_name_ids:
+        campaign_name_map = _lookup_search_query_campaign_names(
+            client, missing_campaign_name_ids
+        )
+        if campaign_name_map:
+            enriched_items: list[YandexSearchQuery] = []
+            for item in items:
+                if not item.campaign_name and item.campaign_id in campaign_name_map:
+                    enriched_items.append(
+                        item.model_copy(update={"campaign_name": campaign_name_map[item.campaign_id]})
+                    )
+                else:
+                    enriched_items.append(item)
+            items = enriched_items
 
     return YandexSearchQueriesReport(
         period=period,

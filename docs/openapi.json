@@ -1883,6 +1883,173 @@
         "title": "LiveAdCreateWarning",
         "type": "object"
       },
+      "LiveAdGroupCreateRequest": {
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Negative Keywords",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "region_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 1,
+            "title": "Region Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "region_ids",
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "LiveAdGroupCreateRequest",
+        "type": "object"
+      },
+      "LiveAdGroupCreateResult": {
+        "properties": {
+          "ad_group_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ad Group Ids",
+            "type": "array"
+          },
+          "add_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Add Results"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "provider_response": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Response"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "dry_run",
+          "applied",
+          "mode",
+          "audit_id",
+          "campaign_id"
+        ],
+        "title": "LiveAdGroupCreateResult",
+        "type": "object"
+      },
       "LiveCreateCampaignRequest": {
         "description": "Body of ``POST /yandex/campaigns/live-create``.\n\nThe campaign is built from an existing :class:`CampaignDraft` so the\ndraft preview stays the single source of truth for name, business\ntype, region, monthly budget, landing URL and ad group / ad /\nkeyword structure. Direct API v5 ``campaigns.add`` for a text\ncampaign requires the following mandatory fields:\n\n* ``Name`` — campaign name\n* ``StartDate`` — ``YYYY-MM-DD`` (no future date required, but\n  the v5 service rejects very far-future values)\n* ``TextCampaign`` block with at least one of:\n  ``BiddingStrategy`` (``AVERAGE_CPC`` / ``AVERAGE_CPA`` / etc.),\n  ``Settings`` (Geo / Time-targeting), or ``CounterIds``.\n\nThe endpoint accepts an explicit ``counter_ids`` (for Metrika\nconversion attribution) and an explicit ``start_date`` override\n(``YYYY-MM-DD``). Both are optional — sensible defaults are filled\nin below.",
         "properties": {
@@ -3716,6 +3883,237 @@
         "title": "YandexAdGroupList",
         "type": "object"
       },
+      "YandexAdGroupNegativeKeywords": {
+        "properties": {
+          "ad_group_id": {
+            "title": "Ad Group Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "has_negative_keywords": {
+            "default": false,
+            "title": "Has Negative Keywords",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Negative Keywords",
+            "type": "array"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "mock",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ad_group_id",
+          "campaign_id",
+          "name",
+          "status"
+        ],
+        "title": "YandexAdGroupNegativeKeywords",
+        "type": "object"
+      },
+      "YandexAdGroupNegativeKeywordsList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexAdGroupNegativeKeywords"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "mock",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "YandexAdGroupNegativeKeywordsList",
+        "type": "object"
+      },
+      "YandexAdGroupNegativeKeywordsRequest": {
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Negative Keywords",
+            "type": "array"
+          },
+          "operation": {
+            "default": "add",
+            "enum": [
+              "add",
+              "replace"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "negative_keywords",
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "YandexAdGroupNegativeKeywordsRequest",
+        "type": "object"
+      },
+      "YandexAdGroupNegativeKeywordsResult": {
+        "properties": {
+          "ad_group_id": {
+            "title": "Ad Group Id",
+            "type": "string"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Negative Keywords",
+            "type": "array"
+          },
+          "operation": {
+            "enum": [
+              "add",
+              "replace"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "previous_negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Negative Keywords",
+            "type": "array"
+          },
+          "provider_response": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Response"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dry_run",
+          "applied",
+          "mode",
+          "audit_id",
+          "campaign_id",
+          "ad_group_id",
+          "operation"
+        ],
+        "title": "YandexAdGroupNegativeKeywordsResult",
+        "type": "object"
+      },
       "YandexAdList": {
         "properties": {
           "items": {
@@ -4814,9 +5212,39 @@
       },
       "YandexSearchQuery": {
         "properties": {
+          "ad_group_id": {
+            "title": "Ad Group Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "campaign_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Name"
+          },
           "clicks": {
             "title": "Clicks",
             "type": "integer"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost"
           },
           "ctr": {
             "title": "Ctr",
@@ -4833,6 +5261,8 @@
         },
         "required": [
           "query",
+          "campaign_id",
+          "ad_group_id",
           "impressions",
           "clicks",
           "ctr"
@@ -8180,6 +8610,150 @@
           }
         },
         "summary": "Yandex Ad Groups"
+      },
+      "post": {
+        "operationId": "yandex_campaign_ad_group_create_yandex_campaigns__campaign_id__ad_groups_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveAdGroupCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveAdGroupCreateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Campaign Ad Group Create"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/ad-groups/negative-keywords": {
+      "get": {
+        "operationId": "yandex_ad_group_negative_keywords_yandex_campaigns__campaign_id__ad_groups_negative_keywords_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAdGroupNegativeKeywordsList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Ad Group Negative Keywords"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords": {
+      "post": {
+        "operationId": "yandex_ad_group_negative_keywords_update_yandex_campaigns__campaign_id__ad_groups__ad_group_id__negative_keywords_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "ad_group_id",
+            "required": true,
+            "schema": {
+              "title": "Ad Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexAdGroupNegativeKeywordsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAdGroupNegativeKeywordsResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Ad Group Negative Keywords Update"
       }
     },
     "/yandex/campaigns/{campaign_id}/ads": {
