@@ -26,6 +26,7 @@ def test_extended_get_methods_post_expected_service_and_method_without_leaking_t
         ("changes_get", tuple(), "changes", "get"),
         ("dictionaries_get", tuple(), "dictionaries", "get"),
         ("bidmodifiers_get", (710,), "bidmodifiers", "get"),
+        ("bidmodifiers_set", ({"CampaignId": 710, "Type": "MOBILE"},), "bidmodifiers", "set"),
         ("negativekeywords_get", (710, [1]), "negativekeywordsharedsets", "get"),
         ("retargetinglists_get", tuple(), "retargetinglists", "get"),
         ("audiencetargets_get", (710,), "audiencetargets", "get"),
@@ -51,6 +52,10 @@ def test_extended_get_methods_post_expected_service_and_method_without_leaking_t
 
         assert captured["url"] == f"https://api.direct.yandex.com/json/v5/{service}"
         assert captured["body"]["method"] == direct_method
+        if method_name == "bidmodifiers_set":
+            assert captured["body"]["params"]["BidModifiers"] == [
+                {"CampaignId": 710, "Type": "MOBILE"}
+            ]
         assert result["ok"] is True
         assert "SECRET-TOKEN" not in str(result)
 

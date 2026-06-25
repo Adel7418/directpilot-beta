@@ -348,6 +348,13 @@ class YandexDirectClient:
             {"method": "get", "params": {"SelectionCriteria": self._selection_by_campaign(campaign_id)}},
         )
 
+    def bidmodifiers_set(self, payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+        bid_modifiers = [payload] if isinstance(payload, dict) else list(payload)
+        return self._call(
+            "bidmodifiers",
+            {"method": "set", "params": {"BidModifiers": bid_modifiers}},
+        )
+
     def negativekeywords_get(self, campaign_id: int | str, ids: list[int]) -> dict[str, Any]:
         # Direct API v5 exposes account-level negative keyword shared sets as
         # `negativekeywordsharedsets`. Campaign/ad-group minus phrases are

@@ -27,11 +27,13 @@ DirectPilot — единая прослойка для маркетолога:
 | Проверить, живо ли приложение | `GET /health` | статус приложения |
 | Проверить Direct-интеграцию | `GET /integrations/yandex/direct/status` | ok/status без секретов |
 | Посмотреть реальные кампании | `GET /yandex/campaigns` | id, name, status, type |
+| Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
-| Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
+| Посмотреть демографические ставки кампании | `GET /yandex/campaigns/{campaign_id}/bid-modifiers` | текущие `AgeRange`/`BidModifier` для `Age` сегментов |
+| Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; сначала обязательно `GET`-readback для `modifier_id` |
+| Создать группу в существующей кампании | `POST /yandex/campaigns/{campaign_id}/ad-groups` | создаёт только группу: name/region_ids/optional negative_keywords; затем отдельные шаги для `ads`, ключей и модерации |
 | Посмотреть минус-слова по группам | `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords` | текущие `negative_keywords` и `has_negative_keywords` по `ad_group_id` |
-| Создать группу в существующей кампании | `POST /yandex/campaigns/{campaign_id}/ad-groups` | создаёт только ad-group: name/region_ids/optional negative_keywords; затем отдельные шаги для `ads`, ключей и модерации |
 | Обновить минус-слова группы | `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords` | `operation=add|replace`, `approved=true`, `idempotency_key`, `dry_run`; `dry_run=false` только в `live_write`; preview/readback через ответ endpoint |
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC; **live** в `sandbox`/`live_readonly`/`live_write` (источник `CAMPAIGN_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock` |
 | Поисковые запросы | `GET /yandex/reports/search-queries` | реальные поисковые запросы с разрезом на `campaign_id` / `campaign_name` / `ad_group_id`; `cost` в ₽, `impressions`, `clicks`, `ctr` — для fast breakdown; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; пустой live-отчёт = `items=[]` с `source="yandex"` (не mock-fallback) | Data shape: `query`, `campaign_id`, `campaign_name` (nullable), `ad_group_id`, `impressions`, `clicks`, `ctr`, `cost` |
@@ -66,7 +68,6 @@ DirectPilot — единая прослойка для маркетолога:
 | Финансы кампаний | `GET /yandex/campaigns/finance` | бюджет, расход/остатки, дневной бюджет |
 | Посмотреть настройки автотаргетинга | `GET /yandex/campaigns/{campaign_id}/autotargeting` | категории и brand-опции автотаргетинга для каждой группы; read-only |
 | Обновить настройки автотаргетинга | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; apply — `live_write` + `approved` + `idempotency_key`; default preset `exact_narrow` |
-
 Важно по `GET /yandex/reports/summary`:
 
 - В `sandbox`/`live_readonly`/`live_write` endpoint возвращает `source="yandex"` при рабочей интеграции.
@@ -165,6 +166,41 @@ GET /yandex/reports/search-queries?campaign_id=<campaign_id>&date_from=YYYY-MM-D
 Если `partial_failure=true` или `has_errors=true` у отдельных item, ставки не применены.
 Item-ошибки редиректятся (только `code`/`message`/`details`), сырой v5 payload не показывается.
 Предупреждения (код 10160 и др.) дублируются в `provider_warnings` и `set_results[].warnings`.
+
+### Корректировки ставок по возрасту/демографии
+
+`POST /yandex/campaigns/{campaign_id}/bid-modifiers` — безопасный dry-run/apply wrapper над Direct v5 `bidmodifiers.set`.
+Для сценария «возраст 0–17 = -100%» сначала делайте `dry_run=true`:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "bidmod-demo-001",
+  "dry_run": true,
+  "adjustments": [{"age_range": "AGE_0_17", "adjustment_percent": -100}]
+}
+```
+
+Пакет для real apply должен быть сформирован после `GET /yandex/campaigns/{campaign_id}/bid-modifiers`, где берется `modifier_id` существующего сегмента:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "bidmod-apply-001",
+  "dry_run": false,
+  "adjustments": [{"modifier_id": 987654, "age_range": "AGE_0_17", "adjustment_percent": -100}]
+}
+```
+
+Важно:
+- `bidmodifiers.set` меняет только **существующую** корректировку по `Id` + `BidModifier`, создание нового модификатора через этот endpoint не поддерживается;
+- `adjustment_percent=-100` конвертируется в Direct `BidModifier=0`; в live payload не должно быть `CampaignId/AgeRange` — только `Id` и `BidModifier`;
+- `live_apply` доступен только после явного согласования с пользователем: `DIRECTPILOT_MODE=live_write`, `approved=true`, `idempotency_key`, `dry_run=false`;
+- после apply endpoint делает readback через `bidmodifiers.get`.
+
+Маркетолог подготавливает dry-run/readback + diff и показывает пользователю; apply делает оператор/оркестратор только после подтверждения.
+
+Если provider/непредвиденная ошибка случается на этом endpoint: возвращается `HTTP 502` (редуцированные diagnostics, без токенов/секретов), в аудит пишется `yandex_bid_modifiers_failed`.
 
 ## Scope rule: конкретная кампания vs весь аккаунт
 

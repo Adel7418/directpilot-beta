@@ -218,7 +218,7 @@ def test_ads_update_missing_token_raises_before_network_call():
     network call when the OAUTH token is missing — same contract as
     every other v5 write helper."""
 
-    settings = Settings(_env_file=None, directpilot_mode="live_write")
+    settings = Settings(_env_file=None, directpilot_mode="live_write", yandex_oauth_token=None)
 
     def handler(_request: httpx.Request) -> httpx.Response:
         raise AssertionError("network must not be called when token is missing")

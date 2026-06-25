@@ -117,7 +117,7 @@ def test_adgroups_get_missing_token_raises_before_network_call():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("network must not be reached without token")
 
-    settings = Settings(_env_file=None, directpilot_mode="sandbox")
+    settings = Settings(_env_file=None, directpilot_mode="sandbox", yandex_oauth_token=None)
     client = _make_client(settings, handler)
 
     with pytest.raises(YandexDirectError) as exc:
@@ -227,7 +227,7 @@ def test_keywords_get_missing_token_raises_before_network_call():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("network must not be reached without token")
 
-    settings = Settings(_env_file=None, directpilot_mode="sandbox")
+    settings = Settings(_env_file=None, directpilot_mode="sandbox", yandex_oauth_token=None)
     client = _make_client(settings, handler)
 
     with pytest.raises(YandexDirectError):

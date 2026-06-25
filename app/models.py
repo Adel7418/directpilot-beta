@@ -2471,3 +2471,138 @@ class KeywordBidUpdateResult(BaseModel):
     not_implemented: list[str] = Field(default_factory=list)
     yandex_units: int | None = None
     yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Bid modifiers update — semantic preview + Direct v5 set payload
+# ---------------------------------------------------------------------------
+
+
+class BidModifierAgeAdjustment(BaseModel):
+    """Age/demographic bid modifier adjustment for a safe write preview.
+
+    Yandex Direct v5 ``bidmodifiers.set`` updates an existing modifier by
+    ``Id`` and ``BidModifier``. DirectPilot keeps the human-facing request in
+    adjustment-percent form (``-100`` means exclude the segment) and converts it
+    to the Direct coefficient where ``BidModifier = 100 + adjustment_percent``.
+    Therefore ``-100`` becomes Direct ``BidModifier=0``.
+    """
+
+    modifier_id: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Existing Yandex Direct bid modifier Id. Required for live apply; "
+            "dry-run previews may omit it until readback resolves the modifier."
+        ),
+    )
+    age_range: Literal["AGE_0_17"] = Field(
+        default="AGE_0_17",
+        description="Under-18 age segment used for demographic exclusion previews.",
+    )
+    adjustment_percent: int = Field(
+        ...,
+        ge=-100,
+        le=1200,
+        description=(
+            "Human-facing adjustment percent. Direct v5 uses BidModifier as a "
+            "coefficient in percent, so this value is converted with "
+            "BidModifier = 100 + adjustment_percent."
+        ),
+    )
+
+    @property
+    def direct_bid_modifier(self) -> int:
+        return 100 + self.adjustment_percent
+
+    def to_preview_item(self, campaign_id: int | str) -> dict:
+        item: dict = {
+            "CampaignId": int(campaign_id),
+            "AgeRange": self.age_range,
+            "AdjustmentPercent": self.adjustment_percent,
+            "BidModifier": self.direct_bid_modifier,
+        }
+        if self.modifier_id is not None:
+            item["Id"] = self.modifier_id
+        return item
+
+    def to_direct_set_item(self) -> dict:
+        if self.modifier_id is None:
+            raise ValueError("modifier_id is required to build bidmodifiers.set payload")
+        return {"Id": self.modifier_id, "BidModifier": self.direct_bid_modifier}
+
+
+class BidModifiersUpdateRequest(BaseModel):
+    """Body model for a live-safe bid-modifier update endpoint.
+
+    ``dry_run=True`` is preview-only. A real ``bidmodifiers.set`` apply must be
+    gated at the store/route layer by ``DIRECTPILOT_MODE=live_write``,
+    ``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.
+    """
+
+    dry_run: bool = True
+    approved: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=6)
+    adjustments: list[BidModifierAgeAdjustment] = Field(..., min_length=1, max_length=1000)
+    reason: str | None = None
+
+    def build_payload_preview(self, campaign_id: int | str) -> dict:
+        return {
+            "BidModifiers": [
+                adjustment.to_preview_item(campaign_id) for adjustment in self.adjustments
+            ]
+        }
+
+    def build_direct_set_payload(self) -> dict:
+        return {
+            "BidModifiers": [
+                adjustment.to_direct_set_item() for adjustment in self.adjustments
+            ]
+        }
+
+
+class BidModifierSetItemResult(BaseModel):
+    """Per-item outcome from Direct v5 ``bidmodifiers.set`` ``SetResults``.
+
+    Only redacted provider fields are surfaced. ``has_errors=True`` means
+    this item was not safely accepted as applied; the aggregate response must
+    use ``applied=False`` and ``partial_failure=True``.
+    """
+
+    modifier_id: int
+    has_errors: bool = False
+    has_warnings: bool = False
+    errors: list["ProviderWarning"] = Field(default_factory=list)
+    warnings: list["ProviderWarning"] = Field(default_factory=list)
+
+
+class BidModifiersUpdateResult(BaseModel):
+    """Response for ``POST /yandex/campaigns/{campaign_id}/bid-modifiers``."""
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = False
+    audit_id: str
+    payload_preview: dict | None = None
+    readback: list[dict] | None = None
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    set_results: list["BidModifierSetItemResult"] | None = Field(
+        default=None,
+        description=(
+            "Per-item outcomes from the v5 ``SetResults`` envelope. "
+            "Populated on live apply when Direct returns item-level results."
+        ),
+    )
+    partial_failure: bool = Field(
+        default=False,
+        description=(
+            "True when the top-level v5 call succeeded but at least one "
+            "``SetResults`` item contains provider errors. In this case "
+            "``applied`` is false."
+        ),
+    )
+    yandex_units: int | None = None
+    yandex_error: str | None = None

@@ -52,6 +52,8 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/keywords`
    - `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
    - `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
+   - `GET /yandex/campaigns/{campaign_id}/bid-modifiers`
+   - `POST /yandex/campaigns/{campaign_id}/bid-modifiers` (dry_run/apply)
    - `POST /yandex/campaigns/{campaign_id}/ad-groups`
    - `GET /yandex/campaigns/{campaign_id}/ad-assets` — агрегированный аудит внешнего вида (заголовки, тексты, быстрые ссылки, организации, визитки)
    - `POST /yandex/ad-groups/{ad_group_id}/ads` — добавить объявления в существующую группу (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
@@ -213,6 +215,24 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
 
+### Demographic bid modifiers (AGE_0_17)
+
+- Endpoint: `POST /yandex/campaigns/{campaign_id}/bid-modifiers`.
+- Source of record is read-first + write:
+  - `GET /yandex/campaigns/{campaign_id}/bid-modifiers` to get current `modifier_id`.
+  - `POST .../bid-modifiers` with `dry_run=true` for preview.
+  - `POST .../bid-modifiers` with `dry_run=false` only after explicit user approval.
+- Required live apply gates: `DIRECTPILOT_MODE=live_write`, `approved=true`,
+  `idempotency_key`, `dry_run=false`.
+- Contract:
+  - only **existing** modifiers can be updated;
+  - map `adjustment_percent=-100` to `BidModifier=0`;
+  - set payload uses `Id + BidModifier` only, do not pass `CampaignId/AgeRange` in set payload.
+- After live apply endpoint does readback via `bidmodifiers.get` and returns changed rows.
+- Error behavior:
+  - missing `modifier_id` on apply -> HTTP 409 before network write;
+  - provider/unexpected failures -> HTTP 502 with redacted diagnostics and audit event `yandex_bid_modifiers_failed`.
+
 ### Autotargeting settings
 
 ### Autotargeting settings (mandatory for search ad groups)
@@ -224,8 +244,8 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - **Default brand options:** WithoutBrands=YES, WithAdvertiserBrand=YES, WithCompetitorsBrand=NO.
 - **Do not enable all autotargeting categories by default.** Agents must explicitly ask the user or select the `exact_narrow` preset before committing.
 - `Broader=YES` is optional only by explicit reach trade-off. Alternative and Accessory should not be enabled by default.
-- In `keywords.add`, categories not explicitly YES/NO are treated as enabled by Direct API. DirectPilot always sends all five category booleans + all three brand booleans explicitly.
 - The endpoint uses `AutotargetingSettings` (with `Categories` + `BrandOptions`), NOT the deprecated `AutotargetingCategories`.
+- In `keywords.add`, categories not explicitly YES/NO are treated as enabled by Direct API. DirectPilot always sends all five category booleans + all three brand booleans explicitly.
 - Endpoint does read-before-write: `keywords.get` → find `---autotargeting` rows → build `keywords.update` by keyword `Id`.
 - If an ad group lacks an autotargeting row, the endpoint skips it (reports in `skipped_ad_group_ids`) when `create_missing=False`. Set `create_missing=True` to create new `---autotargeting` rows via `keywords.add` (gated: requires dry-run preview, then `live_write` + `approved` + `idempotency_key`).
 - See `docs/API_SIMPLE.md` section 13 and `docs/MARKETER_GUIDE.md` for full marketing guidance.

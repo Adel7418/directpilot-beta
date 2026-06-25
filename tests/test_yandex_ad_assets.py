@@ -147,7 +147,7 @@ def test_sitelinks_get_missing_token_raises_before_network():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("network must not be reached")
 
-    settings = Settings(_env_file=None, directpilot_mode="sandbox")
+    settings = Settings(_env_file=None, directpilot_mode="sandbox", yandex_oauth_token=None)
     client = _make_client(settings, handler)
 
     with pytest.raises(YandexDirectError) as exc:
