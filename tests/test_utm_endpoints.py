@@ -7,7 +7,7 @@ Covers:
 - dry_run never calls ads_update
 - apply requires live_write/approved/idempotency_key
 - ads.update payload includes required TextAd fields
-- sitelinks apply fail-closed (not_implemented)
+- sitelinks apply preview/readback path is implemented through sitelinks.update
 """
 
 from __future__ import annotations
@@ -417,8 +417,8 @@ class TestUtmApply:
         finally:
             app.dependency_overrides.clear()
 
-    def test_apply_sitelinks_surfaced_in_not_implemented(self):
-        """Sitelink apply is not_implemented and surfaced in warnings."""
+    def test_apply_sitelinks_surfaced_in_preview(self):
+        """Sitelink apply is implemented and dry-run surfaces sitelink changes."""
         settings = Settings(_env_file=None, directpilot_mode="mock")
         client = TestClient(app)
         app.dependency_overrides[get_settings] = lambda: settings
@@ -436,8 +436,9 @@ class TestUtmApply:
             )
             assert resp.status_code == 200
             body = resp.json()
-            assert len(body["not_implemented"]) > 0
-            assert any("sitelink" in w.lower() for w in body["not_implemented"])
+            assert body["not_implemented"] == []
+            assert body["sitelink_items"]
+            assert body["payload_preview"]["sitelinks_preview"]["method"] == "sitelinks.update"
         finally:
             app.dependency_overrides.clear()
 

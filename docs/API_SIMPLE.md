@@ -1932,7 +1932,7 @@ POST /yandex/campaigns/{campaign_id}/utm-plan
 }
 ```
 
-Ответ: `UtmPlanResult` с `items` (объявления), `sitelink_items` (быстрые ссылки — preview only), `payload_preview` (v5 `ads.update` payload), `warnings`, `not_implemented`.
+Ответ: `UtmPlanResult` с `items` (объявления), `sitelink_items` (быстрые ссылки old_url → new_url), `payload_preview` (v5 `ads.update` payload), `warnings`, `not_implemented`.
 
 Если `campaign_slug` не передан — генерируется автоматически из названия + id кампании.
 **Кириллические названия:** если имя кампании содержит только кириллицу,
@@ -1965,7 +1965,7 @@ Write-gated:
 }
 ```
 
-Ответ: `UtmApplyResult` с `ad_ids`, `readback` (подтверждение новых URL), `provider_warnings`, `sitelink_items` (preview), `not_implemented`.
+Ответ: `UtmApplyResult` с `ad_ids`, `readback` (подтверждение новых URL объявлений), `sitelink_items`, явным `sitelink_readback` после успешного `sitelinks.update`, `provider_warnings`, `not_implemented`.
 
 ### Обработка URL
 
@@ -1977,10 +1977,10 @@ Write-gated:
 ### Безопасность
 
 - `ads.update` (REPLACE-shaped) — все обязательные поля (Title, Text, Href) переотправляются.
+- `sitelinks.update` получает существующую структуру набора быстрых ссылок с изменённым только `Href`; `Title`/`Description` и структура набора сохраняются.
 - `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` сохраняются.
 - Токены никогда не появляются в ответах, логах или preview.
 
 ### Не реализовано (not_implemented)
 
-- **Sitelinks apply:** быстрые ссылки — только preview. Apply через `sitelinks.update` не реализован (требует изучения v5 контракта и отдельного helper'а).
 - **utm_term автоподстановка:** параметр `utm_term={keyword}` пока не заполняется автоматически — требуется keyword-level mapping.

@@ -395,6 +395,25 @@ class YandexDirectClient:
             params["Page"] = page
         return self._call("sitelinks", {"method": "get", "params": params})
 
+    def sitelinks_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Update existing sitelinks sets via v5 ``sitelinks.update``.
+
+        `items` must be a list of fully-shaped ``Sitelinks`` entries,
+        typically:
+
+        ``{"Id": <set_id>, "Sitelinks": [{"Title": ... , "Href": ...}]}``
+
+        The caller is responsible for preserving fields required by the
+        API payload contract.
+        """
+        return self._call(
+            "sitelinks",
+            {
+                "method": "update",
+                "params": {"SitelinksSets": list(items)},
+            },
+        )
+
     def vcards_get(self) -> dict[str, Any]:
         return self._call(
             "vcards",

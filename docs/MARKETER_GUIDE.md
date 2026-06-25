@@ -50,7 +50,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Настроить автотаргетинг | `POST /yandex/campaigns/{campaign_id}/autotargeting` | `dry_run=true` для preview; дефолтный пресет `exact_narrow` (Exact+Narrow only); `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key`; не включать все категории по умолчанию — спрашивать пользователя |
 | Аудит UTM-разметки | `GET /yandex/campaigns/{campaign_id}/utm-audit` | статус UTM по каждому объявлению и быстрой ссылке; complete/partial/missing/mismatch; **read-only**, без write-гейтов |
 | Спланировать UTM (preview) | `POST /yandex/campaigns/{campaign_id}/utm-plan` | old_url → new_url для каждого объявления; **всегда dry_run**, никогда не пишет в Яндекс; показывает payload для будущего apply |
-| Применить UTM | `POST /yandex/campaigns/{campaign_id}/utm-apply` | `dry_run=true` для preview; `dry_run=false` требует `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`; для быстрых ссылок — apply `not_implemented` (только preview) |
+| Применить UTM | `POST /yandex/campaigns/{campaign_id}/utm-apply` | `dry_run=true` для preview; `dry_run=false` требует `DIRECTPILOT_MODE=live_write` + `approved=true` + `idempotency_key`; при `include_sitelinks=true` быстрые ссылки обновляются через `sitelinks.update` и возвращают `sitelink_readback` |
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
@@ -314,7 +314,7 @@ UTM-метки — это параметры в URL, которые позвол
    - `overwrite=false` (по умолчанию) — сохраняет существующие UTM и query/fragment.
    - `overwrite=true` — перезаписывает все UTM-параметры.
    - `custom_params` — дополнительные параметры (напр. `utm_custom=extra`).
-   - Быстрые ссылки — preview в `sitelink_items`, `apply` сейчас `not_implemented` (fail-closed).
+   - Быстрые ссылки — preview в `sitelink_items`; apply доступен через gated `utm-apply` при `include_sitelinks=true`.
 
 3. **Подтверждение пользователя (HUMAN APPROVAL CONTRACT):**
    - Показать пользователю конкретный diff (old_url → new_url для каждого объявления).
@@ -329,10 +329,10 @@ UTM-метки — это параметры в URL, которые позвол
      - `idempotency_key` (>= 6 символов, уникальный ключ)
      - `dry_run=false`
    - `dry_run=true` — только preview, без записи.
-   - После успешного apply возвращает `ad_ids`, `readback` (проверка новых URL).
-   - Быстрые ссылки — **только preview**, apply not_implemented.
+   - После успешного apply возвращает `ad_ids`, `readback` (проверка новых URL объявлений) и `sitelink_readback` для быстрых ссылок.
+   - Быстрые ссылки применяются через `sitelinks.update`; `Title`/`Description` и структура набора сохраняются.
 
-5. **Readback:** проверить подтверждённые URL в `readback` ответа.
+5. **Readback:** проверить подтверждённые URL в `readback` и `sitelink_readback` ответа.
 
 **Для новых кампаний (live-create):**
 

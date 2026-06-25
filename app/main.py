@@ -3683,7 +3683,8 @@ def yandex_utm_plan(
 
     Returns the list of URL changes (old → new with UTM) and a
     preview of the v5 ``ads.update`` payload that WOULD be sent on apply.
-    Sitelink previews are included but apply is not_implemented.
+    Sitelink previews are included and can be applied through ``utm-apply``
+    via ``sitelinks.update`` when ``include_sitelinks=true``.
     """
     return store.utm_plan(
         campaign_id,
@@ -3712,7 +3713,7 @@ def yandex_utm_apply(
       3. ``idempotency_key`` (>= 6 chars)
 
     Uses ``ads.update`` (REPLACE-shaped) to safely update TextAd.Href.
-    Sitelink apply is not_implemented — surfaced in ``not_implemented``.
+    When requested, uses ``sitelinks.update`` to update attached sitelink Href values.
     """
     if not payload.approved:
         raise HTTPException(
