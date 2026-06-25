@@ -7,7 +7,12 @@ def test_settings_default_to_live_readonly_mode():
     # possible through the gated live_write mode. mock/sandbox are kept
     # in the codebase as a legacy/dev fallback and must be selected
     # explicitly via the DIRECTPILOT_MODE env var.
-    settings = Settings(_env_file=None)
+    settings = Settings(
+        _env_file=None,
+        yandex_client_id=None,
+        yandex_client_secret=None,
+        yandex_oauth_token=None,
+    )
 
     assert settings.directpilot_mode == "live_readonly"
     assert settings.is_yandex_configured is False

@@ -93,7 +93,7 @@ def test_settings_expose_metrika_oauth_token_and_masked_status():
 
 
 def test_settings_metrika_not_configured_when_token_absent():
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, yandex_metrika_oauth_token=None)
     assert settings.is_metrika_configured is False
     status = settings.safe_status()
     assert status["metrika_configured"] is False

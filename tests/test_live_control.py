@@ -130,7 +130,7 @@ def test_suspend_campaign_missing_token_raises_before_network_call():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("network must not be reached when token is missing")
 
-    settings = Settings(_env_file=None, directpilot_mode="sandbox")
+    settings = Settings(_env_file=None, directpilot_mode="sandbox", yandex_oauth_token=None)
     client = _make_client(settings, handler)
 
     with pytest.raises(YandexDirectError):

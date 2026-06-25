@@ -647,6 +647,258 @@
         "title": "AutotargetingCategories",
         "type": "object"
       },
+      "BidModifierAgeAdjustment": {
+        "description": "Age/demographic bid modifier adjustment for a safe write preview.\n\nYandex Direct v5 ``bidmodifiers.set`` updates an existing modifier by\n``Id`` and ``BidModifier``. DirectPilot keeps the human-facing request in\nadjustment-percent form (``-100`` means exclude the segment) and converts it\nto the Direct coefficient where ``BidModifier = 100 + adjustment_percent``.\nTherefore ``-100`` becomes Direct ``BidModifier=0``.",
+        "properties": {
+          "adjustment_percent": {
+            "description": "Human-facing adjustment percent. Direct v5 uses BidModifier as a coefficient in percent, so this value is converted with BidModifier = 100 + adjustment_percent.",
+            "maximum": 1200.0,
+            "minimum": -100.0,
+            "title": "Adjustment Percent",
+            "type": "integer"
+          },
+          "age_range": {
+            "const": "AGE_0_17",
+            "default": "AGE_0_17",
+            "description": "Under-18 age segment used for demographic exclusion previews.",
+            "title": "Age Range",
+            "type": "string"
+          },
+          "modifier_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Existing Yandex Direct bid modifier Id. Required for live apply; dry-run previews may omit it until readback resolves the modifier.",
+            "title": "Modifier Id"
+          }
+        },
+        "required": [
+          "adjustment_percent"
+        ],
+        "title": "BidModifierAgeAdjustment",
+        "type": "object"
+      },
+      "BidModifierSetItemResult": {
+        "description": "Per-item outcome from Direct v5 ``bidmodifiers.set`` ``SetResults``.\n\nOnly redacted provider fields are surfaced. ``has_errors=True`` means\nthis item was not safely accepted as applied; the aggregate response must\nuse ``applied=False`` and ``partial_failure=True``.",
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "has_errors": {
+            "default": false,
+            "title": "Has Errors",
+            "type": "boolean"
+          },
+          "has_warnings": {
+            "default": false,
+            "title": "Has Warnings",
+            "type": "boolean"
+          },
+          "modifier_id": {
+            "title": "Modifier Id",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "modifier_id"
+        ],
+        "title": "BidModifierSetItemResult",
+        "type": "object"
+      },
+      "BidModifiersUpdateRequest": {
+        "description": "Body model for a live-safe bid-modifier update endpoint.\n\n``dry_run=True`` is preview-only. A real ``bidmodifiers.set`` apply must be\ngated at the store/route layer by ``DIRECTPILOT_MODE=live_write``,\n``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.",
+        "properties": {
+          "adjustments": {
+            "items": {
+              "$ref": "#/components/schemas/BidModifierAgeAdjustment"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Adjustments",
+            "type": "array"
+          },
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "adjustments"
+        ],
+        "title": "BidModifiersUpdateRequest",
+        "type": "object"
+      },
+      "BidModifiersUpdateResult": {
+        "description": "Response for ``POST /yandex/campaigns/{campaign_id}/bid-modifiers``.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "partial_failure": {
+            "default": false,
+            "description": "True when the top-level v5 call succeeded but at least one ``SetResults`` item contains provider errors. In this case ``applied`` is false.",
+            "title": "Partial Failure",
+            "type": "boolean"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Provider Warnings",
+            "type": "array"
+          },
+          "read_only": {
+            "default": false,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback"
+          },
+          "set_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BidModifierSetItemResult"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-item outcomes from the v5 ``SetResults`` envelope. Populated on live apply when Direct returns item-level results.",
+            "title": "Set Results"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "BidModifiersUpdateResult",
+        "type": "object"
+      },
       "BidSettings": {
         "properties": {
           "keyword_bids": {
@@ -8975,6 +9227,60 @@
           }
         },
         "summary": "Yandex Bid Modifiers"
+      },
+      "post": {
+        "description": "Preview/apply existing demographic bid modifier coefficient changes.\n\nDirect API v5 ``bidmodifiers.set`` updates an existing modifier by\n``Id`` and ``BidModifier``. The request keeps operator-facing\n``adjustment_percent`` semantics where ``-100`` becomes Direct\n``BidModifier=0``. Real apply still requires ``live_write``,\n``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.",
+        "operationId": "yandex_bid_modifiers_update_yandex_campaigns__campaign_id__bid_modifiers_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BidModifiersUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BidModifiersUpdateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate or idempotency conflict for bid modifier update."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Upstream Yandex Direct bidmodifiers.set / readback failure, with redacted diagnostics only."
+          }
+        },
+        "summary": "Yandex Bid Modifiers Update"
       }
     },
     "/yandex/campaigns/{campaign_id}/bids": {

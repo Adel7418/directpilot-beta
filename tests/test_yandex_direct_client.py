@@ -35,7 +35,7 @@ def test_clients_get_sends_bearer_token_and_redacts_response_errors():
 
 
 def test_missing_token_raises_before_network_call():
-    settings = Settings(_env_file=None, directpilot_mode="sandbox")
+    settings = Settings(_env_file=None, directpilot_mode="sandbox", yandex_oauth_token=None)
     client = YandexDirectClient(settings=settings, transport=httpx.MockTransport(lambda request: httpx.Response(500)))
 
     try:

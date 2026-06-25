@@ -113,6 +113,9 @@ from app.models import (
     KeywordBidItem,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
+    # Bid modifiers
+    BidModifiersUpdateRequest,
+    BidModifiersUpdateResult,
 )
 from app.store import store
 from app.yandex_direct import YandexDirectClient, YandexDirectError
@@ -3637,6 +3640,103 @@ def yandex_keyword_bids_update(
                 "error_type": "YandexDirectError",
                 "message": (
                     f"unexpected error during keyword bids update: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/bid-modifiers",
+    response_model=BidModifiersUpdateResult,
+    responses={
+        409: {
+            "description": "Safety gate or idempotency conflict for bid modifier update.",
+        },
+        502: {
+            "description": "Upstream Yandex Direct bidmodifiers.set / readback failure, with redacted diagnostics only.",
+        },
+    },
+)
+def yandex_bid_modifiers_update(
+    campaign_id: str,
+    payload: BidModifiersUpdateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> BidModifiersUpdateResult:
+    """Preview/apply existing demographic bid modifier coefficient changes.
+
+    Direct API v5 ``bidmodifiers.set`` updates an existing modifier by
+    ``Id`` and ``BidModifier``. The request keeps operator-facing
+    ``adjustment_percent`` semantics where ``-100`` becomes Direct
+    ``BidModifier=0``. Real apply still requires ``live_write``,
+    ``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before bid modifiers update",
+        )
+    if not payload.idempotency_key:
+        raise HTTPException(
+            status_code=409,
+            detail="idempotency_key is required before bid modifiers update",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"bid modifiers apply is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_bid_modifiers_update(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        try:
+            store.append_audit(
+                "yandex_bid_modifiers_failed",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in bid modifiers endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during bid modifiers update: "
                     f"{type(exc).__name__}"
                 ),
             },

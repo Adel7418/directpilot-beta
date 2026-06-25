@@ -499,6 +499,84 @@ write и без утечки тела/токена в ошибке).
 - top-level failure от `keywordbids.set` / upstream Direct error → HTTP 502 с редактированными diagnostics.
 - `dry_run=true` всегда разрешён, никогда не пишет.
 
+### Live Direct: изменить корректировки ставок по возрасту/демографии
+
+```http
+POST /yandex/campaigns/{campaign_id}/bid-modifiers
+```
+
+Endpoint изменяет **существующие** демографические bid modifiers через Direct API v5 `bidmodifiers.set`.
+
+Ключевые ограничения интерфейса:
+- `bidmodifiers.set` меняет существующую корректировку только по `Id` + `BidModifier`.
+- Через `POST /yandex/campaigns/{campaign_id}/bid-modifiers` **нельзя создать** новый modifier.
+- Операторский `age_range` поддерживается как `AGE_0_17`, `adjustment_percent` поддерживает диапазон `-100..1200`, и `-100` мапится в `BidModifier=0` (`100 + adjustment_percent`).
+
+Для live apply сначала прочитайте текущие корректировки через:
+
+```http
+GET /yandex/campaigns/{campaign_id}/bid-modifiers
+```
+
+**Dry-run preview для исключения возраста 0–17:**
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "bidmod-demo-001",
+  "dry_run": true,
+  "adjustments": [
+    {"age_range": "AGE_0_17", "adjustment_percent": -100}
+  ]
+}
+```
+
+Ответ с `dry_run=true`: `applied=false`, `payload_preview` показывает операторскую семантику и Direct коэффициент:
+
+```json
+{
+  "BidModifiers": [
+    {"CampaignId": 710691939, "AgeRange": "AGE_0_17", "AdjustmentPercent": -100, "BidModifier": 0}
+  ]
+}
+```
+
+**Live apply:** передайте `modifier_id` существующей корректировки из readback и `dry_run=false`:
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "bidmod-apply-001",
+  "dry_run": false,
+  "adjustments": [
+    {"modifier_id": 987654, "age_range": "AGE_0_17", "adjustment_percent": -100}
+  ]
+}
+```
+
+Direct payload будет минимальным и безопасным:
+
+```json
+{"BidModifiers": [{"Id": 987654, "BidModifier": 0}]}
+```
+
+Применение доступно только при:
+- `DIRECTPILOT_MODE=live_write`;
+- `approved=true`;
+- `idempotency_key`;
+- `dry_run=false`;
+- явном согласовании от пользователя (маркетолог/оператор показывают dry-run/diff до apply).
+
+После `applied=true` endpoint делает readback через `bidmodifiers.get`.
+
+**Ошибки и диагностика:**
+- Если `modifier_id` отсутствует при `dry_run=false`, endpoint возвращает `HTTP 409` до сетевого write.
+- Провайдерские ошибки и непредвиденные исключения (`RuntimeError`/`Exception`) падают как `HTTP 502` с редактированными diagnostics и без токенов/секретов в теле.
+- В таком кейсе добавляется аудит-событие `yandex_bid_modifiers_failed`.
+
+**Pitfalls:**
+- Не отправляйте `CampaignId/AgeRange` в `bidmodifiers.set`: метод принимает только `Id + BidModifier`.
+- `approved=true` остаётся техническим флагом; сначала показывайте dry-run пользователю и ждите явного подтверждения.
 **Human Approval Contract:**
 `approved=true` — технический флаг, а не самосогласование агента.
 Оператор/агент обязан сначала показать dry-run diff и получить явное
@@ -1444,6 +1522,7 @@ GET /metrika/counters/{counter_id}/traffic-sources?date1=YYYY-MM-DD&date2=YYYY-M
 ```text
 GET /yandex/campaigns/{campaign_id}/bids              -> bids.get
 GET /yandex/campaigns/{campaign_id}/bid-modifiers     -> bidmodifiers.get
+POST /yandex/campaigns/{campaign_id}/bid-modifiers    -> bidmodifiers.set (dry-run/apply gated)
 GET /yandex/campaigns/{campaign_id}/negative-keywords?ids=1,2 -> negativekeywordsharedsets.get
 GET /yandex/changes/check                             -> changes.check
 GET /yandex/changes                                   -> changes.get
