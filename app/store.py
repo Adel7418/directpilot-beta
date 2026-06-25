@@ -1340,7 +1340,7 @@ class MockStore:
                 v5_ad["TextAd"]["Title2"] = ta["Title2"]
             v5_ads.append(v5_ad)
 
-        # Sitelink URL changes (preview only).
+        # Sitelink URL changes.
         if payload.include_sitelinks:
             for sl_set in sitelinks_raw:
                 if not isinstance(sl_set, dict):
@@ -1357,6 +1357,12 @@ class MockStore:
                         required_params=REQUIRED_UTM_PARAMS,
                         expected_values=DEFAULT_UTM_PARAMS,
                     )
+                    if audit["status"] == "complete" and not payload.overwrite:
+                        warnings.append(
+                            f"Sitelink {sl_set_id}/{sl.get('Title', '?')}: UTM already complete, "
+                            "skipped (overwrite=False)."
+                        )
+                        continue
                     new_url = build_utm_url(
                         href,
                         utm_source="yandex",
@@ -1376,10 +1382,6 @@ class MockStore:
                             utm_status_before=audit["status"],
                         )
                     )
-            not_implemented.append(
-                "sitelinks.apply: Sitelink URL update via sitelinks.update is not yet "
-                "implemented in DirectPilot. Sitelink previews are shown for review only."
-            )
 
         payload_preview = {
             "method": "ads.update",
@@ -1407,11 +1409,11 @@ class MockStore:
         settings: Settings | None = None,
         client: YandexDirectClient | None = None,
     ) -> UtmApplyResult:
-        """Apply UTM URLs to live ads via ads.update — write-gated.
+        """Apply UTM URLs to live ads and optional sitelinks — write-gated.
 
         Gate contract: dry_run=True → preview only. dry_run=False
         requires live_write + approved + idempotency_key.
-        Sitelink apply is not_implemented.
+        Sitelink URLs are updated through ``sitelinks.update`` when requested.
         """
         if not payload.approved:
             raise ValueError("Action requires explicit approval")
@@ -1509,11 +1511,14 @@ class MockStore:
             v5_ads.append(v5_ad)
             target_ad_ids.append(ad_id)
 
-        # Sitelinks — preview only, apply is not_implemented.
+        # Sitelinks: optional preview + optional apply when include_sitelinks=True.
+        sitelink_payloads: list[dict[str, Any]] = []
         if payload.include_sitelinks:
             sl_set_ids: set[int] = set()
             for a in ads_raw:
-                ta = a.get("TextAd") or {} if isinstance(a, dict) else {}
+                if not isinstance(a, dict):
+                    continue
+                ta = a.get("TextAd") or {}
                 sid = ta.get("SitelinkSetId")
                 if isinstance(sid, int):
                     sl_set_ids.add(sid)
@@ -1528,14 +1533,34 @@ class MockStore:
                         pass
                 else:
                     sitelinks_raw = mock_yandex.list_sitelinks(sorted(sl_set_ids))
+
                 for sl_set in sitelinks_raw:
                     if not isinstance(sl_set, dict):
                         continue
+                    sl_set_id = sl_set.get("Id")
+                    if not isinstance(sl_set_id, int):
+                        continue
+                    full_items: list[dict[str, Any]] = []
+                    set_has_changes = False
                     for sl in sl_set.get("Sitelinks") or []:
                         if not isinstance(sl, dict):
                             continue
+                        item = dict(sl)
                         href = sl.get("Href")
-                        if not href:
+                        if not href or not isinstance(href, str) or not href.strip():
+                            full_items.append(item)
+                            continue
+                        audit = audit_utm_url(
+                            href,
+                            required_params=REQUIRED_UTM_PARAMS,
+                            expected_values=DEFAULT_UTM_PARAMS,
+                        )
+                        if audit["status"] == "complete" and not payload.overwrite:
+                            warnings.append(
+                                f"Sitelink {sl_set_id}/{sl.get('Title', '?')}: UTM already complete, "
+                                "skipped (overwrite=False)."
+                            )
+                            full_items.append(item)
                             continue
                         new_sl_url = build_utm_url(
                             href,
@@ -1547,24 +1572,37 @@ class MockStore:
                             overwrite=payload.overwrite,
                             custom_params=payload.custom_params,
                         )
+                        item["Href"] = new_sl_url
+                        set_has_changes = True
                         sitelink_items.append(
                             UtmChangeItem(
                                 entity_type="sitelink",
-                                entity_id=f"{sl_set.get('Id', '?')}/{sl.get('Title', '?')}",
+                                entity_id=f"{sl_set_id}/{sl.get('Title', '?')}",
                                 old_url=href,
                                 new_url=new_sl_url,
-                                utm_status_before="missing",
+                                utm_status_before=audit["status"],
                             )
                         )
-            not_implemented.append(
-                "sitelinks.apply: sitelink URL update via sitelinks.update is not yet implemented. "
-                "Sitelink previews are shown in sitelink_items for review only."
-            )
+                        full_items.append(item)
+                    if set_has_changes:
+                        sitelink_payloads.append({"Id": sl_set_id, "Sitelinks": full_items})
 
         payload_preview = {
             "method": "ads.update",
             "params": {"Ads": v5_ads},
         } if v5_ads else None
+
+        if payload.include_sitelinks and sitelink_payloads:
+            sl_payload_preview = {"method": "sitelinks.update", "params": {"SitelinksSets": sitelink_payloads}}
+            if payload_preview is None:
+                payload_preview = {
+                    "method": "ads.update",
+                    "params": {"Ads": []},
+                }
+            payload_preview = {
+                **payload_preview,
+                "sitelinks_preview": sl_payload_preview,
+            }
 
         # Dry-run path: never call ads.update.
         if payload.dry_run:
@@ -1606,39 +1644,102 @@ class MockStore:
                 "YandexDirectClient is required for live UTM apply writes"
             )
 
-        if not v5_ads:
+        if not v5_ads and not sitelink_payloads:
             raise YandexDirectError(
-                "No ads with URLs to update — all ads either have no URL "
+                "No ads or sitelinks with URLs to update — all URLs either are missing "
                 "or already have complete UTM with overwrite=False"
             )
 
         try:
-            yandex_result = client.ads_update(v5_ads)
-            if not yandex_result.get("ok"):
-                err = yandex_result.get("error") or {}
-                raise YandexDirectError(
-                    f"Yandex Direct rejected ads.update for UTM: "
-                    f"error_code={err.get('error_code')!r}"
-                )
-            sent_units = _safe_units(yandex_result.get("units"))
-            provider_warnings = _provider_warnings_from_result(yandex_result)
+            sent_units: int | None = None
+            provider_warnings: list[ProviderWarning] = []
+            if v5_ads:
+                yandex_result = client.ads_update(v5_ads)
+                if not yandex_result.get("ok"):
+                    err = yandex_result.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected ads.update for UTM: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                sent_units = _safe_units(yandex_result.get("units"))
+                provider_warnings = _provider_warnings_from_result(yandex_result)
+
+            if payload.include_sitelinks and sitelink_payloads:
+                sitelinks_result = client.sitelinks_update(sitelink_payloads)
+                if not sitelinks_result.get("ok"):
+                    err = sitelinks_result.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct rejected sitelinks.update for UTM: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                provider_warnings.extend(_provider_warnings_from_result(sitelinks_result))
+                sl_units = _safe_units(sitelinks_result.get("units"))
+                if sl_units is not None:
+                    if sent_units is None:
+                        sent_units = sl_units
+                    else:
+                        sent_units += sl_units
 
             # Readback: confirm new URLs.
             readback: list[dict[str, Any]] | None = None
-            try:
+            sitelink_readback: list[dict[str, Any]] | None = None
+            if target_ad_ids:
                 rb_resp = client.ads_get_by_ids(target_ad_ids)
-                if rb_resp.get("ok"):
-                    rb_ads = (rb_resp.get("result") or {}).get("Ads") or []
-                    readback = [
-                        {
-                            "Id": a.get("Id"),
-                            "Href": (a.get("TextAd") or {}).get("Href", ""),
-                        }
-                        for a in rb_ads
-                        if isinstance(a, dict)
-                    ]
-            except YandexDirectError:
-                readback = None
+                if not rb_resp.get("ok"):
+                    err = rb_resp.get("error") or {}
+                    raise YandexDirectError(
+                        f"Yandex Direct readback failed after ads.update for UTM: "
+                        f"error_code={err.get('error_code')!r}"
+                    )
+                rb_ads = (rb_resp.get("result") or {}).get("Ads") or []
+                readback = [
+                    {
+                        "Id": a.get("Id"),
+                        "Href": (a.get("TextAd") or {}).get("Href", ""),
+                    }
+                    for a in rb_ads
+                    if isinstance(a, dict)
+                ]
+                if len(readback) < len(target_ad_ids):
+                    raise YandexDirectError("Yandex Direct ads readback incomplete after UTM apply")
+            if payload.include_sitelinks and sitelink_payloads:
+                rb_sitelink_ids = sorted(
+                    [s_id for s_id in (s.get("Id") for s in sitelink_payloads) if isinstance(s_id, int)]
+                )
+                if rb_sitelink_ids:
+                    rb_sl_resp = client.sitelinks_get(ids=rb_sitelink_ids)
+                    if not rb_sl_resp.get("ok"):
+                        err = rb_sl_resp.get("error") or {}
+                        raise YandexDirectError(
+                            f"Yandex Direct readback failed after sitelinks.update for UTM: "
+                            f"error_code={err.get('error_code')!r}"
+                        )
+                    rb_sets = (rb_sl_resp.get("result") or {}).get("SitelinksSets") or []
+                    returned_set_ids: set[int] = set()
+                    for rb_set in rb_sets:
+                        if isinstance(rb_set, dict):
+                            rb_set_id = rb_set.get("Id")
+                            if isinstance(rb_set_id, int):
+                                returned_set_ids.add(rb_set_id)
+                            for s in (rb_set.get("Sitelinks") or []):
+                                if isinstance(s, dict):
+                                    sitelink_readback = sitelink_readback or []
+                                    sitelink_readback.append(
+                                        {
+                                            "sitelink_set_id": rb_set.get("Id"),
+                                            "title": s.get("Title"),
+                                            "href": s.get("Href", ""),
+                                        }
+                                    )
+                    expected_set_ids = set(rb_sitelink_ids)
+                    if returned_set_ids != expected_set_ids:
+                        missing = sorted(expected_set_ids - returned_set_ids)
+                        raise YandexDirectError(
+                            f"Yandex Direct sitelink readback incomplete after UTM apply: "
+                            f"missing_set_ids={missing!r}"
+                        )
+                    if not sitelink_readback:
+                        raise YandexDirectError("Yandex Direct sitelink readback empty after UTM apply")
 
             audit = self.append_audit(
                 "utm_apply_requested",
@@ -1670,6 +1771,7 @@ class MockStore:
                 sitelink_items=sitelink_items,
                 payload_preview=payload_preview,
                 readback=readback,
+                sitelink_readback=sitelink_readback,
                 provider_warnings=provider_warnings,
                 warnings=warnings,
                 not_implemented=not_implemented,

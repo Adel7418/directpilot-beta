@@ -394,7 +394,7 @@ class UtmPlanRequest(BaseModel):
     )
     include_sitelinks: bool = Field(
         default=True,
-        description="Include sitelink URLs in the plan. Sitelink apply is not_implemented.",
+        description="Include sitelinks in the plan and apply flow.",
     )
 
 
@@ -422,7 +422,7 @@ class UtmPlanResult(BaseModel):
     items: list[UtmChangeItem] = Field(default_factory=list)
     sitelink_items: list[UtmChangeItem] = Field(
         default_factory=list,
-        description="Sitelink URL changes (preview only — sitelink apply is not_implemented).",
+        description="Sitelink URL changes produced for preview and optional apply.",
     )
     payload_preview: dict | None = Field(
         default=None,
@@ -461,10 +461,7 @@ class UtmApplyRequest(BaseModel):
     )
     include_sitelinks: bool = Field(
         default=True,
-        description=(
-            "Request sitelink URL changes. Sitelink apply is not_implemented "
-            "and will be surfaced in warnings/not_implemented even if True."
-        ),
+        description="Request sitelink URL changes and apply them together with ads when requested.",
     )
     reason: str | None = Field(
         default=None,
@@ -491,10 +488,14 @@ class UtmApplyResult(BaseModel):
     ad_ids: list[int] = Field(default_factory=list)
     sitelink_items: list[UtmChangeItem] = Field(
         default_factory=list,
-        description="Sitelink URL previews (apply not_implemented).",
+        description="Sitelink URL changes when include_sitelinks=True; may be empty.",
     )
     payload_preview: dict | None = None
     readback: list[dict] | None = None
+    sitelink_readback: list[dict] | None = Field(
+        default=None,
+        description="Explicit readback of updated sitelink URLs after successful apply.",
+    )
     provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     not_implemented: list[str] = Field(default_factory=list)

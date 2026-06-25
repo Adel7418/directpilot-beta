@@ -60,7 +60,7 @@ For read-only marketing work:
    - `POST /yandex/campaigns/{campaign_id}/autotargeting` — обновить автотаргетинг (dry_run default; apply — `live_write` + `approved` + `idempotency_key`)
    - `GET /yandex/campaigns/{campaign_id}/utm-audit` — аудит UTM-разметки (read-only; статус по объявлениям и быстрым ссылкам)
    - `POST /yandex/campaigns/{campaign_id}/utm-plan` — план UTM (всегда dry_run; old_url → new_url preview; payload_preview для apply)
-   - `POST /yandex/campaigns/{campaign_id}/utm-apply` — применить UTM (dry_run default; apply — `live_write` + `approved` + `idempotency_key`; sitelinks apply not_implemented)
+   - `POST /yandex/campaigns/{campaign_id}/utm-apply` — применить UTM (dry_run default; apply — `live_write` + `approved` + `idempotency_key`; `include_sitelinks=true` updates sitelinks via `sitelinks.update`)
 
 Scope rule for operators/agents:
 
@@ -241,11 +241,11 @@ UTM workflow for Yandex Direct campaigns:
 3. **User approval (HUMAN APPROVAL CONTRACT):** show the concrete diff to the user. Ask about:
    - `campaign_slug` — if ambiguous, generate from campaign name+id (safe default).
    - `overwrite` — whether to replace existing UTM (default: false, preserve existing).
-   - sitelinks — warn that apply is not_implemented (preview only).
+   - sitelinks — include in preview/apply only when requested; preserve existing titles/descriptions and set structure.
    Do NOT apply without explicit user confirmation. `approved=true` is a technical
    flag, not agent self-approval.
 4. **Apply:** `POST /yandex/campaigns/{campaign_id}/utm-apply` with `approved=true`, `idempotency_key`, `DIRECTPILOT_MODE=live_write`, `dry_run=false`.
-5. **Readback:** response includes `readback` with confirmed new URLs after successful apply.
+5. **Readback:** response includes `readback` for ads and `sitelink_readback` for sitelinks with confirmed new URLs after successful apply.
 
 **New campaigns (live-create) — UTM at birth:**
 
@@ -260,7 +260,7 @@ UTM workflow for Yandex Direct campaigns:
 **When to ask the user:**
 - Campaign slug/naming is unclear.
 - Overwrite of existing UTM is requested.
-- Sitelinks UTM apply is desired (currently preview-only, `not_implemented`).
+- Sitelinks UTM apply is desired; include `include_sitelinks=true` and verify `sitelink_readback` after apply.
 
 Default UTM convention:
 - `utm_source=yandex`, `utm_medium=cpc` (fixed).
@@ -273,7 +273,7 @@ Safety:
 - `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` are preserved from readback.
 - `live_readonly` blocks writes with HTTP 409 before any network call.
 - Custom params supported but never override core five UTM params.
-- Sitelink apply is `not_implemented` — sitelinks are preview-only (fail-closed).
+- Sitelink apply uses `sitelinks.update` through DirectPilot gates; fail closed on provider errors and do not report success without readback.
 
 ## Verification checklist
 

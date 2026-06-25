@@ -2823,7 +2823,7 @@
           },
           "include_sitelinks": {
             "default": true,
-            "description": "Request sitelink URL changes. Sitelink apply is not_implemented and will be surfaced in warnings/not_implemented even if True.",
+            "description": "Request sitelink URL changes and apply them together with ads when requested.",
             "title": "Include Sitelinks",
             "type": "boolean"
           },
@@ -2930,12 +2930,28 @@
             "title": "Readback"
           },
           "sitelink_items": {
-            "description": "Sitelink URL previews (apply not_implemented).",
+            "description": "Sitelink URL changes when include_sitelinks=True; may be empty.",
             "items": {
               "$ref": "#/components/schemas/UtmChangeItem"
             },
             "title": "Sitelink Items",
             "type": "array"
+          },
+          "sitelink_readback": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Explicit readback of updated sitelink URLs after successful apply.",
+            "title": "Sitelink Readback"
           },
           "source": {
             "default": "yandex",
@@ -3291,7 +3307,7 @@
           },
           "include_sitelinks": {
             "default": true,
-            "description": "Include sitelink URLs in the plan. Sitelink apply is not_implemented.",
+            "description": "Include sitelinks in the plan and apply flow.",
             "title": "Include Sitelinks",
             "type": "boolean"
           },
@@ -3355,7 +3371,7 @@
             "title": "Payload Preview"
           },
           "sitelink_items": {
-            "description": "Sitelink URL changes (preview only — sitelink apply is not_implemented).",
+            "description": "Sitelink URL changes produced for preview and optional apply.",
             "items": {
               "$ref": "#/components/schemas/UtmChangeItem"
             },
@@ -9417,7 +9433,7 @@
     },
     "/yandex/campaigns/{campaign_id}/utm-apply": {
       "post": {
-        "description": "Apply UTM URLs to live ads — write-gated.\n\n* ``dry_run=True`` → preview only, ``applied=False``.\n* ``dry_run=False`` requires:\n  1. ``DIRECTPILOT_MODE=live_write``\n  2. ``approved=true``\n  3. ``idempotency_key`` (>= 6 chars)\n\nUses ``ads.update`` (REPLACE-shaped) to safely update TextAd.Href.\nSitelink apply is not_implemented — surfaced in ``not_implemented``.",
+        "description": "Apply UTM URLs to live ads — write-gated.\n\n* ``dry_run=True`` → preview only, ``applied=False``.\n* ``dry_run=False`` requires:\n  1. ``DIRECTPILOT_MODE=live_write``\n  2. ``approved=true``\n  3. ``idempotency_key`` (>= 6 chars)\n\nUses ``ads.update`` (REPLACE-shaped) to safely update TextAd.Href.\nWhen requested, uses ``sitelinks.update`` to update attached sitelink Href values.",
         "operationId": "yandex_utm_apply_yandex_campaigns__campaign_id__utm_apply_post",
         "parameters": [
           {
@@ -9507,7 +9523,7 @@
     },
     "/yandex/campaigns/{campaign_id}/utm-plan": {
       "post": {
-        "description": "Generate UTM plan/preview — always dry_run, never writes.\n\nReturns the list of URL changes (old → new with UTM) and a\npreview of the v5 ``ads.update`` payload that WOULD be sent on apply.\nSitelink previews are included but apply is not_implemented.",
+        "description": "Generate UTM plan/preview — always dry_run, never writes.\n\nReturns the list of URL changes (old → new with UTM) and a\npreview of the v5 ``ads.update`` payload that WOULD be sent on apply.\nSitelink previews are included and can be applied through ``utm-apply``\nvia ``sitelinks.update`` when ``include_sitelinks=true``.",
         "operationId": "yandex_utm_plan_yandex_campaigns__campaign_id__utm_plan_post",
         "parameters": [
           {

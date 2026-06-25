@@ -83,7 +83,7 @@ Every external agent (marketing, coding, reviewer) must follow this workflow:
   ask the user to provide an explicit ``campaign_slug`` (Latin transliteration
   or semantic slug, e.g. ``turbiny-rostov`` instead of ``campaign-12345``).
 - Overwrite of existing UTM is requested.
-- Sitelinks UTM apply is desired; `sitelink` part is preview-only and apply is currently `not_implemented` (fail-closed).
+- Sitelinks UTM apply is desired; with `include_sitelinks=true`, quick-link URLs are updated through gated `utm-apply`/`sitelinks.update` and must be verified via `sitelink_readback`.
 
 See `docs/MARKETER_GUIDE.md` (UTM section) and `docs/API_SIMPLE.md`
 for the full endpoint contracts.
