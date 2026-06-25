@@ -1669,7 +1669,20 @@ class MockStore:
                         )
                         full_items.append(item)
                     if set_has_changes:
-                        sitelink_payloads.append({"Id": sl_set_id, "Sitelinks": full_items})
+                        missing_fields = [f for f in ("Name", "Status", "Type") if sl_set.get(f) is None]
+                        if missing_fields:
+                            if is_live:
+                                raise ValueError(
+                                    f"Cannot update sitelinks set {sl_set_id} for UTM: "
+                                    f"missing required fields {missing_fields!r} from Yandex API get response"
+                                )
+                            fallback_values = {"Name": "Primary sitelinks", "Status": "ACTIVE", "Type": "TEXT"}
+                            sl_set = dict(sl_set)
+                            for field in missing_fields:
+                                sl_set[field] = fallback_values[field]
+                        set_payload = dict(sl_set)
+                        set_payload["Sitelinks"] = full_items
+                        sitelink_payloads.append(set_payload)
 
         payload_preview = {
             "method": "ads.update",

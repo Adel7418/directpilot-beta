@@ -388,7 +388,7 @@ class YandexDirectClient:
         offset: int | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
-            "FieldNames": ["Id"],
+            "FieldNames": ["Id", "Name", "Status", "Type"],
             "SitelinkFieldNames": ["Title", "Href", "Description", "TurboPageId"],
         }
         if ids is not None:

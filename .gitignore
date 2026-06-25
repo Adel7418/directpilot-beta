@@ -9,3 +9,4 @@ __pycache__/
 graphify-out/
 *.pyc
 .DS_Store
+.worktrees/

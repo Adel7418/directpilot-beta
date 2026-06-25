@@ -44,7 +44,21 @@ def _sitelink_set(*, prices_href: str, reviews_href: str | None = None) -> dict[
     ]
     if reviews_href is not None:
         links.append({"Title": "Отзывы", "Href": reviews_href, "Description": "Отзывы клиентов"})
-    return {"Id": 5001, "Sitelinks": links}
+    return {
+        "Id": 5001,
+        "Name": "Primary sitelinks",
+        "Status": "ACTIVE",
+        "Type": "TEXT",
+        "Sitelinks": links,
+    }
+
+
+def _sitelink_set_with_meta(*, prices_href: str, name: str = "Primary sitelinks") -> dict[str, Any]:
+    payload = _sitelink_set(prices_href=prices_href)
+    payload["Name"] = name
+    payload["Status"] = "ACTIVE"
+    payload["Type"] = "TEXT"
+    return payload
 
 
 class TestUtmSitelinksPlan:
@@ -363,6 +377,100 @@ class TestUtmSitelinksApply:
                 "href": "https://example.ru/?utm_source=yandex&utm_medium=cpc&utm_campaign=apply-slug#prices",
             }
         ]
+
+    def test_apply_keeps_full_sitelinks_set_shape_on_update(self):
+        settings = _settings("live_write")
+        state: dict[str, Any] = {"sitelinks_updated": False, "sitelinks_update_payload": None}
+
+        metadata_set = _sitelink_set_with_meta(prices_href="https://example.ru/#prices")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            service = request.url.path.rsplit("/", 1)[-1]
+            if service == "ads" and body.get("method") == "get":
+                return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+            if service == "ads" and body.get("method") == "update":
+                return httpx.Response(200, json={"result": {}})
+            if service == "sitelinks" and body.get("method") == "get":
+                rb_href = (
+                    "https://example.ru/?utm_source=yandex&utm_medium=cpc&utm_campaign=meta-slug#prices"
+                    if state["sitelinks_updated"]
+                    else "https://example.ru/#prices"
+                )
+                current = dict(metadata_set)
+                current["Sitelinks"] = [{"Title": "Цены", "Href": rb_href, "Description": "Прайс"}]
+                return httpx.Response(200, json={"result": {"SitelinksSets": [current]}})
+            if service == "sitelinks" and body.get("method") == "update":
+                state["sitelinks_updated"] = True
+                state["sitelinks_update_payload"] = body
+                return httpx.Response(200, json={"result": {}})
+            raise AssertionError(f"unexpected request {request.url} {body}")
+
+        yandex = _make_client(settings, handler)
+        client = TestClient(app)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: yandex
+        try:
+            resp = client.post(
+                "/yandex/campaigns/12345/utm-apply",
+                json={
+                    "approved": True,
+                    "idempotency_key": "utm-sl-meta-001",
+                    "dry_run": False,
+                    "campaign_slug": "meta-slug",
+                    "include_sitelinks": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200, resp.text
+        sent_set = state["sitelinks_update_payload"]["params"]["SitelinksSets"][0]
+        assert sent_set["Name"] == metadata_set["Name"]
+        assert sent_set["Status"] == metadata_set["Status"]
+        assert sent_set["Type"] == metadata_set["Type"]
+        assert "utm_campaign=meta-slug" in sent_set["Sitelinks"][0]["Href"]
+
+    def test_apply_fails_closed_when_sitelink_set_missing_required_fields(self):
+        settings = _settings("live_write")
+
+        missing = _sitelink_set(prices_href="https://example.ru/#prices")
+        missing.pop("Name", None)
+        missing.pop("Status", None)
+        missing.pop("Type", None)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            service = request.url.path.rsplit("/", 1)[-1]
+            if service == "ads" and body.get("method") == "get":
+                return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+            if service == "ads" and body.get("method") == "update":
+                # Should never be reached: sitelinks payload is incomplete.
+                return httpx.Response(200, json={"result": {}})
+            if service == "sitelinks" and body.get("method") == "get":
+                return httpx.Response(200, json={"result": {"SitelinksSets": [missing]}})
+            raise AssertionError(f"unexpected request {request.url} {body}")
+
+        yandex = _make_client(settings, handler)
+        client = TestClient(app)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: yandex
+        try:
+            resp = client.post(
+                "/yandex/campaigns/12345/utm-apply",
+                json={
+                    "approved": True,
+                    "idempotency_key": "utm-sl-missing-fields-001",
+                    "dry_run": False,
+                    "campaign_slug": "missing-meta-slug",
+                    "include_sitelinks": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 409
+        assert "missing required fields" in resp.text
 
     def test_sitelinks_api_error_fails_closed(self):
         settings = _settings("live_write")

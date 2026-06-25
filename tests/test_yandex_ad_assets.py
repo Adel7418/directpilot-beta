@@ -83,6 +83,9 @@ def test_sitelinks_get_omits_selection_criteria_when_no_ids_and_includes_field_n
     # SelectionCriteria must be absent (not empty dict) when no filter
     assert "SelectionCriteria" not in body["params"]
     assert "Id" in body["params"]["FieldNames"]
+    assert "Name" in body["params"]["FieldNames"]
+    assert "Status" in body["params"]["FieldNames"]
+    assert "Type" in body["params"]["FieldNames"]
     assert "Sitelinks" not in body["params"]["FieldNames"]
     assert "Title" in body["params"]["SitelinkFieldNames"]
     assert "Href" in body["params"]["SitelinkFieldNames"]
