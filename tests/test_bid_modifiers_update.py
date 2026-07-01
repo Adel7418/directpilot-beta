@@ -238,6 +238,121 @@ def test_bid_modifiers_setresults_errors_mark_partial_failure_without_false_appl
     assert SECRET_TOKEN not in response.text
 
 
+
+def test_bid_modifiers_read_normalizes_all_returned_types_including_weather():
+    settings = _settings("live_readonly")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        assert body["method"] == "get"
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "BidModifiers": [
+                        {
+                            "Id": 987654,
+                            "CampaignId": 710691939,
+                            "BidModifier": 0,
+                            "Demographics": {"AgeRange": "AGE_0_17"},
+                        },
+                        {
+                            "Id": 112233,
+                            "CampaignId": 710691939,
+                            "BidModifier": 80,
+                            "WeatherAdjustment": {
+                                "WeatherType": "RAIN",
+                                "Temperature": {"Operator": "LESS_THAN", "Value": 0},
+                            },
+                        },
+                    ]
+                }
+            },
+        )
+
+    client_obj = YandexDirectClient(settings=settings, transport=httpx.MockTransport(handler))
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: client_obj
+    try:
+        response = client.get(f"/yandex/campaigns/{CAMPAIGN_ID}/bid-modifiers")
+    finally:
+        _reset_overrides()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["campaign_id"] == CAMPAIGN_ID
+    assert body["source"] == "yandex"
+    assert body["read_only"] is True
+    assert body["items"][0]["type"] == "DEMOGRAPHICS"
+    assert body["items"][0]["adjustment_percent"] == -100
+    assert body["items"][1]["type"] == "WEATHER"
+    assert body["items"][1]["adjustment_percent"] == -20
+    assert body["items"][1]["conditions"] == {
+        "WeatherAdjustment": {
+            "WeatherType": "RAIN",
+            "Temperature": {"Operator": "LESS_THAN", "Value": 0},
+        }
+    }
+    assert SECRET_TOKEN not in response.text
+
+
+def test_bid_modifiers_generic_weather_apply_sends_minimal_existing_id_payload():
+    settings = _settings("live_write")
+    captured: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        captured.append(body)
+        if body["method"] == "set":
+            return httpx.Response(200, json={"result": {"SetResults": [{"Id": 112233}]}})
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "BidModifiers": [
+                        {
+                            "Id": 112233,
+                            "CampaignId": 710691939,
+                            "BidModifier": 80,
+                            "WeatherAdjustment": {"WeatherType": "RAIN"},
+                        }
+                    ]
+                }
+            },
+        )
+
+    client_obj = YandexDirectClient(settings=settings, transport=httpx.MockTransport(handler))
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: client_obj
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/bid-modifiers",
+            json={
+                "approved": True,
+                "idempotency_key": "bidmod-weather-apply-001",
+                "dry_run": False,
+                "adjustments": [
+                    {
+                        "modifier_id": 112233,
+                        "type_hint": "Weather",
+                        "bid_modifier": 80,
+                        "conditions": {"WeatherType": "RAIN"},
+                    }
+                ],
+            },
+        )
+    finally:
+        _reset_overrides()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["applied"] is True
+    assert captured[0] == {
+        "method": "set",
+        "params": {"BidModifiers": [{"Id": 112233, "BidModifier": 80}]},
+    }
+    assert captured[1]["method"] == "get"
+    assert SECRET_TOKEN not in response.text
+
 def test_bid_modifiers_unexpected_store_error_returns_502_without_raw_exception():
     app.dependency_overrides[get_settings] = lambda: _settings("live_write")
 

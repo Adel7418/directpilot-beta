@@ -2478,14 +2478,47 @@ class KeywordBidUpdateResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class BidModifierAgeAdjustment(BaseModel):
-    """Age/demographic bid modifier adjustment for a safe write preview.
+class YandexBidModifierItem(BaseModel):
+    """Normalized read-only view of one Direct ``bidmodifiers.get`` item.
 
-    Yandex Direct v5 ``bidmodifiers.set`` updates an existing modifier by
-    ``Id`` and ``BidModifier``. DirectPilot keeps the human-facing request in
-    adjustment-percent form (``-100`` means exclude the segment) and converts it
-    to the Direct coefficient where ``BidModifier = 100 + adjustment_percent``.
-    Therefore ``-100`` becomes Direct ``BidModifier=0``.
+    Direct can return many modifier families (demographic, mobile, retargeting,
+    weather, regional, video, etc.). DirectPilot keeps the original provider
+    item for operator diagnostics and extracts common fields without inventing
+    create/update payload shapes for modifier-specific conditions.
+    """
+
+    id: int | None = None
+    campaign_id: int | None = None
+    type: str = "UNKNOWN"
+    bid_modifier: int | None = None
+    adjustment_percent: int | None = None
+    conditions: dict[str, Any] = Field(default_factory=dict)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class YandexBidModifiersReadResult(BaseModel):
+    """Read-only campaign bid-modifier list.
+
+    The endpoint is intentionally read-only. Weather and other condition
+    modifiers are represented when Direct returns them; writes update existing
+    modifier ids only through the gated POST endpoint.
+    """
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "mock"
+    read_only: bool = True
+    items: list[YandexBidModifierItem] = Field(default_factory=list)
+    raw: dict[str, Any] | None = None
+
+
+class BidModifierAdjustment(BaseModel):
+    """Generic existing bid-modifier adjustment for safe preview/apply.
+
+    ``bidmodifiers.set`` updates an existing modifier by ``Id`` and
+    ``BidModifier``. DirectPilot supports any existing modifier type (including
+    weather modifiers returned by readback) by requiring the operator to provide
+    the existing ``modifier_id`` for live apply. Modifier-specific condition
+    metadata is preview-only and is never sent to ``bidmodifiers.set``.
     """
 
     modifier_id: int | None = Field(
@@ -2496,12 +2529,16 @@ class BidModifierAgeAdjustment(BaseModel):
             "dry-run previews may omit it until readback resolves the modifier."
         ),
     )
-    age_range: Literal["AGE_0_17"] = Field(
-        default="AGE_0_17",
-        description="Under-18 age segment used for demographic exclusion previews.",
+    type_hint: str | None = Field(
+        default=None,
+        description="Operator-facing modifier type hint, e.g. Demographics, Weather, Mobile.",
     )
-    adjustment_percent: int = Field(
-        ...,
+    age_range: Literal["AGE_0_17"] | None = Field(
+        default=None,
+        description="Backward-compatible under-18 demographic segment preview hint.",
+    )
+    adjustment_percent: int | None = Field(
+        default=None,
         ge=-100,
         le=1200,
         description=(
@@ -2510,26 +2547,68 @@ class BidModifierAgeAdjustment(BaseModel):
             "BidModifier = 100 + adjustment_percent."
         ),
     )
+    bid_modifier: int | None = Field(
+        default=None,
+        ge=0,
+        le=1300,
+        description="Direct v5 BidModifier coefficient. Alternative to adjustment_percent.",
+    )
+    conditions: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Preview-only modifier-specific metadata, e.g. weather condition labels.",
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one_modifier_value(self) -> "BidModifierAdjustment":
+        if self.adjustment_percent is None and self.bid_modifier is None:
+            raise ValueError("adjustment_percent or bid_modifier is required")
+        if self.adjustment_percent is not None and self.bid_modifier is not None:
+            raise ValueError("Use either adjustment_percent or bid_modifier, not both")
+        return self
 
     @property
     def direct_bid_modifier(self) -> int:
+        if self.bid_modifier is not None:
+            return self.bid_modifier
+        assert self.adjustment_percent is not None
         return 100 + self.adjustment_percent
+
+    @property
+    def preview_adjustment_percent(self) -> int:
+        if self.adjustment_percent is not None:
+            return self.adjustment_percent
+        assert self.bid_modifier is not None
+        return self.bid_modifier - 100
 
     def to_preview_item(self, campaign_id: int | str) -> dict:
         item: dict = {
             "CampaignId": int(campaign_id),
-            "AgeRange": self.age_range,
-            "AdjustmentPercent": self.adjustment_percent,
+            "AdjustmentPercent": self.preview_adjustment_percent,
             "BidModifier": self.direct_bid_modifier,
         }
         if self.modifier_id is not None:
             item["Id"] = self.modifier_id
+        if self.type_hint:
+            item["TypeHint"] = self.type_hint
+        if self.age_range is not None:
+            item["AgeRange"] = self.age_range
+        if self.conditions:
+            item["Conditions"] = self.conditions
         return item
 
     def to_direct_set_item(self) -> dict:
         if self.modifier_id is None:
             raise ValueError("modifier_id is required to build bidmodifiers.set payload")
         return {"Id": self.modifier_id, "BidModifier": self.direct_bid_modifier}
+
+
+class BidModifierAgeAdjustment(BidModifierAdjustment):
+    """Backward-compatible alias/model for the previous AGE_0_17 request shape."""
+
+    age_range: Literal["AGE_0_17"] | None = Field(
+        default="AGE_0_17",
+        description="Under-18 age segment used for demographic exclusion previews.",
+    )
 
 
 class BidModifiersUpdateRequest(BaseModel):
@@ -2543,7 +2622,7 @@ class BidModifiersUpdateRequest(BaseModel):
     dry_run: bool = True
     approved: bool = False
     idempotency_key: str | None = Field(default=None, min_length=6)
-    adjustments: list[BidModifierAgeAdjustment] = Field(..., min_length=1, max_length=1000)
+    adjustments: list[BidModifierAdjustment] = Field(..., min_length=1, max_length=1000)
     reason: str | None = None
 
     def build_payload_preview(self, campaign_id: int | str) -> dict:

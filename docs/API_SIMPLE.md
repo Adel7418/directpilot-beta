@@ -499,18 +499,20 @@ write и без утечки тела/токена в ошибке).
 - top-level failure от `keywordbids.set` / upstream Direct error → HTTP 502 с редактированными diagnostics.
 - `dry_run=true` всегда разрешён, никогда не пишет.
 
-### Live Direct: изменить корректировки ставок по возрасту/демографии
+### Live Direct: читать и изменять существующие корректировки ставок
 
 ```http
 POST /yandex/campaigns/{campaign_id}/bid-modifiers
 ```
 
-Endpoint изменяет **существующие** демографические bid modifiers через Direct API v5 `bidmodifiers.set`.
+Endpoints читают и изменяют **существующие** bid modifiers через Direct API v5 `bidmodifiers.get` / `bidmodifiers.set`: демография, устройства, ретаргетинг, региональные/погодные и другие типы, которые возвращает Direct для кампании.
 
 Ключевые ограничения интерфейса:
+- `GET /yandex/campaigns/{campaign_id}/bid-modifiers` возвращает нормализованный список всех modifier items и безопасный raw provider block.
 - `bidmodifiers.set` меняет существующую корректировку только по `Id` + `BidModifier`.
-- Через `POST /yandex/campaigns/{campaign_id}/bid-modifiers` **нельзя создать** новый modifier.
-- Операторский `age_range` поддерживается как `AGE_0_17`, `adjustment_percent` поддерживает диапазон `-100..1200`, и `-100` мапится в `BidModifier=0` (`100 + adjustment_percent`).
+- Через `POST /yandex/campaigns/{campaign_id}/bid-modifiers` **нельзя создать** новый modifier, включая погодный. Сначала прочитайте существующий weather modifier через GET, затем обновляйте его по `modifier_id`.
+- `adjustment_percent` поддерживает диапазон `-100..1200` и мапится в `BidModifier=100+adjustment_percent`; альтернативно можно передать прямой `bid_modifier` `0..1300`.
+- `type_hint`, `age_range`, `conditions` — операторские preview-поля; в live `bidmodifiers.set` они не отправляются.
 
 Для live apply сначала прочитайте текущие корректировки через:
 
@@ -560,6 +562,26 @@ Direct payload будет минимальным и безопасным:
 {"BidModifiers": [{"Id": 987654, "BidModifier": 0}]}
 ```
 
+**Пример preview для существующей погодной корректировки:**
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "bidmod-weather-001",
+  "dry_run": true,
+  "adjustments": [
+    {
+      "modifier_id": 112233,
+      "type_hint": "Weather",
+      "bid_modifier": 80,
+      "conditions": {"WeatherType": "RAIN"}
+    }
+  ]
+}
+```
+
+Для live apply DirectPilot всё равно отправит только `{"Id": 112233, "BidModifier": 80}`. Погодные условия в `conditions` нужны для читаемости preview и сверки с GET-readback, не для создания новой погодной корректировки.
+
 Применение доступно только при:
 - `DIRECTPILOT_MODE=live_write`;
 - `approved=true`;
@@ -575,7 +597,7 @@ Direct payload будет минимальным и безопасным:
 - В таком кейсе добавляется аудит-событие `yandex_bid_modifiers_failed`.
 
 **Pitfalls:**
-- Не отправляйте `CampaignId/AgeRange` в `bidmodifiers.set`: метод принимает только `Id + BidModifier`.
+- Не отправляйте `CampaignId/AgeRange/type_hint/conditions` в `bidmodifiers.set`: метод принимает только `Id + BidModifier` для существующего modifier.
 - `approved=true` остаётся техническим флагом; сначала показывайте dry-run пользователю и ждите явного подтверждения.
 **Human Approval Contract:**
 `approved=true` — технический флаг, а не самосогласование агента.
