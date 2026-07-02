@@ -52,6 +52,58 @@ def test_extended_get_methods_post_expected_service_and_method_without_leaking_t
 
         assert captured["url"] == f"https://api.direct.yandex.com/json/v5/{service}"
         assert captured["body"]["method"] == direct_method
+        if method_name == "bidmodifiers_get":
+            params = captured["body"]["params"]
+            assert params["FieldNames"] == ["Id", "CampaignId", "AdGroupId", "Level", "Type"]
+            assert params["SelectionCriteria"]["CampaignIds"] == [710]
+            assert set(params.keys()) == {
+                "SelectionCriteria",
+                "FieldNames",
+                "MobileAdjustmentFieldNames",
+                "TabletAdjustmentFieldNames",
+                "DesktopAdjustmentFieldNames",
+                "DesktopOnlyAdjustmentFieldNames",
+                "DemographicsAdjustmentFieldNames",
+                "RetargetingAdjustmentFieldNames",
+                "RegionalAdjustmentFieldNames",
+                "VideoAdjustmentFieldNames",
+                "SmartAdAdjustmentFieldNames",
+                "SerpLayoutAdjustmentFieldNames",
+                "IncomeGradeAdjustmentFieldNames",
+                "AdGroupAdjustmentFieldNames",
+            }
+            assert params["MobileAdjustmentFieldNames"] == [
+                "BidModifier",
+                "OperatingSystemType",
+            ]
+            assert params["TabletAdjustmentFieldNames"] == [
+                "BidModifier",
+                "OperatingSystemType",
+            ]
+            assert params["DesktopAdjustmentFieldNames"] == ["BidModifier"]
+            assert params["DesktopOnlyAdjustmentFieldNames"] == ["BidModifier"]
+            assert params["DemographicsAdjustmentFieldNames"] == [
+                "Gender",
+                "Age",
+                "BidModifier",
+                "Enabled",
+            ]
+            assert params["RetargetingAdjustmentFieldNames"] == [
+                "RetargetingConditionId",
+                "BidModifier",
+                "Accessible",
+                "Enabled",
+            ]
+            assert params["RegionalAdjustmentFieldNames"] == ["RegionId", "BidModifier", "Enabled"]
+            assert params["VideoAdjustmentFieldNames"] == ["BidModifier"]
+            assert params["SmartAdAdjustmentFieldNames"] == ["BidModifier"]
+            assert params["SerpLayoutAdjustmentFieldNames"] == [
+                "SerpLayout",
+                "BidModifier",
+                "Enabled",
+            ]
+            assert params["IncomeGradeAdjustmentFieldNames"] == ["Grade", "BidModifier", "Enabled"]
+            assert params["AdGroupAdjustmentFieldNames"] == ["BidModifier"]
         if method_name == "bidmodifiers_set":
             assert captured["body"]["params"]["BidModifiers"] == [
                 {"CampaignId": 710, "Type": "MOBILE"}
