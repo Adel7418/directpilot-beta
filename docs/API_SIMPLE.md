@@ -499,18 +499,29 @@ write и без утечки тела/токена в ошибке).
 - top-level failure от `keywordbids.set` / upstream Direct error → HTTP 502 с редактированными diagnostics.
 - `dry_run=true` всегда разрешён, никогда не пишет.
 
-### Live Direct: читать и изменять существующие корректировки ставок
+### Live Direct: читать и изменять/создавать корректировки ставок
 
 ```http
 POST /yandex/campaigns/{campaign_id}/bid-modifiers
 ```
 
-Endpoints читают и изменяют **существующие** bid modifiers через Direct API v5 `bidmodifiers.get` / `bidmodifiers.set`: демография, устройства, ретаргетинг, региональные/погодные и другие типы, которые возвращает Direct для кампании.
+Оба маршрута (`.../bid-modifiers` и `.../bid-modifiers/create`) по умолчанию работают в `dry_run=true` и не применяют изменения до явного разрешённого live-запуска.
+
+Для создания новых корректировок используйте отдельный эндпоинт:
+
+```http
+POST /yandex/campaigns/{campaign_id}/bid-modifiers/create
+```
+
+Он работает через `bidmodifiers.add` и поддерживает source-backed create families: устройства (`MOBILE_ADJUSTMENT`, `TABLET_ADJUSTMENT`, `DESKTOP_ADJUSTMENT`, `DESKTOP_ONLY_ADJUSTMENT`, `SMART_TV_ADJUSTMENT`/`SMARTTV_ADJUSTMENT`), пол/возраст (`DEMOGRAPHICS_ADJUSTMENT`), ретаргетинг (`RETARGETING_ADJUSTMENT`), регионы (`REGIONAL_ADJUSTMENT`), видео (`VIDEO_ADJUSTMENT`; legacy alias `VIDEO_EXTENSION_ADJUSTMENT`), smart ads, эксклюзивное размещение (`SERP_LAYOUT_ADJUSTMENT`), платежеспособность (`INCOME_GRADE_ADJUSTMENT`) и group-level coefficient (`AD_GROUP_ADJUSTMENT`). `WEATHER_ADJUSTMENT` create отключён: live Yandex Direct вернул `error_code=8000` / unknown parameter `WeatherAdjustment`, а публичный `bidmodifiers.add` contract не содержит этот block. Existing weather rows можно менять только update-flow по `modifier_id` (`Id + BidModifier`).
 
 Ключевые ограничения интерфейса:
 - `GET /yandex/campaigns/{campaign_id}/bid-modifiers` возвращает нормализованный список всех modifier items и безопасный raw provider block.
-- `bidmodifiers.set` меняет существующую корректировку только по `Id` + `BidModifier`.
-- Через `POST /yandex/campaigns/{campaign_id}/bid-modifiers` **нельзя создать** новый modifier, включая погодный. Сначала прочитайте существующий weather modifier через GET, затем обновляйте его по `modifier_id`.
+- `bidmodifiers.set` (``.../bid-modifiers``) меняет существующую корректировку только по `Id` + `BidModifier`.
+- `POST /yandex/campaigns/{campaign_id}/bid-modifiers/create` создаёт новые строки через `bidmodifiers.add` и строит documented v5 shape: singleton blocks для устройств/video/smart/ad-group, plural array blocks для `DemographicsAdjustments`, `RetargetingAdjustments`, `RegionalAdjustments`, `SerpLayoutAdjustments`, `IncomeGradeAdjustments`.
+- Official enum validation на create: `OperatingSystemType=IOS|ANDROID`, `Gender=GENDER_MALE|GENDER_FEMALE`, `Age=AGE_0_17|AGE_18_24|AGE_25_34|AGE_35_44|AGE_45|AGE_45_54|AGE_55`, `SerpLayout=ALONE|SUGGEST`, `Grade=VERY_HIGH|HIGH|ABOVE_AVERAGE`.
+- `AD_GROUP_ADJUSTMENT` создаётся только с `ad_group_id`; campaign-level body для этого типа отклоняется.
+- `WEATHER_ADJUSTMENT` create сейчас не поддерживается и отклоняется до provider call: live Yandex Direct вернул `error_code=8000` / unknown parameter `WeatherAdjustment`, а публичный `bidmodifiers.add` contract не содержит weather block. Для погоды используйте read-first existing-modifier update только по `modifier_id` (`Id + BidModifier`), если `bidmodifiers.get` вернул существующую weather row. `humidity`/`wind` и «Уровень трат в категории» также не реализованы до подтверждённого API/provider mapping.
 - `adjustment_percent` поддерживает диапазон `-100..1200` и мапится в `BidModifier=100+adjustment_percent`; альтернативно можно передать прямой `bid_modifier` `0..1300`.
 - `type_hint`, `age_range`, `conditions` — операторские preview-поля; в live `bidmodifiers.set` они не отправляются.
 
@@ -580,7 +591,7 @@ Direct payload будет минимальным и безопасным:
 }
 ```
 
-Для live apply DirectPilot всё равно отправит только `{"Id": 112233, "BidModifier": 80}`. Погодные условия в `conditions` нужны для читаемости preview и сверки с GET-readback, не для создания новой погодной корректировки.
+Для update live apply DirectPilot всё равно отправит только `{"Id": 112233, "BidModifier": 80}`. Создание новой погодной корректировки через `POST .../bid-modifiers/create` отключено: Direct `bidmodifiers.add` не признаёт `WeatherAdjustment` (`error_code=8000`). Не выдумывайте alternative shape; пока нет подтверждённого provider/API mapping, можно только менять коэффициент уже существующей weather row по `modifier_id`.
 
 Применение доступно только при:
 - `DIRECTPILOT_MODE=live_write`;
@@ -589,7 +600,9 @@ Direct payload будет минимальным и безопасным:
 - `dry_run=false`;
 - явном согласовании от пользователя (маркетолог/оператор показывают dry-run/diff до apply).
 
-После `applied=true` endpoint делает readback через `bidmodifiers.get`.
+После `applied=true` endpoint делает readback через `bidmodifiers.get`; Direct `bidmodifiers.get` должен отправлять `SelectionCriteria.Levels=["CAMPAIGN","AD_GROUP"]`, иначе sandbox/live возвращает `error_code=8000` / missing `Levels`. `bidmodifiers.add` возвращает `AddResults[].Ids` (plural), это нормальный provider envelope.
+
+Опциональный sandbox smoke для проверки реального `bidmodifiers.set` shape находится в `tests/test_yandex_bidmodifiers_sandbox_smoke.py`. Он по умолчанию пропущен и запускается только с `DIRECTPILOT_YANDEX_SANDBOX_SMOKE=bidmodifiers_set` и `YANDEX_DIRECT_SANDBOX_TOKEN`. Для выбора строки можно передать `YANDEX_DIRECT_SANDBOX_MODIFIER_ID`; если ID не задан, smoke делает `bidmodifiers.get` по `YANDEX_DIRECT_SANDBOX_CAMPAIGN_ID`, опционально фильтрует по `YANDEX_DIRECT_SANDBOX_MODIFIER_TYPE`, берёт существующий `Id`, выполняет no-op set текущего `BidModifier` и readback. Weather create в smoke не выполняется.
 
 **Ошибки и диагностика:**
 - Если `modifier_id` отсутствует при `dry_run=false`, endpoint возвращает `HTTP 409` до сетевого write.
@@ -1545,6 +1558,7 @@ GET /metrika/counters/{counter_id}/traffic-sources?date1=YYYY-MM-DD&date2=YYYY-M
 GET /yandex/campaigns/{campaign_id}/bids              -> bids.get
 GET /yandex/campaigns/{campaign_id}/bid-modifiers     -> bidmodifiers.get
 POST /yandex/campaigns/{campaign_id}/bid-modifiers    -> bidmodifiers.set (dry-run/apply gated)
+POST /yandex/campaigns/{campaign_id}/bid-modifiers/create -> bidmodifiers.add (dry-run/apply gated, documented families only; weather create unsupported)
 GET /yandex/campaigns/{campaign_id}/negative-keywords?ids=1,2 -> negativekeywordsharedsets.get
 GET /yandex/changes/check                             -> changes.check
 GET /yandex/changes                                   -> changes.get

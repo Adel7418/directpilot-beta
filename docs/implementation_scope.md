@@ -38,10 +38,11 @@ Safe endpoints that expose real production Yandex Direct data in `live_readonly`
 
 ### Live-control and existing-campaign write actions
 
-Safe live-write controls for existing campaigns are available in two groups:
+Safe live-write controls for existing campaigns are available in three groups:
 
 - **Campaign lifecycle control** (`pause`/`resume`) for already-created campaigns.
 - **Existing-campaign ad creation + moderation** for already-created ad groups/ads.
+- **Bid modifier maintenance** for campaign settings: existing rows update + source-backed new-row create for documented `bidmodifiers.add` families (including Smart TV, official enum validation and plural array blocks). Weather create is intentionally disabled after live `error_code=8000` unknown `WeatherAdjustment`; existing weather rows remain coefficient-updatable by `Id + BidModifier` only.
 
 All support `dry_run` in `live_readonly`; real Direct writes require `live_write`, explicit approval, idempotency and audit gates.
 
@@ -49,6 +50,8 @@ All support `dry_run` in `live_readonly`; real Direct writes require `live_write
 - `POST /yandex/campaigns/{campaign_id}/resume`
 - `POST /yandex/ad-groups/{ad_group_id}/ads`
 - `POST /yandex/ads/moderate`
+- `POST /yandex/campaigns/{campaign_id}/bid-modifiers` — update existing modifier coefficient (Id-based, dry-run + write gate)
+- `POST /yandex/campaigns/{campaign_id}/bid-modifiers/create` — create new modifier row (dry-run/apply gate; documented families only; weather create and spend-category adjustment intentionally unsupported until API/provider mapping is known)
 
 ### Live-create campaign (staged chain)
 
@@ -119,3 +122,7 @@ Region / geo targeting:
 - `/yandex/campaigns/finance` читает `campaigns.get` с `Funds`, `Statistics`, `DailyBudget`, `StartDate`, `EndDate`, нормализуя micro-units в рубли;
 - `/metrika/counters`, `/metrika/counters/{counter_id}/goals`, `/metrika/counters/{counter_id}/summary`, `/metrika/counters/{counter_id}/traffic-sources` читают Метрику через отдельный `YANDEX_METRIKA_OAUTH_TOKEN`;
 - для агрегированных целей Метрики используется `ym:s:anyGoalReaches`, для источников — `ym:s:lastsignTrafficSource`.
+
+### Bid modifier UI coverage caveat
+
+Yandex Direct Help/UI documents weather and spend-category UI controls, but public `bidmodifiers.add/get/set` docs checked in this phase do not expose a spend-category API family and live `bidmodifiers.add` rejected `WeatherAdjustment` with `error_code=8000` / unknown parameter. DirectPilot therefore supports documented add families with strict official enum validation, rejects `WEATHER_ADJUSTMENT` create before provider calls, keeps existing weather updates coefficient-only by `Id + BidModifier`, and leaves “Уровень трат в категории” unsupported until a verified provider mapping exists.

@@ -27,6 +27,7 @@ def test_extended_get_methods_post_expected_service_and_method_without_leaking_t
         ("dictionaries_get", tuple(), "dictionaries", "get"),
         ("bidmodifiers_get", (710,), "bidmodifiers", "get"),
         ("bidmodifiers_set", ({"CampaignId": 710, "Type": "MOBILE"},), "bidmodifiers", "set"),
+        ("bidmodifiers_add", ({"CampaignId": 710, "Type": "MOBILE"},), "bidmodifiers", "add"),
         ("negativekeywords_get", (710, [1]), "negativekeywordsharedsets", "get"),
         ("retargetinglists_get", tuple(), "retargetinglists", "get"),
         ("audiencetargets_get", (710,), "audiencetargets", "get"),
@@ -55,7 +56,10 @@ def test_extended_get_methods_post_expected_service_and_method_without_leaking_t
         if method_name == "bidmodifiers_get":
             params = captured["body"]["params"]
             assert params["FieldNames"] == ["Id", "CampaignId", "AdGroupId", "Level", "Type"]
-            assert params["SelectionCriteria"]["CampaignIds"] == [710]
+            assert params["SelectionCriteria"] == {
+                "CampaignIds": [710],
+                "Levels": ["CAMPAIGN", "AD_GROUP"],
+            }
             assert set(params.keys()) == {
                 "SelectionCriteria",
                 "FieldNames",
@@ -108,8 +112,34 @@ def test_extended_get_methods_post_expected_service_and_method_without_leaking_t
             assert captured["body"]["params"]["BidModifiers"] == [
                 {"CampaignId": 710, "Type": "MOBILE"}
             ]
+        if method_name == "bidmodifiers_add":
+            assert captured["body"]["params"]["BidModifiers"] == [
+                {"CampaignId": 710, "Type": "MOBILE"}
+            ]
         assert result["ok"] is True
         assert "SECRET-TOKEN" not in str(result)
+
+
+def test_bidmodifiers_add_accepts_list_payload_and_posts_expected_body():
+    captured: dict[str, Any] = {}
+    payload = [
+        {"CampaignId": 710, "Type": "MOBILE"},
+        {"CampaignId": 711, "Type": "DESKTOP"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"result": {"Items": []}})
+
+    client = _client(handler)
+    result = client.bidmodifiers_add(payload)
+
+    assert captured["url"] == "https://api.direct.yandex.com/json/v5/bidmodifiers"
+    assert captured["body"]["method"] == "add"
+    assert captured["body"]["params"]["BidModifiers"] == payload
+    assert result["ok"] is True
+    assert "SECRET-TOKEN" not in str(result)
 
 
 def test_keywordsresearch_has_search_volume_posts_v5_selection_criteria_with_default_region():

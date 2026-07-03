@@ -116,6 +116,8 @@ from app.models import (
     # Bid modifiers
     YandexBidModifierItem,
     YandexBidModifiersReadResult,
+    BidModifiersCreateRequest,
+    BidModifiersCreateResult,
     BidModifiersUpdateRequest,
     BidModifiersUpdateResult,
 )
@@ -1142,6 +1144,101 @@ def yandex_bid_modifiers(
         items=items,
         raw=result if isinstance(result, dict) else None,
     )
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/bid-modifiers/create",
+    response_model=BidModifiersCreateResult,
+    responses={
+        409: {
+            "description": "Safety gate or idempotency conflict for bid modifier create.",
+        },
+        502: {
+            "description": "Upstream Yandex Direct bidmodifiers.add / readback failure, with redacted diagnostics only.",
+        },
+    },
+)
+def yandex_bid_modifiers_create(
+    campaign_id: str,
+    payload: BidModifiersCreateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> BidModifiersCreateResult:
+    for item in payload.items:
+        if item.campaign_id is not None and str(item.campaign_id) != str(campaign_id):
+            raise HTTPException(
+                status_code=409,
+                detail="CampaignId in bid modifier payload must match path campaign_id",
+            )
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before bid modifiers create",
+        )
+    if not payload.idempotency_key:
+        raise HTTPException(
+            status_code=409,
+            detail="idempotency_key is required before bid modifiers create",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"bid modifiers create is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_bid_modifiers_create(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        try:
+            store.append_audit(
+                "yandex_bid_modifiers_create_failed",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in bid modifiers create endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during bid modifiers create: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
 
 
 @app.get("/yandex/campaigns/{campaign_id}/negative-keywords", response_model=YandexRawResult)

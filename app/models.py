@@ -2611,6 +2611,345 @@ class BidModifierAgeAdjustment(BidModifierAdjustment):
     )
 
 
+BidModifierCreateType = Literal[
+    "MOBILE_ADJUSTMENT",
+    "TABLET_ADJUSTMENT",
+    "DESKTOP_ADJUSTMENT",
+    "DESKTOP_ONLY_ADJUSTMENT",
+    "SMART_TV_ADJUSTMENT",
+    "SMARTTV_ADJUSTMENT",
+    "DEMOGRAPHICS_ADJUSTMENT",
+    "RETARGETING_ADJUSTMENT",
+    "REGIONAL_ADJUSTMENT",
+    "VIDEO_ADJUSTMENT",
+    "VIDEO_EXTENSION_ADJUSTMENT",
+    "SMART_AD_ADJUSTMENT",
+    "SERP_LAYOUT_ADJUSTMENT",
+    "INCOME_GRADE_ADJUSTMENT",
+    "AD_GROUP_ADJUSTMENT",
+]
+
+
+_CREATE_FAMILY_SETTINGS: dict[BidModifierCreateType, dict[str, Any]] = {
+    "MOBILE_ADJUSTMENT": {
+        "block": "MobileAdjustment",
+        "required": set[str](),
+        "optional": {"operating_system_type"},
+    },
+    "TABLET_ADJUSTMENT": {
+        "block": "TabletAdjustment",
+        "required": set[str](),
+        "optional": {"operating_system_type"},
+    },
+    "DESKTOP_ADJUSTMENT": {
+        "block": "DesktopAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "DESKTOP_ONLY_ADJUSTMENT": {
+        "block": "DesktopOnlyAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "SMART_TV_ADJUSTMENT": {
+        "block": "SmartTvAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "SMARTTV_ADJUSTMENT": {
+        "block": "SmartTvAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "DEMOGRAPHICS_ADJUSTMENT": {
+        "block": "DemographicsAdjustments",
+        "array_block": True,
+        "required": set[str](),
+        "optional": {"gender", "age"},
+    },
+    "RETARGETING_ADJUSTMENT": {
+        "block": "RetargetingAdjustments",
+        "array_block": True,
+        "required": {"retargeting_condition_id"},
+        "optional": set[str](),
+    },
+    "REGIONAL_ADJUSTMENT": {
+        "block": "RegionalAdjustments",
+        "array_block": True,
+        "required": {"region_id"},
+        "optional": set[str](),
+    },
+    "VIDEO_ADJUSTMENT": {
+        "block": "VideoAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "VIDEO_EXTENSION_ADJUSTMENT": {
+        "block": "VideoAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "SMART_AD_ADJUSTMENT": {
+        "block": "SmartAdAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+    "SERP_LAYOUT_ADJUSTMENT": {
+        "block": "SerpLayoutAdjustments",
+        "array_block": True,
+        "required": {"serp_layout"},
+        "optional": set[str](),
+    },
+    "INCOME_GRADE_ADJUSTMENT": {
+        "block": "IncomeGradeAdjustments",
+        "array_block": True,
+        "required": {"grade"},
+        "optional": set[str](),
+    },
+    "AD_GROUP_ADJUSTMENT": {
+        "block": "AdGroupAdjustment",
+        "required": set[str](),
+        "optional": set[str](),
+    },
+}
+
+_CREATE_ENUM_ALLOWED_VALUES: dict[str, set[str]] = {
+    "operating_system_type": {"IOS", "ANDROID"},
+    "gender": {"GENDER_MALE", "GENDER_FEMALE"},
+    "age": {
+        "AGE_0_17",
+        "AGE_18_24",
+        "AGE_25_34",
+        "AGE_35_44",
+        "AGE_45",
+        "AGE_45_54",
+        "AGE_55",
+    },
+    "serp_layout": {"ALONE", "SUGGEST"},
+    "grade": {"VERY_HIGH", "HIGH", "ABOVE_AVERAGE"},
+}
+
+
+_FAMILY_BLOCK_FIELD_MAP: dict[str, str] = {
+    "operating_system_type": "OperatingSystemType",
+    "gender": "Gender",
+    "age": "Age",
+    "retargeting_condition_id": "RetargetingConditionId",
+    "region_id": "RegionId",
+    "serp_layout": "SerpLayout",
+    "grade": "Grade",
+    "enabled": "Enabled",
+    "weather_type": "WeatherType",
+    "temperature": "Temperature",
+    "cloudiness": "Cloudiness",
+    "precipitation": "Precipitation",
+    "humidity": "Humidity",
+    "wind": "Wind",
+    "bid_modifier": "BidModifier",
+}
+
+
+class BidModifierCreateItem(BaseModel):
+    """Single bid-modifier create item for ``bidmodifiers.add`` payload building."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unsupported_create_types(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("type") == "WEATHER_ADJUSTMENT":
+            raise ValueError(
+                "WEATHER_ADJUSTMENT create is not supported by Yandex Direct "
+                "bidmodifiers.add: live provider returned error_code=8000 "
+                "unknown parameter WeatherAdjustment. Read/update existing "
+                "weather modifiers by modifier_id only."
+            )
+        return data
+
+    campaign_id: int | None = Field(default=None, ge=1)
+    ad_group_id: int | None = Field(default=None, ge=1)
+    type: BidModifierCreateType
+    adjustment_percent: int | None = Field(
+        default=None,
+        ge=-100,
+        le=1200,
+        description=(
+            "Human-facing adjustment percent. Converted to Direct coefficient with "
+            "BidModifier = 100 + adjustment_percent."
+        ),
+    )
+    bid_modifier: int | None = Field(
+        default=None,
+        ge=0,
+        le=1300,
+        description="Direct v5 BidModifier coefficient. Alternative to adjustment_percent.",
+    )
+    operating_system_type: str | None = None
+    gender: str | None = None
+    age: str | None = None
+    retargeting_condition_id: int | None = Field(default=None, ge=1)
+    region_id: int | None = Field(default=None, ge=1)
+    serp_layout: str | None = None
+    grade: str | None = None
+    enabled: bool | None = None
+    weather_type: str | None = None
+    temperature: dict[str, Any] | None = None
+    cloudiness: dict[str, Any] | None = None
+    precipitation: dict[str, Any] | None = None
+    humidity: dict[str, Any] | None = None
+    wind: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "BidModifierCreateItem":
+        if self.campaign_id is None and self.ad_group_id is None:
+            raise ValueError("One of campaign_id or ad_group_id is required")
+        if self.campaign_id is not None and self.ad_group_id is not None:
+            raise ValueError("Only one of campaign_id or ad_group_id is allowed")
+        if self.type == "AD_GROUP_ADJUSTMENT" and self.ad_group_id is None:
+            raise ValueError("AD_GROUP_ADJUSTMENT requires ad_group_id scope")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_modifier_value(self) -> "BidModifierCreateItem":
+        if self.adjustment_percent is None and self.bid_modifier is None:
+            raise ValueError("adjustment_percent or bid_modifier is required")
+        if self.adjustment_percent is not None and self.bid_modifier is not None:
+            raise ValueError("Use either adjustment_percent or bid_modifier, not both")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_family_fields(self) -> "BidModifierCreateItem":
+        settings = _CREATE_FAMILY_SETTINGS[self.type]
+        required_fields = settings["required"]
+        optional_fields = settings["optional"]
+        allowed_fields = required_fields.union(optional_fields)
+
+        present_fields = {
+            name
+            for name in (
+                "age",
+                "gender",
+                "operating_system_type",
+                "retargeting_condition_id",
+                "region_id",
+                "serp_layout",
+                "grade",
+                "enabled",
+                "weather_type",
+                "temperature",
+                "cloudiness",
+                "precipitation",
+                "humidity",
+                "wind",
+            )
+            if getattr(self, name) is not None
+        }
+
+        missing_fields = sorted(required_fields - present_fields)
+        if missing_fields:
+            raise ValueError(f"{self.type} requires: {', '.join(missing_fields)}")
+
+        extra_fields = sorted(present_fields - allowed_fields)
+        if extra_fields:
+            raise ValueError(
+                f"{self.type} does not allow optional fields: {', '.join(extra_fields)}"
+            )
+
+        for field_name, allowed_values in _CREATE_ENUM_ALLOWED_VALUES.items():
+            value = getattr(self, field_name, None)
+            if value is not None and value not in allowed_values:
+                allowed_display = ", ".join(sorted(allowed_values))
+                raise ValueError(
+                    f"{field_name} must be one of: {allowed_display}"
+                )
+
+        return self
+
+    @property
+    def direct_bid_modifier(self) -> int:
+        if self.bid_modifier is not None:
+            return self.bid_modifier
+        assert self.adjustment_percent is not None
+        return 100 + self.adjustment_percent
+
+    def to_direct_add_item(self) -> dict:
+        item: dict = {}
+        if self.campaign_id is not None:
+            item["CampaignId"] = self.campaign_id
+        else:
+            item["AdGroupId"] = self.ad_group_id
+
+        settings = _CREATE_FAMILY_SETTINGS[self.type]
+        block: dict = {_FAMILY_BLOCK_FIELD_MAP["bid_modifier"]: self.direct_bid_modifier}
+
+        allowed_fields = settings["required"].union(settings["optional"])
+        for field_name in allowed_fields:
+            value = getattr(self, field_name)
+            if value is not None:
+                block[_FAMILY_BLOCK_FIELD_MAP[field_name]] = value
+
+        if settings.get("array_block"):
+            item[settings["block"]] = [block]
+        else:
+            item[settings["block"]] = block
+        return item
+
+
+class BidModifiersCreateRequest(BaseModel):
+    """Body model for a live-safe ``bidmodifiers.add`` create endpoint.
+
+    ``dry_run=True`` is preview-only. A real ``bidmodifiers.add`` apply must be
+    gated at the route/store layer by ``DIRECTPILOT_MODE=live_write``,
+    ``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.
+    """
+
+    dry_run: bool = True
+    approved: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=6)
+    items: list[BidModifierCreateItem] = Field(..., min_length=1, max_length=1000)
+    reason: str | None = None
+
+    def build_direct_add_payload(self) -> dict:
+        return {"BidModifiers": [item.to_direct_add_item() for item in self.items]}
+
+
+class BidModifierAddItemResult(BaseModel):
+    """Per-item outcome from Direct v5 ``bidmodifiers.add`` ``AddResults``."""
+
+    ids: list[int] = Field(default_factory=list)
+    has_errors: bool = False
+    has_warnings: bool = False
+    errors: list["ProviderWarning"] = Field(default_factory=list)
+    warnings: list["ProviderWarning"] = Field(default_factory=list)
+
+
+class BidModifiersCreateResult(BaseModel):
+    """Response for ``POST /yandex/campaigns/{campaign_id}/bid-modifiers/create``."""
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = False
+    audit_id: str
+    payload_preview: dict | None = None
+    readback: list[dict] | None = None
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    add_results: list["BidModifierAddItemResult"] | None = Field(
+        default=None,
+        description="Per-item outcomes from the v5 ``AddResults`` envelope.",
+    )
+    partial_failure: bool = Field(
+        default=False,
+        description=(
+            "True when the top-level v5 add call succeeded but at least one "
+            "``AddResults`` item contains provider errors or lacks returned ids."
+        ),
+    )
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+    message: str | None = None
+
+
 class BidModifiersUpdateRequest(BaseModel):
     """Body model for a live-safe bid-modifier update endpoint.
 
