@@ -82,10 +82,7 @@ def test_sitelinks_get_omits_selection_criteria_when_no_ids_and_includes_field_n
     assert body["method"] == "get"
     # SelectionCriteria must be absent (not empty dict) when no filter
     assert "SelectionCriteria" not in body["params"]
-    assert "Id" in body["params"]["FieldNames"]
-    assert "Name" in body["params"]["FieldNames"]
-    assert "Status" in body["params"]["FieldNames"]
-    assert "Type" in body["params"]["FieldNames"]
+    assert body["params"]["FieldNames"] == ["Id"]
     assert "Sitelinks" not in body["params"]["FieldNames"]
     assert "Title" in body["params"]["SitelinkFieldNames"]
     assert "Href" in body["params"]["SitelinkFieldNames"]
@@ -107,6 +104,7 @@ def test_sitelinks_get_with_ids_sends_selection_criteria_ids():
 
     body = captured["body"]
     assert body["params"]["SelectionCriteria"]["Ids"] == [100, 200]
+    assert body["params"]["FieldNames"] == ["Id", "Name", "Status", "Type"]
 
 
 def test_sitelinks_get_with_pagination_sends_page_limit_offset():

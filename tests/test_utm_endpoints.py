@@ -468,36 +468,30 @@ class TestUtmApply:
         """Same idempotency_key + same request MUST replay cached result
         and must NOT call ads.update again."""
         settings = _settings("live_write", token="SECRET-IDEMP-UTM")
-        captured: dict[str, Any] = {"update_bodies": []}
+        captured: dict[str, Any] = {"update_bodies": [], "ads_reads": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content.decode())
             if body.get("method") == "update":
                 captured["update_bodies"].append(body)
                 return httpx.Response(200, json={"result": {}})
-            # ads.get response for read
-            return httpx.Response(
-                200,
-                json={
-                    "result": {
-                        "Ads": [
-                            {
-                                "Id": 1,
-                                "AdGroupId": 10,
-                                "CampaignId": 12345,
-                                "Status": "ACCEPTED",
-                                "State": "ON",
-                                "Type": "TEXT_AD",
-                                "TextAd": {
-                                    "Title": "Test Ad",
-                                    "Text": "Test text",
-                                    "Href": "https://example.com/page",
-                                },
-                            }
-                        ]
-                    }
+            captured["ads_reads"] += 1
+            ad = {
+                "Id": 1,
+                "AdGroupId": 10,
+                "CampaignId": 12345,
+                "Status": "ACCEPTED",
+                "State": "ON",
+                "Type": "TEXT_AD",
+                "TextAd": {
+                    "Title": "Test Ad",
+                    "Text": "Test text",
+                    "Href": "https://example.com/page" + (
+                        "?utm_source=yandex&utm_medium=cpc&utm_campaign=replay-test&utm_content=1" if captured["ads_reads"] > 1 else ""
+                    ),
                 },
-            )
+            }
+            return httpx.Response(200, json={"result": {"Ads": [ad]}})
 
         yandex = _make_client(settings, handler)
         test_app = TestClient(app)
@@ -539,12 +533,13 @@ class TestUtmApply:
         """dry_run and apply must use separate cache slots — a dry_run
         replay must not consume a real apply's idempotency_key."""
         settings = _settings("live_write", token="SECRET-SCOPE")
-        captured: dict[str, Any] = {"update_bodies": []}
+        captured: dict[str, Any] = {"update_bodies": [], "updates": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content.decode())
             if body.get("method") == "update":
                 captured["update_bodies"].append(body)
+                captured["updates"] += 1
                 return httpx.Response(200, json={"result": {}})
             return httpx.Response(
                 200,
@@ -561,7 +556,11 @@ class TestUtmApply:
                                 "TextAd": {
                                     "Title": "Test Ad",
                                     "Text": "Test text",
-                                    "Href": "https://example.com/page",
+                                    "Href": (
+                                        "https://example.com/page?utm_source=yandex&utm_medium=cpc&utm_campaign=scope-test&utm_content=1"
+                                        if captured["updates"] > 0
+                                        else "https://example.com/page"
+                                    ),
                                 },
                             }
                         ]
