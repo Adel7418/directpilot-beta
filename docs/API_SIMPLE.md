@@ -716,6 +716,88 @@ GET /yandex/campaigns
 GET /yandex/campaigns/{campaign_id}/ad-groups
 ```
 
+### Live geo/group/ad (readback, create, geo replace, ads create, ad patch)
+
+#### Чтение и резолв гео (обязательные шаги перед мутацией)
+
+- `GET /yandex/campaigns/{campaign_id}/ad-groups` — live readback активных групп. Возвращает `RegionIds` и авторитетные имена регионов в том виде, который сейчас используется Direct API.
+- `GET /yandex/regions/resolve?name=...` — точечный authoritative resolver. Разрешает только точные совпадения.
+
+Примеры:
+
+```text
+GET /yandex/regions/resolve?name=Зеленодольск
+=> 200: source=yandex, read_only=true, match=exact_normalized_name, region.name=Зеленодольск, region.region_id=<as returned by Yandex>
+
+GET /yandex/regions/resolve?name=<unknown-name>
+=> 404: detail.reason=unknown; the submitted name is not echoed
+
+When Yandex returns more than one exact normalized match:
+=> 409: detail.reason=ambiguous
+```
+
+#### Создание группы с гео (live write)
+
+```http
+POST /yandex/campaigns/{campaign_id}/ad-groups
+```
+
+Тело запроса использует поля:
+
+- `name`
+- `region_ids` или `region_names`
+- `negative_keywords` (опционально)
+- `dry_run`
+- `approved`
+- `idempotency_key`
+- `reason`
+
+#### Полная замена региона группы
+
+```http
+POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/geo
+```
+
+Тело запроса заменяет **полный список** `RegionIds` для выбранной группы (режим full-set replace). Частичная/смешанная схема не применяется.
+
+#### Создание текстовых объявлений в группе
+
+```http
+POST /yandex/ad-groups/{ad_group_id}/ads
+```
+
+Тело запроса использует поля:
+
+- `ads`
+- `dry_run`
+- `approved`
+- `idempotency_key`
+- `reason`
+
+#### Обновление text-ad через PATCH (без утечек прежних полей)
+
+```http
+PATCH /yandex/ads/{ad_id}
+```
+
+PATCH применяет только явно переданные text-ad поля. Не переданные поля `Href`/UTM, `BusinessId`, `SitelinkSetId`, `PreferVCardOverBusiness` сохраняются из текущего объявления.
+
+#### Обязательная последовательность перед apply
+
+1. `readback` текущего состояния (`GET .../ad-groups` или соответствующий read).
+2. `dry_run=true` для preview.
+3. Показывать preview оператору/пользователю и получить **явное** подтверждение.
+4. Только после подтверждения отправлять live apply: `approved=true`, `dry_run=false`, `idempotency_key` (новый), `DIRECTPILOT_MODE=live_write`.
+5. Дождаться `provider readback` и сверить изменения.
+
+`dry_run` никогда не мутирует.
+
+Unknown/ambiguous разрешение гео и любой неопределенный apply/readback = fail-closed (без изменений).
+
+Расширение зоны показа (увеличение Service Area) выполняется только после подтверждения бизнеса и не допускает обхода в виде прямого вызова Яндекс API.
+
+Созданные или обновлённые объявления **могут требовать модерации**.
+
 ### Объявления кампании
 
 ```http

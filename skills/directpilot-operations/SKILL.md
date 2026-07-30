@@ -140,6 +140,24 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
   - `POST /yandex/campaigns/{campaign_id}/ad-groups` — create a new group in an existing campaign when structure must change first; `region_ids` is required and maps to Direct `RegionIds`; this endpoint creates only the group, not ads/keywords/moderation.
   If a new ad angle needs extra keywords/minuses, propose a separate semantic-change or ad-group operation task.
 
+### Live geo, ad groups, and text ads (DirectPilot-first)
+
+- Runtime `GET /openapi.json` (or equivalent runtime OpenAPI source) is source of truth. Confirm route and schema before any write.
+- Read current groups first: `GET /yandex/campaigns/{campaign_id}/ad-groups`.
+- Resolve every supplied region name via exact `GET /yandex/regions/resolve?name=...`.
+  Unknown or ambiguous matches are fail-closed: stop and request explicit correction; never guess IDs.
+- Choose exactly one live mutation per operation:
+  - create group: `POST /yandex/campaigns/{campaign_id}/ad-groups`
+  - replace group geo: `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/geo`
+  - add ads: `POST /yandex/ad-groups/{ad_group_id}/ads`
+  - patch one ad: `PATCH /yandex/ads/{ad_id}`
+- Mandatory sequence: readback → dry-run preview/diff → explicit user approval → live apply with `DIRECTPILOT_MODE=live_write`, `approved=true`, **fresh** `idempotency_key`, `dry_run=false` → bounded apply → immediate provider readback.
+- Any uncertain provider apply or readback result must stop the write path and return to readback; never blindly retry.
+- Geo replacement is full-set `RegionIds` update. Preserve existing group keys, negatives, strategy, budget, goals, links/UTM, and assets.
+- `PATCH /yandex/ads/{ad_id}` updates only supplied fields; omitted `Href`, UTM, `BusinessId`, `SitelinkSetId`, `PreferVCardOverBusiness` must be preserved.
+- Marketer prepares read/dry-run only; operator/orchestrator performs live apply only after explicit approval.
+- Service-area expansion requires business confirmation; do not call raw Yandex API directly. New ads may need moderation before delivery.
+
 - Technical and niche-specific phrasing in ad text is allowed as creative copy — do not treat it as the same as adding a key term in keyword targeting.
 - If niche-specific terms can attract off-intent/DIY traffic, flag the risk and handle mitigation via separate keyword/minus workflows.
 - After adding ads (or after live-create), send them to moderation via ``POST /yandex/ads/moderate`` — do NOT use ``campaigns.resume`` for new DRAFT campaigns.

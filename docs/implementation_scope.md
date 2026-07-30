@@ -50,6 +50,26 @@ All support `dry_run` in `live_readonly`; real Direct writes require `live_write
 - `POST /yandex/ad-groups/{ad_group_id}/ads`
 - `POST /yandex/ads/moderate`
 
+### Yandex live geo/group/text-ad operational scope
+
+- provider-backed readback of campaign ad groups returns current `RegionIds`, authoritative region names, `scope`, `source=yandex`, and `read_only=true`.
+- exact authoritative lookup endpoint: `GET /yandex/regions/resolve?name=...`; unknown or ambiguous matches fail closed.
+- gated `POST /yandex/campaigns/{campaign_id}/ad-groups` supports campaign-level ad-group creation with `region_ids` or resolved `region_names`, with optional initial negatives.
+- gated `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/geo` performs full-set `RegionIds` replacement and requires before/after + added/removed preview.
+- gated `POST /yandex/ad-groups/{ad_group_id}/ads` and field-selective `PATCH /yandex/ads/{ad_id}` are available for text-ad lifecycle operations.
+- all mutation endpoints support dry-run (non-mutation), explicit approval, `live_write`, fresh idempotency key, provider readback, and fail-closed behavior on uncertain results.
+- `ad-group geo update` preserves keys, existing negatives, ads, strategy, budget, goals, links/UTM, and assets.
+- `ad patch` preserves omitted `Href`/`UTM`, `BusinessId`, `SitelinkSetId`, and `PreferVCardOverBusiness` fields.
+- created or updated ads may require moderation before serving.
+
+#### Explicit boundaries / out of scope
+
+- no automatic expansion to any service area or suburb.
+- no campaign-specific change is authorized through this capability/documentation.
+- no raw Yandex API bypass outside DirectPilot.
+- no live writes were performed as part of this implementation or tests.
+- no unrelated campaign strategy / budget / goal / network changes through these endpoints.
+
 ### Live-create campaign (staged chain)
 
 `POST /yandex/campaigns/live-create` executes a four-stage Direct API v5 chain:

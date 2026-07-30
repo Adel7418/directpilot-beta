@@ -1860,11 +1860,12 @@
         "type": "object"
       },
       "LiveAdCreateItem": {
-        "description": "One ad to add to an existing ad group.\n\n``title``, ``text``, ``href`` are required (Direct v5 TextAd contract).\n``title2`` — optional second headline.\n``sitelink_set_id`` — optional quick-link set id.\n``business_id`` — optional Yandex Business organization id.\n``prefer_vcard_over_business`` — ``\"YES\"`` / ``\"NO\"``, optional.",
+        "description": "One TextAd to add to an existing ad group.\n\n``inherit_from_ad_id`` is the only supported inheritance mechanism.\nIt names one actual TextAd that the store reads before it prepares the\npreview or apply payload.  Omitting it means the caller must provide the\nmandatory ``title`` / ``text`` and a destination or contact field.\n``null`` is deliberately not a detach/clear operation and is rejected.",
         "properties": {
           "business_id": {
             "anyOf": [
               {
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1874,9 +1875,28 @@
             "title": "Business Id"
           },
           "href": {
-            "minLength": 1,
-            "title": "Href",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Href"
+          },
+          "inherit_from_ad_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inherit From Ad Id"
           },
           "prefer_vcard_over_business": {
             "anyOf": [
@@ -1896,6 +1916,7 @@
           "sitelink_set_id": {
             "anyOf": [
               {
+                "minimum": 1.0,
                 "type": "integer"
               },
               {
@@ -1905,18 +1926,33 @@
             "title": "Sitelink Set Id"
           },
           "text": {
-            "minLength": 1,
-            "title": "Text",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
           },
           "title": {
-            "minLength": 1,
-            "title": "Title",
-            "type": "string"
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
           },
           "title2": {
             "anyOf": [
               {
+                "minLength": 1,
                 "type": "string"
               },
               {
@@ -1926,11 +1962,6 @@
             "title": "Title2"
           }
         },
-        "required": [
-          "title",
-          "text",
-          "href"
-        ],
         "title": "LiveAdCreateItem",
         "type": "object"
       },
@@ -2135,9 +2166,57 @@
         "title": "LiveAdCreateWarning",
         "type": "object"
       },
+      "LiveAdGroupCreateReadback": {
+        "properties": {
+          "ad_group_id": {
+            "title": "Ad Group Id",
+            "type": "integer"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "negative_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Negative Keywords",
+            "type": "array"
+          },
+          "region_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Region Ids",
+            "type": "array"
+          },
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/YandexRegion"
+            },
+            "title": "Regions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ad_group_id",
+          "campaign_id",
+          "name",
+          "region_ids",
+          "negative_keywords",
+          "regions"
+        ],
+        "title": "LiveAdGroupCreateReadback",
+        "type": "object"
+      },
       "LiveAdGroupCreateRequest": {
         "properties": {
           "approved": {
+            "default": false,
             "title": "Approved",
             "type": "boolean"
           },
@@ -2175,18 +2254,38 @@
             "title": "Reason"
           },
           "region_ids": {
-            "items": {
-              "type": "integer"
-            },
-            "minItems": 1,
-            "title": "Region Ids",
-            "type": "array"
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Ids"
+          },
+          "region_names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Names"
           }
         },
         "required": [
           "name",
-          "region_ids",
-          "approved",
           "idempotency_key"
         ],
         "title": "LiveAdGroupCreateRequest",
@@ -2263,17 +2362,19 @@
           "readback": {
             "anyOf": [
               {
-                "items": {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                "type": "array"
+                "$ref": "#/components/schemas/LiveAdGroupCreateReadback"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Readback"
+            ]
+          },
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/YandexRegion"
+            },
+            "title": "Regions",
+            "type": "array"
           },
           "source": {
             "default": "yandex",
@@ -2478,6 +2579,264 @@
           "audit_id"
         ],
         "title": "LiveCreateCampaignResult",
+        "type": "object"
+      },
+      "LiveTextAdModerationState": {
+        "properties": {
+          "route": {
+            "const": "/yandex/ads/moderate",
+            "default": "/yandex/ads/moderate",
+            "title": "Route",
+            "type": "string"
+          },
+          "status": {
+            "const": "not_requested",
+            "default": "not_requested",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "LiveTextAdModerationState",
+        "type": "object"
+      },
+      "LiveTextAdPatchRequest": {
+        "description": "Patch only explicitly supplied TextAd fields.\n\n``href`` is the complete destination URL.  Its query string and fragment\nare passed through unchanged; there is no implicit UTM merge or detach\noperation.  Explicit ``null``/empty values are rejected because this\nendpoint has no safe field-detachment contract.",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "business_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Id"
+          },
+          "display_url_path": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Url Path"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "href": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Href"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "prefer_vcard_over_business": {
+            "anyOf": [
+              {
+                "enum": [
+                  "YES",
+                  "NO"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prefer Vcard Over Business"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "sitelink_set_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sitelink Set Id"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "title2": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title2"
+          }
+        },
+        "required": [
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "LiveTextAdPatchRequest",
+        "type": "object"
+      },
+      "LiveTextAdPatchResult": {
+        "description": "Safe TextAd PATCH response with before/after and post-write readback.",
+        "properties": {
+          "ad_id": {
+            "title": "Ad Id",
+            "type": "integer"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "before_after": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Before After",
+            "type": "object"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "moderation": {
+            "$ref": "#/components/schemas/LiveTextAdModerationState"
+          },
+          "payload_preview": {
+            "additionalProperties": true,
+            "title": "Payload Preview",
+            "type": "object"
+          },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Provider Warnings",
+            "type": "array"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "update_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Update Results"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "dry_run",
+          "applied",
+          "mode",
+          "audit_id",
+          "ad_id",
+          "payload_preview"
+        ],
+        "title": "LiveTextAdPatchResult",
         "type": "object"
       },
       "NegativeKeywordsReplace": {
@@ -4099,6 +4458,13 @@
             "title": "Campaign Id",
             "type": "string"
           },
+          "geo_scope": {
+            "const": "ad_group",
+            "default": "ad_group",
+            "description": "Direct stores these RegionIds on this ad group, not at campaign scope.",
+            "title": "Geo Scope",
+            "type": "string"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -4106,6 +4472,22 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "region_ids": {
+            "description": "Actual Direct v5 AdGroup.RegionIds returned by adgroups.get.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Region Ids",
+            "type": "array"
+          },
+          "regions": {
+            "description": "Authoritative names resolved from Yandex Direct GeoRegions.",
+            "items": {
+              "$ref": "#/components/schemas/YandexRegion"
+            },
+            "title": "Regions",
+            "type": "array"
           },
           "status": {
             "title": "Status",
@@ -4121,6 +4503,213 @@
         "title": "YandexAdGroup",
         "type": "object"
       },
+      "YandexAdGroupGeoState": {
+        "description": "One complete, authoritative ad-group geo state.",
+        "properties": {
+          "region_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Region Ids",
+            "type": "array"
+          },
+          "regions": {
+            "items": {
+              "$ref": "#/components/schemas/YandexRegion"
+            },
+            "title": "Regions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "region_ids",
+          "regions"
+        ],
+        "title": "YandexAdGroupGeoState",
+        "type": "object"
+      },
+      "YandexAdGroupGeoUpdateRequest": {
+        "properties": {
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "region_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Ids"
+          },
+          "region_names": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Names"
+          }
+        },
+        "required": [
+          "idempotency_key"
+        ],
+        "title": "YandexAdGroupGeoUpdateRequest",
+        "type": "object"
+      },
+      "YandexAdGroupGeoUpdateResult": {
+        "properties": {
+          "ad_group_id": {
+            "title": "Ad Group Id",
+            "type": "string"
+          },
+          "ad_group_name": {
+            "title": "Ad Group Name",
+            "type": "string"
+          },
+          "added": {
+            "items": {
+              "$ref": "#/components/schemas/YandexRegion"
+            },
+            "title": "Added",
+            "type": "array"
+          },
+          "after": {
+            "$ref": "#/components/schemas/YandexAdGroupGeoState"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "before": {
+            "$ref": "#/components/schemas/YandexAdGroupGeoState"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "payload_preview": {
+            "additionalProperties": true,
+            "title": "Payload Preview",
+            "type": "object"
+          },
+          "preserved_entities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Preserved Entities",
+            "type": "array"
+          },
+          "provider_response": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Response"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/YandexAdGroupGeoState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "removed": {
+            "items": {
+              "$ref": "#/components/schemas/YandexRegion"
+            },
+            "title": "Removed",
+            "type": "array"
+          },
+          "risk_warning": {
+            "title": "Risk Warning",
+            "type": "string"
+          },
+          "scope": {
+            "const": "ad_group",
+            "default": "ad_group",
+            "title": "Scope",
+            "type": "string"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "dry_run",
+          "applied",
+          "mode",
+          "audit_id",
+          "campaign_id",
+          "ad_group_id",
+          "ad_group_name",
+          "before",
+          "after",
+          "payload_preview",
+          "risk_warning"
+        ],
+        "title": "YandexAdGroupGeoUpdateResult",
+        "type": "object"
+      },
       "YandexAdGroupList": {
         "properties": {
           "items": {
@@ -4134,6 +4723,13 @@
             "default": true,
             "title": "Read Only",
             "type": "boolean"
+          },
+          "scope": {
+            "const": "ad_group_region_ids_for_requested_campaign",
+            "default": "ad_group_region_ids_for_requested_campaign",
+            "description": "RegionIds belong to the returned ad groups for the requested campaign.",
+            "title": "Scope",
+            "type": "string"
           },
           "source": {
             "default": "mock",
@@ -5407,6 +6003,145 @@
           "data"
         ],
         "title": "YandexRawResult",
+        "type": "object"
+      },
+      "YandexRegion": {
+        "description": "A GeoRegions dictionary entry or the Direct ``RegionIds=0`` sentinel.",
+        "properties": {
+          "all_regions": {
+            "default": false,
+            "description": "True only for the Direct RegionIds=0 all-regions sentinel.",
+            "title": "All Regions",
+            "type": "boolean"
+          },
+          "dictionary_region_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absolute GeoRegions dictionary ID used for the displayed name; null for the Direct RegionIds=0 all-regions sentinel.",
+            "title": "Dictionary Region Id"
+          },
+          "dictionary_resolved": {
+            "default": true,
+            "description": "False only when no GeoRegions dictionary entry exists for RegionIds=0.",
+            "title": "Dictionary Resolved",
+            "type": "boolean"
+          },
+          "excluded": {
+            "default": false,
+            "description": "True when the original signed AdGroup.RegionIds value is negative.",
+            "title": "Excluded",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "parent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Name"
+          },
+          "parent_names": {
+            "description": "ParentGeoRegionNames.Items returned by dictionaries.getGeoRegions.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Parent Names",
+            "type": "array"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "region_id": {
+            "title": "Region Id",
+            "type": "integer"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "required": [
+          "region_id",
+          "name"
+        ],
+        "title": "YandexRegion",
+        "type": "object"
+      },
+      "YandexRegionResolveResult": {
+        "description": "Read-only result for ``GET /yandex/regions/resolve?name=...``.",
+        "properties": {
+          "match": {
+            "const": "exact_normalized_name",
+            "default": "exact_normalized_name",
+            "description": "Only a single exact match after local whitespace/case normalization is accepted.",
+            "title": "Match",
+            "type": "string"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "region": {
+            "$ref": "#/components/schemas/YandexRegion"
+          },
+          "scope": {
+            "const": "yandex_geo_regions_dictionary",
+            "default": "yandex_geo_regions_dictionary",
+            "description": "Resolved from the current Yandex Direct GeoRegions dictionary.",
+            "title": "Scope",
+            "type": "string"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region"
+        ],
+        "title": "YandexRegionResolveResult",
         "type": "object"
       },
       "YandexSearchApiResult": {
@@ -8669,6 +9404,55 @@
         "summary": "Yandex Ads Moderate"
       }
     },
+    "/yandex/ads/{ad_id}": {
+      "patch": {
+        "operationId": "yandex_text_ad_patch_yandex_ads__ad_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ad_id",
+            "required": true,
+            "schema": {
+              "title": "Ad Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LiveTextAdPatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveTextAdPatchResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Text Ad Patch"
+      }
+    },
     "/yandex/agency-clients": {
       "get": {
         "operationId": "yandex_agency_clients_yandex_agency_clients_get",
@@ -8964,6 +9748,64 @@
           }
         },
         "summary": "Yandex Ad Group Negative Keywords"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/geo": {
+      "post": {
+        "operationId": "yandex_ad_group_geo_update_yandex_campaigns__campaign_id__ad_groups__ad_group_id__geo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "ad_group_id",
+            "required": true,
+            "schema": {
+              "title": "Ad Group Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YandexAdGroupGeoUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexAdGroupGeoUpdateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Yandex Ad Group Geo Update"
       }
     },
     "/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords": {
@@ -10231,6 +11073,50 @@
           }
         },
         "summary": "Yandex Wordstat Get"
+      }
+    },
+    "/yandex/regions/resolve": {
+      "get": {
+        "description": "Read-only authoritative lookup against Direct v5 dictionaries.get GeoRegions. Only one exact match after local whitespace/case normalization is accepted; unknown or ambiguous names fail closed.",
+        "operationId": "yandex_region_resolve_yandex_regions_resolve_get",
+        "parameters": [
+          {
+            "description": "Region name to resolve by exact normalized Yandex GeoRegions name.",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "Region name to resolve by exact normalized Yandex GeoRegions name.",
+              "maxLength": 200,
+              "minLength": 1,
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexRegionResolveResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve one authoritative Yandex Direct region by name"
       }
     },
     "/yandex/reports/live/{report_type}": {

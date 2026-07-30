@@ -243,23 +243,40 @@ def test_yandex_campaigns_yandex_error_returns_502_without_token(
 def test_yandex_ad_groups_sandbox_uses_real_adgroups_get(
     client_with_client: TestClient,
 ):
-    captured: dict[str, Any] = {}
+    captured: list[tuple[str, dict[str, Any]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["body"] = json.loads(request.content.decode())
+        body: dict[str, Any] = json.loads(request.content.decode())
+        captured.append((str(request.url), body))
+        if request.url.path.endswith("/adgroups"):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "AdGroups": [
+                            {
+                                "Id": 1001,
+                                "Name": "Real ad group 1",
+                                "CampaignId": 555,
+                                "Status": "ACTIVE",
+                                "Type": "TEXT_AD_GROUP",
+                                "RegionIds": [12345],
+                            }
+                        ]
+                    }
+                },
+            )
+        assert request.url.path.endswith("/dictionaries")
+        assert body == {
+            "method": "get",
+            "params": {"DictionaryNames": ["GeoRegions"]},
+        }
         return httpx.Response(
             200,
             json={
                 "result": {
-                    "AdGroups": [
-                        {
-                            "Id": 1001,
-                            "Name": "Real ad group 1",
-                            "CampaignId": 555,
-                            "Status": "ACTIVE",
-                            "Type": "TEXT_AD_GROUP",
-                        }
+                    "GeoRegions": [
+                        {"GeoRegionId": 12345, "GeoRegionName": "Test region"}
                     ]
                 }
             },
@@ -277,8 +294,11 @@ def test_yandex_ad_groups_sandbox_uses_real_adgroups_get(
     body = response.json()
     assert body["source"] == "yandex"
     assert body["read_only"] is True
-    assert captured["url"].endswith("/adgroups")
-    assert captured["body"]["params"]["SelectionCriteria"] == {"CampaignIds": [555]}
+    assert [url for url, _ in captured] == [
+        "https://api-sandbox.direct.yandex.com/json/v5/adgroups",
+        "https://api-sandbox.direct.yandex.com/json/v5/dictionaries",
+    ]
+    assert captured[0][1]["params"]["SelectionCriteria"] == {"CampaignIds": [555]}
     assert body["items"][0]["id"] == "1001"
     assert body["items"][0]["campaign_id"] == "555"
     assert body["items"][0]["status"] == "ACTIVE"
@@ -288,16 +308,29 @@ def test_yandex_ad_groups_tolerates_missing_status(
     client_with_client: TestClient,
 ):
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/adgroups"):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "AdGroups": [
+                            {
+                                "Id": 1002,
+                                "Name": "Missing status",
+                                "CampaignId": 555,
+                                "RegionIds": [12345],
+                            }
+                        ]
+                    }
+                },
+            )
+        assert request.url.path.endswith("/dictionaries")
         return httpx.Response(
             200,
             json={
                 "result": {
-                    "AdGroups": [
-                        {
-                            "Id": 1002,
-                            "Name": "Missing status",
-                            "CampaignId": 555,
-                        }
+                    "GeoRegions": [
+                        {"GeoRegionId": 12345, "GeoRegionName": "Test region"}
                     ]
                 }
             },

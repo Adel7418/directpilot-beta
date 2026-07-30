@@ -283,10 +283,24 @@ def test_ad_group_ads_add_live_write_apply_succeeds():
                     }
                 },
             )
-        # readback (ads_get_by_ids)
+        # Detailed readback (ads_get_by_ids) must confirm every text asset.
+        added_ads = captured_add["body"]["params"]["Ads"]
         return httpx.Response(
             200,
-            json={"result": {"Ads": [{"Id": 99001}, {"Id": 99002}]}},
+            json={
+                "result": {
+                    "Ads": [
+                        {
+                            "Id": 99001 + index,
+                            "Type": "TEXT_AD",
+                            "AdGroupId": 1001,
+                            "Status": "DRAFT",
+                            "TextAd": ad["TextAd"],
+                        }
+                        for index, ad in enumerate(added_ads)
+                    ]
+                }
+            },
         )
 
     settings = _settings("live_write")
@@ -340,23 +354,13 @@ def test_ad_group_ads_add_live_write_apply_succeeds():
     assert ads_sent[1]["TextAd"]["PreferVCardOverBusiness"] == "NO"
 
 
-def test_ad_group_ads_add_with_string_ad_group_id():
-    """Non-numeric ad_group_id should still work — AdGroupId field is omitted
-    from v5 payload since we can't parse it as int."""
+def test_ad_group_ads_add_with_string_ad_group_id_is_rejected_before_provider_call():
+    """An unparseable path id cannot produce an official TextAdAdd payload."""
     captured_add: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content.decode())
-        if body.get("method") == "add":
-            captured_add["body"] = body
-            return httpx.Response(
-                200,
-                json={"result": {"AddResults": [{"Id": 1}]}},
-            )
-        # readback
-        return httpx.Response(
-            200, json={"result": {"Ads": [{"Id": 1}]}}
-        )
+        captured_add["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"result": {"AddResults": [{"Id": 1}]}})
 
     settings = _settings("live_write")
     yc = _client_with_handler(settings, handler)
@@ -380,11 +384,8 @@ def test_ad_group_ads_add_with_string_ad_group_id():
 
     _clear_overrides()
 
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["applied"] is True
-    # AdGroupId omitted because "some-group-id" is not numeric
-    assert "AdGroupId" not in captured_add["body"]["params"]["Ads"][0]
+    assert resp.status_code == 409, resp.text
+    assert captured_add == {}
 
 
 def test_ad_group_ads_add_idempotency_replay():
@@ -394,9 +395,32 @@ def test_ad_group_ads_add_idempotency_replay():
 
     def handler(request: httpx.Request) -> httpx.Response:
         call_count[0] += 1
+        body = json.loads(request.content.decode())
+        if body["method"] == "add":
+            return httpx.Response(
+                200,
+                json={"result": {"AddResults": [{"Id": 1}]}},
+            )
         return httpx.Response(
             200,
-            json={"result": {"AddResults": [{"Id": 1}]}},
+            json={
+                "result": {
+                    "Ads": [
+                        {
+                            "Id": 1,
+                            "Type": "TEXT_AD",
+                            "AdGroupId": 1001,
+                            "Status": "DRAFT",
+                            "TextAd": {
+                                "Title": "T1",
+                                "Text": "Body",
+                                "Href": "https://example.com",
+                                "Mobile": "NO",
+                            },
+                        }
+                    ]
+                }
+            },
         )
 
     settings = _settings("live_write")
@@ -881,7 +905,24 @@ def test_ad_group_ads_add_apply_includes_provider_warnings():
         # readback (ads_get_by_ids)
         return httpx.Response(
             200,
-            json={"result": {"Ads": [{"Id": 99001, "Status": "DRAFT", "AdGroupId": 1001}]}},
+            json={
+                "result": {
+                    "Ads": [
+                        {
+                            "Id": 99001,
+                            "Type": "TEXT_AD",
+                            "Status": "DRAFT",
+                            "AdGroupId": 1001,
+                            "TextAd": {
+                                "Title": "T1",
+                                "Text": "Body",
+                                "Href": "https://example.com",
+                                "Mobile": "NO",
+                            },
+                        }
+                    ]
+                }
+            },
         )
 
     settings = _settings("live_write")
@@ -933,7 +974,24 @@ def test_ad_group_ads_add_audit_includes_provider_warnings():
             )
         return httpx.Response(
             200,
-            json={"result": {"Ads": [{"Id": 99001}]}},
+            json={
+                "result": {
+                    "Ads": [
+                        {
+                            "Id": 99001,
+                            "Type": "TEXT_AD",
+                            "AdGroupId": 1001,
+                            "Status": "DRAFT",
+                            "TextAd": {
+                                "Title": "T1",
+                                "Text": "Body",
+                                "Href": "https://example.com",
+                                "Mobile": "NO",
+                            },
+                        }
+                    ]
+                }
+            },
         )
 
     settings = _settings("live_write")
