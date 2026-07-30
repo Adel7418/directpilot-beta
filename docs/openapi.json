@@ -6065,7 +6065,7 @@
             "title": "Parent Name"
           },
           "parent_names": {
-            "description": "ParentGeoRegionNames.Items returned by dictionaries.getGeoRegions.",
+            "description": "ParentGeoRegionNames.Items from the GeoRegions dictionary.",
             "items": {
               "type": "string"
             },

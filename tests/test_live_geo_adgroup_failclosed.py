@@ -449,7 +449,10 @@ def test_ad_group_geo_name_resolution_fails_closed_before_group_read(
         body: dict[str, Any] = json.loads(request.content.decode())
         calls.append(body["method"])
         assert request.url.path.endswith("/dictionaries")
-        assert body["method"] == "getGeoRegions"
+        assert body == {
+            "method": "get",
+            "params": {"DictionaryNames": ["GeoRegions"]},
+        }
         return httpx.Response(200, json={"result": {"GeoRegions": geo_regions}})
 
     settings = _settings()
@@ -467,10 +470,10 @@ def test_ad_group_geo_name_resolution_fails_closed_before_group_read(
         _clear()
 
     assert response.status_code == expected_status, response.text
-    assert calls == ["getGeoRegions"]
+    assert calls == ["get"]
 
 
-def test_geo_regions_get_by_name_uses_exact_names_selection_criteria() -> None:
+def test_geo_regions_get_by_name_uses_full_geo_regions_dictionary() -> None:
     requests: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -486,6 +489,7 @@ def test_geo_regions_get_by_name_uses_exact_names_selection_criteria() -> None:
 
     assert response["ok"] is True
     assert len(requests) == 1
-    assert requests[0]["method"] == "getGeoRegions"
-    assert requests[0]["params"]["SelectionCriteria"] == {"ExactNames": ["Target"]}
-    assert "Names" not in requests[0]["params"]["SelectionCriteria"]
+    assert requests[0] == {
+        "method": "get",
+        "params": {"DictionaryNames": ["GeoRegions"]},
+    }

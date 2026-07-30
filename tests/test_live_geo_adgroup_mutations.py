@@ -185,16 +185,23 @@ def test_ad_group_geo_apply_sends_only_complete_geo_payload_and_returns_verified
 
 def test_ad_group_geo_dry_run_resolves_authoritative_region_names() -> None:
     calls: list[dict[str, Any]] = []
+    dictionary_calls: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body: dict[str, Any] = json.loads(request.content.decode())
         calls.append(body)
-        if request.url.path.endswith("/dictionaries") and body["method"] == "getGeoRegions":
+        if request.url.path.endswith("/dictionaries"):
+            dictionary_calls.append(body)
+            assert body == {
+                "method": "get",
+                "params": {"DictionaryNames": ["GeoRegions"]},
+            }
             return httpx.Response(
                 200,
                 json={
                     "result": {
                         "GeoRegions": [
+                            {"GeoRegionId": 213, "GeoRegionName": "Moscow"},
                             {
                                 "GeoRegionId": 12345,
                                 "GeoRegionName": "Zelenodolsk",
@@ -221,19 +228,7 @@ def test_ad_group_geo_dry_run_resolves_authoritative_region_names() -> None:
                     }
                 },
             )
-        assert request.url.path.endswith("/dictionaries")
-        assert body["method"] == "get"
-        return httpx.Response(
-            200,
-            json={
-                "result": {
-                    "GeoRegions": [
-                        {"GeoRegionId": 213, "GeoRegionName": "Moscow"},
-                        {"GeoRegionId": 12345, "GeoRegionName": "Zelenodolsk"},
-                    ]
-                }
-            },
-        )
+        raise AssertionError(f"unexpected upstream request: {request.url.path}")
 
     settings = _settings()
     _override(settings, handler)
@@ -253,16 +248,25 @@ def test_ad_group_geo_dry_run_resolves_authoritative_region_names() -> None:
     body = response.json()
     assert body["after"]["region_ids"] == [12345]
     assert body["after"]["regions"][0]["name"] == "Zelenodolsk"
-    assert [call["method"] for call in calls] == ["getGeoRegions", "get", "get"]
+    assert [call["method"] for call in calls] == ["get", "get", "get"]
+    assert dictionary_calls == [
+        {"method": "get", "params": {"DictionaryNames": ["GeoRegions"]}}
+    ] * 2
 
 
 def test_ad_group_create_resolves_names_previews_canonical_geo_and_returns_verified_readback() -> None:
     calls: list[dict[str, Any]] = []
+    dictionary_calls: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         body: dict[str, Any] = json.loads(request.content.decode())
         calls.append(body)
-        if request.url.path.endswith("/dictionaries") and body["method"] == "getGeoRegions":
+        if request.url.path.endswith("/dictionaries"):
+            dictionary_calls.append(body)
+            assert body == {
+                "method": "get",
+                "params": {"DictionaryNames": ["GeoRegions"]},
+            }
             return httpx.Response(
                 200,
                 json={
@@ -271,20 +275,7 @@ def test_ad_group_create_resolves_names_previews_canonical_geo_and_returns_verif
                             {
                                 "GeoRegionId": 12345,
                                 "GeoRegionName": "Zelenodolsk",
-                                "ParentGeoRegionNames": {"Items": ["Russia"]},
                             }
-                        ]
-                    }
-                },
-            )
-        if request.url.path.endswith("/dictionaries"):
-            assert body["method"] == "get"
-            return httpx.Response(
-                200,
-                json={
-                    "result": {
-                        "GeoRegions": [
-                            {"GeoRegionId": 12345, "GeoRegionName": "Zelenodolsk"}
                         ]
                     }
                 },
@@ -369,7 +360,10 @@ def test_ad_group_create_resolves_names_previews_canonical_geo_and_returns_verif
             }
         ],
     }
-    assert [call["method"] for call in calls] == ["getGeoRegions", "get", "add", "get", "get"]
+    assert [call["method"] for call in calls] == ["get", "get", "add", "get", "get"]
+    assert dictionary_calls == [
+        {"method": "get", "params": {"DictionaryNames": ["GeoRegions"]}}
+    ] * 3
 
 
 def test_ad_group_geo_apply_accepts_readback_region_ids_in_different_signed_order() -> None:

@@ -57,7 +57,8 @@ def test_campaign_ad_groups_uses_full_dictionary_for_readback_id_to_name_mapping
             )
         if request.url.path.endswith("/dictionaries"):
             # Full dictionaries.get is intentionally retained only for ad-group
-            # RegionId -> name readback. The name resolver uses getGeoRegions.
+            # RegionId -> name readback and the public resolver share
+            # dictionaries.get GeoRegions in live-readonly mode.
             assert body["method"] == "get"
             assert body["params"]["DictionaryNames"] == ["GeoRegions"]
             return httpx.Response(
@@ -112,45 +113,48 @@ def test_campaign_ad_groups_uses_full_dictionary_for_readback_id_to_name_mapping
     assert calls == ["/json/v5/adgroups", "/json/v5/dictionaries"]
 
 
-def test_region_resolver_uses_specialized_request_and_parses_nested_parent_names() -> None:
+@pytest.mark.parametrize(
+    ("name", "expected_id", "expected_name"),
+    [
+        ("  зЕЛЕНОДОЛЬСК  ", 11125, "Зеленодольск"),
+        ("Зеленодольский район", 99762, "Зеленодольский район"),
+        ("Высокогорский район", 99758, "Высокогорский район"),
+        ("Пестречинский район", 99775, "Пестречинский район"),
+        ("Лаишевский район", 99766, "Лаишевский район"),
+    ],
+)
+def test_region_resolver_uses_observed_live_dictionary_shape(
+    name: str, expected_id: int, expected_name: str
+) -> None:
     calls: list[str] = []
+
+    # Sanitized live-readonly observation: dictionaries.get returns
+    # result.GeoRegions as a flat array. The specialized getGeoRegions request
+    # instead returns result={} for these public names.
+    observed_geo_regions = [
+        {"GeoRegionId": 99758, "GeoRegionName": "Высокогорский район"},
+        {"GeoRegionId": 99762, "GeoRegionName": "Зеленодольский район"},
+        {"GeoRegionId": 99766, "GeoRegionName": "Лаишевский район"},
+        {"GeoRegionId": 99775, "GeoRegionName": "Пестречинский район"},
+        {"GeoRegionId": 11125, "GeoRegionName": "Зеленодольск"},
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         body: dict[str, Any] = json.loads(request.content.decode())
         calls.append(request.url.path)
         assert request.url.path.endswith("/dictionaries")
+        if body["method"] == "getGeoRegions":
+            return httpx.Response(200, json={"result": {}})
         assert body == {
-            "method": "getGeoRegions",
-            "params": {
-                "SelectionCriteria": {"ExactNames": ["  зЕЛЕНОДОЛЬСК  "]},
-                "FieldNames": [
-                    "GeoRegionId",
-                    "GeoRegionName",
-                    "ParentGeoRegionNames",
-                ],
-            },
+            "method": "get",
+            "params": {"DictionaryNames": ["GeoRegions"]},
         }
-        return httpx.Response(
-            200,
-            json={
-                "result": {
-                    "GeoRegions": [
-                        {
-                            "GeoRegionId": 12345,
-                            "GeoRegionName": "Зеленодольск",
-                            "ParentGeoRegionNames": {
-                                "Items": ["Россия", "Республика Татарстан"]
-                            },
-                        }
-                    ]
-                }
-            },
-        )
+        return httpx.Response(200, json={"result": {"GeoRegions": observed_geo_regions}})
 
     settings = _settings("live_readonly")
     _override(settings, _client_with_handler(settings, handler))
     try:
-        response = client.get("/yandex/regions/resolve", params={"name": "  зЕЛЕНОДОЛЬСК  "})
+        response = client.get("/yandex/regions/resolve", params={"name": name})
     finally:
         _clear()
 
@@ -160,21 +164,58 @@ def test_region_resolver_uses_specialized_request_and_parses_nested_parent_names
     assert body["read_only"] is True
     assert body["scope"] == "yandex_geo_regions_dictionary"
     assert body["match"] == "exact_normalized_name"
-    assert body["region"]["region_id"] == 12345
-    assert body["region"]["name"] == "Зеленодольск"
-    assert body["region"]["parent_names"] == ["Россия", "Республика Татарстан"]
+    assert body["region"]["region_id"] == expected_id
+    assert body["region"]["name"] == expected_name
+    assert body["region"]["parent_names"] == []
     assert body["region"]["excluded"] is False
     assert body["region"]["all_regions"] is False
     assert body["region"]["dictionary_resolved"] is True
     assert calls == ["/json/v5/dictionaries"]
 
 
+def test_region_resolver_uses_name_compatibility_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public route must exercise the same safe name resolver as mutations."""
+    settings = _settings("live_readonly")
+    direct = _client_with_handler(
+        settings,
+        lambda request: (_ for _ in ()).throw(AssertionError(f"unexpected request: {request.url}")),
+    )
+    resolved_names: list[str] = []
+
+    def geo_regions_get_by_name(name: str) -> dict[str, Any]:
+        resolved_names.append(name)
+        return {
+            "ok": True,
+            "result": {
+                "GeoRegions": [{"GeoRegionId": 12345, "GeoRegionName": "Target"}]
+            },
+        }
+
+    def geo_regions_get() -> dict[str, Any]:
+        return {"ok": True, "result": {"GeoRegions": []}}
+
+    monkeypatch.setattr(direct, "geo_regions_get_by_name", geo_regions_get_by_name)
+    monkeypatch.setattr(direct, "geo_regions_get", geo_regions_get)
+    _override(settings, direct)
+    try:
+        response = client.get("/yandex/regions/resolve", params={"name": "Target"})
+    finally:
+        _clear()
+
+    assert response.status_code == 200, response.text
+    assert resolved_names == ["Target"]
+
+
 def test_region_resolver_allows_absent_optional_parent_names() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body: dict[str, Any] = json.loads(request.content.decode())
         assert request.url.path.endswith("/dictionaries")
-        assert body["method"] == "getGeoRegions"
-        assert body["params"]["SelectionCriteria"] == {"ExactNames": ["Target"]}
+        assert body == {
+            "method": "get",
+            "params": {"DictionaryNames": ["GeoRegions"]},
+        }
         return httpx.Response(
             200,
             json={
@@ -229,9 +270,44 @@ def test_region_resolver_fails_closed_for_malformed_present_parent_names() -> No
     assert response.json()["detail"]["error_type"] == "YandexDirectError"
 
 
+@pytest.mark.parametrize(
+    "upstream",
+    [
+        {"result": {}},
+        {"result": {"GeoRegions": {}}},
+    ],
+)
+def test_region_resolver_fails_closed_for_incomplete_dictionary_shape(
+    upstream: dict[str, Any],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content.decode())
+        assert request.url.path.endswith("/dictionaries")
+        assert body == {
+            "method": "get",
+            "params": {"DictionaryNames": ["GeoRegions"]},
+        }
+        return httpx.Response(200, json=upstream)
+
+    settings = _settings("live_readonly")
+    _override(settings, _client_with_handler(settings, handler))
+    try:
+        response = client.get("/yandex/regions/resolve", params={"name": "Target"})
+    finally:
+        _clear()
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["error_type"] == "YandexDirectError"
+
+
 def test_region_resolver_fails_closed_for_unknown_name_without_echoing_input() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
+        body: dict[str, Any] = json.loads(request.content.decode())
         assert request.url.path.endswith("/dictionaries")
+        assert body == {
+            "method": "get",
+            "params": {"DictionaryNames": ["GeoRegions"]},
+        }
         return httpx.Response(
             200,
             json={

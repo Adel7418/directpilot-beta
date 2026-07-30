@@ -326,37 +326,22 @@ class YandexDirectClient:
         return self._call("changes", {"method": "get", "params": {}})
 
     def geo_regions_get(self) -> dict[str, Any]:
-        """Read full GeoRegions only for ad-group RegionId -> name readback.
-
-        This ``dictionaries.get`` call is deliberately separate from string
-        resolution. Callers resolving a user-supplied name must use
-        :meth:`geo_regions_get_by_name` and Direct v5 ``getGeoRegions``.
-        """
+        """Read full GeoRegions through the verified ``dictionaries.get`` envelope."""
         return self._call(
             "dictionaries",
             {"method": "get", "params": {"DictionaryNames": ["GeoRegions"]}},
         )
 
     def geo_regions_get_by_name(self, query: str) -> dict[str, Any]:
-        """Return Direct v5 GeoRegions candidates for one supplied name.
+        """Read the full GeoRegions dictionary for local exact-name resolution.
 
-        The endpoint layer accepts one normalized exact match and fails closed
-        for zero or multiple matches; this client sends no aliases or IDs.
+        ``dictionaries.getGeoRegions`` is not a verified Direct v5 request shape.
+        Keep this public compatibility method so all name-resolution callers use
+        the safe dictionary envelope; callers perform normalized exact matching
+        and fail-closed validation locally.
         """
-        return self._call(
-            "dictionaries",
-            {
-                "method": "getGeoRegions",
-                "params": {
-                    "SelectionCriteria": {"ExactNames": [query]},
-                    "FieldNames": [
-                        "GeoRegionId",
-                        "GeoRegionName",
-                        "ParentGeoRegionNames",
-                    ],
-                },
-            },
-        )
+        _ = query
+        return self.geo_regions_get()
 
     def dictionaries_get(self) -> dict[str, Any]:
         return self._call(

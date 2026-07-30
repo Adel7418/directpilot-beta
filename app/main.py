@@ -777,7 +777,7 @@ def _geo_regions_from_dictionary_result(result: dict[str, Any] | None) -> list[Y
 
 
 def _geo_regions_from_resolver_result(result: dict[str, Any] | None) -> list[YandexRegion]:
-    """Parse the focused ``dictionaries.getGeoRegions`` result shape exactly."""
+    """Parse the ``dictionaries.get`` GeoRegions result shape exactly."""
     if not isinstance(result, dict):
         raise YandexDirectError("Yandex Direct GeoRegions resolver response is incomplete.")
     raw_regions = result.get("GeoRegions")
@@ -1277,8 +1277,8 @@ def yandex_ad_groups(
                 )
             items = _extract_ad_groups(response.get("result"), require_region_ids=True)
             if any(group["region_ids"] for group in items):
-                # Full dictionaries.get is only for readback ID -> name mapping;
-                # the resolver endpoint below uses getGeoRegions by name.
+                # Full dictionaries.get powers both ID -> name readback and
+                # local exact-name resolution.
                 geo_regions_result: dict[str, Any] | None = None
                 if any(
                     region_id != 0 for group in items for region_id in group["region_ids"]

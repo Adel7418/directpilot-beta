@@ -542,7 +542,7 @@ class YandexRegion(BaseModel):
     parent_name: str | None = None
     parent_names: list[str] = Field(
         default_factory=list,
-        description="ParentGeoRegionNames.Items returned by dictionaries.getGeoRegions.",
+        description="ParentGeoRegionNames.Items from the GeoRegions dictionary.",
     )
     dictionary_region_id: int | None = Field(
         default=None,
