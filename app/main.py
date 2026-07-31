@@ -128,7 +128,11 @@ from app.models import (
     BidModifiersUpdateResult,
 )
 from app.store import store
-from app.yandex_direct import YandexDirectClient, YandexDirectError
+from app.yandex_direct import (
+    YandexDirectClient,
+    YandexDirectError,
+    YandexDirectReportPendingError,
+)
 from app.yandex_facade import mock_yandex
 from app.yandex_metrika import (
     YandexMetrikaClient,
@@ -166,6 +170,15 @@ app = FastAPI(
 YANDEX_DIRECT_ERROR_RESPONSES = {
     502: {"model": ApiErrorResponse, "description": "Yandex Direct upstream error"},
     503: {"model": ApiErrorResponse, "description": "YANDEX_OAUTH_TOKEN is not configured"},
+}
+
+YANDEX_REPORT_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    409: {"model": ApiErrorResponse, "description": "Yandex credentials/client are unavailable."},
+    502: {"model": ApiErrorResponse, "description": "Redacted Yandex Direct Reports API error."},
+    503: {
+        "model": ApiErrorResponse,
+        "description": "Yandex Direct report is still processing; retry after the Retry-After header.",
+    },
 }
 
 
@@ -588,8 +601,23 @@ def audit_log() -> AuditLog:
 # ---------------------------------------------------------------------------
 
 
+def _yandex_report_pending_to_503(exc: YandexDirectReportPendingError) -> HTTPException:
+    """Expose a queued report without provider payload, credentials, or report data."""
+    return HTTPException(
+        status_code=503,
+        headers={"Retry-After": str(exc.retry_after)},
+        detail={
+            "error_type": "YandexDirectReportPending",
+            "message": "Yandex Direct report is still processing; retry the identical request later.",
+            "retry_after": exc.retry_after,
+        },
+    )
+
+
 def _yandex_error_to_502(exc: YandexDirectError) -> HTTPException:
-    """Translate a YandexDirectError into an HTTP 502 with no token in detail."""
+    """Translate a Direct client error into a redacted upstream HTTP response."""
+    if isinstance(exc, YandexDirectReportPendingError):
+        return _yandex_report_pending_to_503(exc)
     return HTTPException(
         status_code=502,
         detail={
@@ -2400,7 +2428,11 @@ def yandex_wordstat_delete(
     )
 
 
-@app.get("/yandex/reports/live/{report_type}", response_model=YandexRawResult)
+@app.get(
+    "/yandex/reports/live/{report_type}",
+    response_model=YandexRawResult,
+    responses=YANDEX_REPORT_ERROR_RESPONSES,
+)
 def yandex_report(
     report_type: str,
     date_from: str,
@@ -2417,7 +2449,11 @@ def yandex_report(
     )
 
 
-@app.get("/yandex/reports/search-queries-live", response_model=YandexRawResult)
+@app.get(
+    "/yandex/reports/search-queries-live",
+    response_model=YandexRawResult,
+    responses=YANDEX_REPORT_ERROR_RESPONSES,
+)
 def yandex_search_queries_live(
     date_from: str,
     date_to: str,
@@ -2443,6 +2479,7 @@ def yandex_search_queries_live(
     responses={
         409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
         502: {"description": "Redacted Yandex Direct Reports API error."},
+        503: {"description": "Yandex Direct report is still processing; retry after Retry-After."},
     },
 )
 def yandex_reports_summary(
@@ -2744,6 +2781,7 @@ def _aggregate_search_query_tsv(
     responses={
         409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
         502: {"description": "Redacted Yandex Direct Reports API error."},
+        503: {"description": "Yandex Direct report is still processing; retry after Retry-After."},
     },
 )
 def yandex_search_queries(

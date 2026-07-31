@@ -29,6 +29,7 @@ Tests use ``httpx.MockTransport`` so no real network call ever happens.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -272,6 +273,150 @@ def test_search_queries_live_raw_endpoint_uses_search_query_field_names(
     assert "Query\tCampaignId\tAdGroupId" in body["data"]
     assert captured["body"]["params"]["ReportType"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
     assert captured["body"]["params"]["FieldNames"] == [
+        "Query",
+        "CampaignId",
+        "AdGroupId",
+        "Impressions",
+        "Clicks",
+        "Ctr",
+        "Cost",
+    ]
+
+
+_SEARCH_QUERY_RAW_REPORT_PATHS = (
+    "/yandex/reports/search-queries-live",
+    "/yandex/reports/live/SEARCH_QUERY_PERFORMANCE_REPORT",
+)
+
+
+@pytest.mark.parametrize("path", _SEARCH_QUERY_RAW_REPORT_PATHS)
+def test_search_query_raw_reports_poll_identical_pending_request_until_ready(
+    client_with_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+):
+    """201/202 are pending states, not successful empty TSV responses."""
+    from app import yandex_direct as yandex_direct_module
+
+    calls: list[dict[str, Any]] = []
+    waits: list[int] = []
+    statuses = iter((201, 202, 200))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content.decode()))
+        status = next(statuses)
+        if status != 200:
+            return httpx.Response(status, headers={"retryIn": "2"})
+        return httpx.Response(200, content=_search_query_tsv(include_campaign_name=False))
+
+    monkeypatch.setattr(
+        yandex_direct_module,
+        "time",
+        SimpleNamespace(sleep=waits.append),
+        raising=False,
+    )
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get(
+            path,
+            params={"date_from": "2026-06-01", "date_to": "2026-06-07"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    assert "Query\tCampaignId\tAdGroupId" in response.json()["data"]
+    assert waits == [2, 2]
+    assert len(calls) == 3
+    assert calls[0] == calls[1] == calls[2]
+    assert calls[0]["params"]["ReportType"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
+    assert calls[0]["params"]["FieldNames"] == [
+        "Query",
+        "CampaignId",
+        "AdGroupId",
+        "Impressions",
+        "Clicks",
+        "Ctr",
+        "Cost",
+    ]
+    assert "LRO-SECRET" not in response.text
+
+
+@pytest.mark.parametrize("path", _SEARCH_QUERY_RAW_REPORT_PATHS)
+def test_search_query_raw_reports_expose_bounded_pending_state(
+    client_with_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+):
+    """A report that remains queued must be an explicit retryable 503."""
+    from app import yandex_direct as yandex_direct_module
+
+    calls: list[dict[str, Any]] = []
+    waits: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content.decode()))
+        return httpx.Response(202, headers={"retryIn": "4"})
+
+    monkeypatch.setattr(
+        yandex_direct_module,
+        "time",
+        SimpleNamespace(sleep=waits.append),
+        raising=False,
+    )
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get(
+            path,
+            params={"date_from": "2026-06-01", "date_to": "2026-06-07"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 503, response.text
+    assert response.headers["Retry-After"] == "4"
+    assert response.json()["detail"] == {
+        "error_type": "YandexDirectReportPending",
+        "message": "Yandex Direct report is still processing; retry the identical request later.",
+        "retry_after": 4,
+    }
+    assert waits == [4, 4]
+    assert len(calls) == 3
+    assert calls[0] == calls[1] == calls[2]
+    assert "LRO-SECRET" not in response.text
+
+
+@pytest.mark.parametrize("path", _SEARCH_QUERY_RAW_REPORT_PATHS)
+def test_search_query_raw_reports_preserve_ready_empty_tsv_as_success(
+    client_with_client: TestClient,
+    path: str,
+):
+    """Only a ready HTTP 200 with an empty TSV is a valid empty result."""
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content.decode()))
+        return httpx.Response(200, content="")
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get(
+            path,
+            params={"date_from": "2026-06-01", "date_to": "2026-06-07"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"] == ""
+    assert len(calls) == 1
+    assert calls[0]["params"]["FieldNames"] == [
         "Query",
         "CampaignId",
         "AdGroupId",

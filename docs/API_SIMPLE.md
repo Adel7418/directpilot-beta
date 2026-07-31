@@ -915,11 +915,30 @@ Impressions=540, Clicks=22, Ctr=4.07, Cost=660.00`, endpoint вернёт
 > Видеть `source="mock"` в `sandbox` / `live_readonly` / `live_write` — баг
 > конфигурации, а не ожидаемое поведение.
 
-Также доступен raw-эндпоинт `GET /yandex/reports/search-queries-live?date_from=...&date_to=...`
-(возвращает `YandexRawResult` с TSV-телом ответа). В отличие от универсального
+Также доступен raw-эндпоинт `GET /yandex/reports/search-queries-live?date_from=...&date_to=...` (возвращает `YandexRawResult` с TSV-телом ответа). В отличие от универсального
 `/yandex/reports/live/{REPORT_TYPE}`, этот diagnostic endpoint запрашивает именно
 search-query поля `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`,
 чтобы не получить пустой отчёт из-за campaign-summary field set.
+
+### Stable report polling contract (SEARCH query endpoints)
+
+These three report endpoints share one asynchronous contract:
+
+- `GET /yandex/reports/live/{report_type}`
+- `GET /yandex/reports/search-queries-live`
+- `GET /yandex/reports/search-queries`
+
+The polling behavior is stable and should be handled by callers.
+
+| HTTP upstream from Yandex | DirectPilot outcome | Caller action |
+|---|---|---|
+| `201` / `202` | report is queued/pending, no final data yet | DirectPilot auto-retries the identical deterministic upstream request within a bounded wait window (caller awaits this) |
+| `200` + non-empty TSV | report ready, parsed/normalized result returned | process normally |
+| `200` + empty TSV | valid successful empty report (real no-data state) | process as success, do not fail |
+| pending after bounded wait | DirectPilot returns `503` with `Retry-After` and sanitized error body | caller retries the identical GET after `Retry-After` seconds |
+
+Default fields for `SEARCH_QUERY_PERFORMANCE_REPORT` on `/yandex/reports/live/{report_type}` now include `Query` (`Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`).
+Other report types keep their previous defaults.
 
 ---
 

@@ -11162,6 +11162,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex credentials/client are unavailable."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11171,6 +11181,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Redacted Yandex Direct Reports API error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Direct report is still processing; retry after the Retry-After header."
           }
         },
         "summary": "Yandex Report"
@@ -11262,6 +11292,9 @@
           },
           "502": {
             "description": "Redacted Yandex Direct Reports API error."
+          },
+          "503": {
+            "description": "Yandex Direct report is still processing; retry after Retry-After."
           }
         },
         "summary": "Yandex Search Queries"
@@ -11301,6 +11334,16 @@
             },
             "description": "Successful Response"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex credentials/client are unavailable."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -11310,6 +11353,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Redacted Yandex Direct Reports API error."
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Direct report is still processing; retry after the Retry-After header."
           }
         },
         "summary": "Yandex Search Queries Live"
@@ -11401,6 +11464,9 @@
           },
           "502": {
             "description": "Redacted Yandex Direct Reports API error."
+          },
+          "503": {
+            "description": "Yandex Direct report is still processing; retry after Retry-After."
           }
         },
         "summary": "Yandex Reports Summary"
