@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any
 
 import httpx
@@ -10,6 +11,29 @@ from app.config import Settings
 
 SANDBOX_BASE_URL = "https://api-sandbox.direct.yandex.com/json/v5"
 LIVE_BASE_URL = "https://api.direct.yandex.com/json/v5"
+
+
+_DEFAULT_REPORT_FIELD_NAMES = (
+    "Date",
+    "CampaignId",
+    "CampaignName",
+    "Impressions",
+    "Clicks",
+    "Cost",
+    "Ctr",
+)
+_SEARCH_QUERY_REPORT_FIELD_NAMES = (
+    "Query",
+    "CampaignId",
+    "AdGroupId",
+    "Impressions",
+    "Clicks",
+    "Ctr",
+    "Cost",
+)
+_REPORT_MAX_ATTEMPTS = 3
+_REPORT_MAX_WAIT_SECONDS = 10
+_REPORT_DEFAULT_RETRY_AFTER_SECONDS = 1
 
 
 class YandexDirectError(RuntimeError):
@@ -30,6 +54,14 @@ class YandexDirectError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.diagnostics = diagnostics or {}
+
+
+class YandexDirectReportPendingError(YandexDirectError):
+    """A Direct offline report is queued and was not ready within the local bound."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__("Yandex Direct report is still processing")
+        self.retry_after = retry_after
 
 
 class YandexDirectClient:
@@ -325,6 +357,24 @@ class YandexDirectClient:
     def changes_get(self) -> dict[str, Any]:
         return self._call("changes", {"method": "get", "params": {}})
 
+    def geo_regions_get(self) -> dict[str, Any]:
+        """Read full GeoRegions through the verified ``dictionaries.get`` envelope."""
+        return self._call(
+            "dictionaries",
+            {"method": "get", "params": {"DictionaryNames": ["GeoRegions"]}},
+        )
+
+    def geo_regions_get_by_name(self, query: str) -> dict[str, Any]:
+        """Read the full GeoRegions dictionary for local exact-name resolution.
+
+        ``dictionaries.getGeoRegions`` is not a verified Direct v5 request shape.
+        Keep this public compatibility method so all name-resolution callers use
+        the safe dictionary envelope; callers perform normalized exact matching
+        and fail-closed validation locally.
+        """
+        _ = query
+        return self.geo_regions_get()
+
     def dictionaries_get(self) -> dict[str, Any]:
         return self._call(
             "dictionaries",
@@ -503,6 +553,10 @@ class YandexDirectClient:
                         "Title2",
                         "Text",
                         "Href",
+                        "DisplayUrlPath",
+                        "Mobile",
+                        "TurboPageId",
+                        "VCardId",
                         "SitelinkSetId",
                         "BusinessId",
                         "PreferVCardOverBusiness",
@@ -1271,7 +1325,12 @@ class YandexDirectClient:
         field_names: list[str] | None = None,
         campaign_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        field_names = field_names or ["Date", "CampaignId", "CampaignName", "Impressions", "Clicks", "Cost", "Ctr"]
+        if not field_names:
+            field_names = list(
+                _SEARCH_QUERY_REPORT_FIELD_NAMES
+                if report_type == "SEARCH_QUERY_PERFORMANCE_REPORT"
+                else _DEFAULT_REPORT_FIELD_NAMES
+            )
         selection_criteria: dict[str, Any] = {"DateFrom": date_from, "DateTo": date_to}
         if campaign_ids:
             # Reports API selection filters campaign ids through Filter items,
@@ -1339,31 +1398,60 @@ class YandexDirectClient:
         }
         return self._call("campaigns", payload)
 
+    @staticmethod
+    def _report_retry_after(response: httpx.Response) -> int:
+        """Return a safe retry delay from Direct's ``retryIn`` header."""
+        try:
+            return max(1, int(response.headers.get("retryIn", "")))
+        except (TypeError, ValueError):
+            return _REPORT_DEFAULT_RETRY_AFTER_SECONDS
+
     def _call_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
 
-        try:
-            response = self._client.post(
-                f"{self.base_url}/reports",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
-                    "Accept-Language": "ru",
-                    "processingMode": "auto",
-                    "returnMoneyInMicros": "false",
-                    "skipReportHeader": "true",
-                    "skipColumnHeader": "false",
-                    "skipReportSummary": "true",
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise YandexDirectError(
-                f"Yandex Direct report transport error: {type(exc).__name__}"
-            ) from exc
+        waited_seconds = 0
+        response: httpx.Response | None = None
+        for attempt in range(_REPORT_MAX_ATTEMPTS):
+            try:
+                response = self._client.post(
+                    f"{self.base_url}/reports",
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
+                        "Accept-Language": "ru",
+                        "processingMode": "auto",
+                        "returnMoneyInMicros": "false",
+                        "skipReportHeader": "true",
+                        "skipColumnHeader": "false",
+                        "skipReportSummary": "true",
+                    },
+                )
+            except httpx.HTTPError as exc:
+                raise YandexDirectError(
+                    f"Yandex Direct report transport error: {type(exc).__name__}"
+                ) from exc
 
-        if response.status_code >= 400:
-            raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
+            if response.status_code == 200:
+                break
+            if response.status_code in (201, 202):
+                retry_after = self._report_retry_after(response)
+                if (
+                    attempt + 1 >= _REPORT_MAX_ATTEMPTS
+                    or waited_seconds + retry_after > _REPORT_MAX_WAIT_SECONDS
+                ):
+                    raise YandexDirectReportPendingError(retry_after)
+                time.sleep(retry_after)
+                waited_seconds += retry_after
+                continue
+            if response.status_code >= 400:
+                raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
+            raise YandexDirectError(
+                f"Yandex Direct reports unexpected HTTP {response.status_code}"
+            )
+
+        if response is None:
+            raise YandexDirectError("Yandex Direct reports did not return a ready response")
 
         # Reports usually return TSV, but Direct can still return a JSON error
         # envelope with HTTP 200. Do not let that masquerade as an empty TSV

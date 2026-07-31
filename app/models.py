@@ -532,17 +532,84 @@ class CampaignAuditResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class YandexRegion(BaseModel):
+    """A GeoRegions dictionary entry or the Direct ``RegionIds=0`` sentinel."""
+
+    region_id: int
+    name: str
+    type: str | None = None
+    parent_id: int | None = None
+    parent_name: str | None = None
+    parent_names: list[str] = Field(
+        default_factory=list,
+        description="ParentGeoRegionNames.Items from the GeoRegions dictionary.",
+    )
+    dictionary_region_id: int | None = Field(
+        default=None,
+        description=(
+            "Absolute GeoRegions dictionary ID used for the displayed name; "
+            "null for the Direct RegionIds=0 all-regions sentinel."
+        ),
+    )
+    excluded: bool = Field(
+        default=False,
+        description="True when the original signed AdGroup.RegionIds value is negative.",
+    )
+    all_regions: bool = Field(
+        default=False,
+        description="True only for the Direct RegionIds=0 all-regions sentinel.",
+    )
+    dictionary_resolved: bool = Field(
+        default=True,
+        description="False only when no GeoRegions dictionary entry exists for RegionIds=0.",
+    )
+    source: Literal["yandex"] = "yandex"
+    read_only: bool = True
+
+
 class YandexAdGroup(BaseModel):
     id: str
     campaign_id: str
     name: str
     status: str
+    region_ids: list[int] = Field(
+        default_factory=list,
+        description="Actual Direct v5 AdGroup.RegionIds returned by adgroups.get.",
+    )
+    regions: list[YandexRegion] = Field(
+        default_factory=list,
+        description="Authoritative names resolved from Yandex Direct GeoRegions.",
+    )
+    geo_scope: Literal["ad_group"] = Field(
+        default="ad_group",
+        description="Direct stores these RegionIds on this ad group, not at campaign scope.",
+    )
 
 
 class YandexAdGroupList(BaseModel):
     items: list[YandexAdGroup]
     source: Literal["mock", "yandex"] = "mock"
     read_only: bool = True
+    scope: Literal["ad_group_region_ids_for_requested_campaign"] = Field(
+        default="ad_group_region_ids_for_requested_campaign",
+        description="RegionIds belong to the returned ad groups for the requested campaign.",
+    )
+
+
+class YandexRegionResolveResult(BaseModel):
+    """Read-only result for ``GET /yandex/regions/resolve?name=...``."""
+
+    region: YandexRegion
+    source: Literal["yandex"] = "yandex"
+    read_only: bool = True
+    scope: Literal["yandex_geo_regions_dictionary"] = Field(
+        default="yandex_geo_regions_dictionary",
+        description="Resolved from the current Yandex Direct GeoRegions dictionary.",
+    )
+    match: Literal["exact_normalized_name"] = Field(
+        default="exact_normalized_name",
+        description="Only a single exact match after local whitespace/case normalization is accepted.",
+    )
 
 
 class YandexAd(BaseModel):
@@ -854,22 +921,42 @@ class LiveAdCreateRequest(BaseModel):
 
 
 class LiveAdCreateItem(BaseModel):
-    """One ad to add to an existing ad group.
+    """One TextAd to add to an existing ad group.
 
-    ``title``, ``text``, ``href`` are required (Direct v5 TextAd contract).
-    ``title2`` — optional second headline.
-    ``sitelink_set_id`` — optional quick-link set id.
-    ``business_id`` — optional Yandex Business organization id.
-    ``prefer_vcard_over_business`` — ``\"YES\"`` / ``\"NO\"``, optional.
+    ``inherit_from_ad_id`` is the only supported inheritance mechanism.
+    It names one actual TextAd that the store reads before it prepares the
+    preview or apply payload.  Omitting it means the caller must provide the
+    mandatory ``title`` / ``text`` and a destination or contact field.
+    ``null`` is deliberately not a detach/clear operation and is rejected.
     """
 
-    title: str = Field(..., min_length=1)
-    text: str = Field(..., min_length=1)
-    href: str = Field(..., min_length=1)
-    title2: str | None = None
-    sitelink_set_id: int | None = None
-    business_id: int | None = None
+    inherit_from_ad_id: int | None = Field(default=None, ge=1)
+    title: str | None = Field(default=None, min_length=1)
+    text: str | None = Field(default=None, min_length=1)
+    href: str | None = Field(default=None, min_length=1)
+    title2: str | None = Field(default=None, min_length=1)
+    sitelink_set_id: int | None = Field(default=None, ge=1)
+    business_id: int | None = Field(default=None, ge=1)
     prefer_vcard_over_business: Literal["YES", "NO"] | None = None
+
+    @model_validator(mode="after")
+    def _require_explicit_content_without_parent(self) -> "LiveAdCreateItem":
+        for field_name in self.model_fields_set:
+            if getattr(self, field_name) is None:
+                raise ValueError(
+                    f"{field_name} cannot be null; TextAd add has no detach operation."
+                )
+        if self.inherit_from_ad_id is None:
+            missing = [
+                field_name
+                for field_name in ("title", "text")
+                if getattr(self, field_name) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "title and text are required unless inherit_from_ad_id is provided."
+                )
+        return self
 
 
 class LiveAdCreateWarning(BaseModel):
@@ -918,6 +1005,73 @@ class LiveAdCreateResult(BaseModel):
     yandex_units: int | None = None
     yandex_error: str | None = None
 
+
+class LiveTextAdPatchRequest(BaseModel):
+    """Patch only explicitly supplied TextAd fields.
+
+    ``href`` is the complete destination URL.  Its query string and fragment
+    are passed through unchanged; there is no implicit UTM merge or detach
+    operation.  Explicit ``null``/empty values are rejected because this
+    endpoint has no safe field-detachment contract.
+    """
+
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    title: str | None = Field(default=None, min_length=1)
+    title2: str | None = Field(default=None, min_length=1)
+    text: str | None = Field(default=None, min_length=1)
+    display_url_path: str | None = Field(default=None, min_length=1)
+    href: str | None = Field(default=None, min_length=1)
+    business_id: int | None = Field(default=None, ge=1)
+    sitelink_set_id: int | None = Field(default=None, ge=1)
+    prefer_vcard_over_business: Literal["YES", "NO"] | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _require_nonempty_explicit_patch(self) -> "LiveTextAdPatchRequest":
+        patch_fields = {
+            "title",
+            "title2",
+            "text",
+            "display_url_path",
+            "href",
+            "business_id",
+            "sitelink_set_id",
+            "prefer_vcard_over_business",
+        }
+        requested = patch_fields & self.model_fields_set
+        if not requested:
+            raise ValueError("Provide at least one explicit TextAd field to patch.")
+        for field_name in requested:
+            if getattr(self, field_name) is None:
+                raise ValueError(
+                    f"{field_name} cannot be null; TextAd PATCH has no detach operation."
+                )
+        return self
+
+
+class LiveTextAdModerationState(BaseModel):
+    route: Literal["/yandex/ads/moderate"] = "/yandex/ads/moderate"
+    status: Literal["not_requested"] = "not_requested"
+
+
+class LiveTextAdPatchResult(BaseModel):
+    """Safe TextAd PATCH response with before/after and post-write readback."""
+
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    ad_id: int
+    before_after: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    payload_preview: dict
+    readback: dict | None = None
+    update_results: list[dict] | None = None
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    yandex_units: int | None = None
+    moderation: LiveTextAdModerationState = Field(default_factory=LiveTextAdModerationState)
 
 
 # ---------------------------------------------------------------------------
@@ -968,12 +1122,28 @@ class YandexAdGroupNegativeKeywordsResult(BaseModel):
 
 class LiveAdGroupCreateRequest(BaseModel):
     name: str = Field(..., min_length=1)
-    region_ids: list[int] = Field(..., min_length=1)
+    region_ids: list[int] | None = Field(default=None, min_length=1)
+    region_names: list[str] | None = Field(default=None, min_length=1)
     negative_keywords: list[str] = Field(default_factory=list)
-    approved: bool
+    approved: bool = False
     idempotency_key: str = Field(..., min_length=6)
     dry_run: bool = True
     reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_one_region_target(self) -> "LiveAdGroupCreateRequest":
+        if (self.region_ids is None) == (self.region_names is None):
+            raise ValueError("Provide exactly one of region_ids or region_names.")
+        return self
+
+
+class LiveAdGroupCreateReadback(BaseModel):
+    ad_group_id: int
+    campaign_id: str
+    name: str
+    region_ids: list[int]
+    negative_keywords: list[str]
+    regions: list[YandexRegion]
 
 
 class LiveAdGroupCreateResult(BaseModel):
@@ -984,11 +1154,55 @@ class LiveAdGroupCreateResult(BaseModel):
     audit_id: str
     campaign_id: str
     ad_group_ids: list[int] = Field(default_factory=list)
+    regions: list[YandexRegion] = Field(default_factory=list)
     payload_preview: dict | None = None
     add_results: list[dict] | None = None
     provider_response: dict | None = None
-    readback: list[dict] | None = None
+    readback: LiveAdGroupCreateReadback | None = None
     warnings: list[str] = Field(default_factory=list)
+
+
+class YandexAdGroupGeoState(BaseModel):
+    """One complete, authoritative ad-group geo state."""
+
+    region_ids: list[int]
+    regions: list[YandexRegion]
+
+
+class YandexAdGroupGeoUpdateRequest(BaseModel):
+    region_ids: list[int] | None = Field(default=None, min_length=1)
+    region_names: list[str] | None = Field(default=None, min_length=1)
+    approved: bool = False
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def require_one_region_target(self) -> "YandexAdGroupGeoUpdateRequest":
+        if (self.region_ids is None) == (self.region_names is None):
+            raise ValueError("Provide exactly one of region_ids or region_names.")
+        return self
+
+
+class YandexAdGroupGeoUpdateResult(BaseModel):
+    dry_run: bool
+    applied: bool
+    source: Literal["yandex"] = "yandex"
+    mode: str
+    audit_id: str
+    campaign_id: str
+    ad_group_id: str
+    ad_group_name: str
+    scope: Literal["ad_group"] = "ad_group"
+    before: YandexAdGroupGeoState
+    after: YandexAdGroupGeoState
+    added: list[YandexRegion] = Field(default_factory=list)
+    removed: list[YandexRegion] = Field(default_factory=list)
+    payload_preview: dict
+    risk_warning: str
+    preserved_entities: list[str] = Field(default_factory=list)
+    provider_response: dict | None = None
+    readback: YandexAdGroupGeoState | None = None
 
 # ---------------------------------------------------------------------------
 # ads.moderate — send ads to moderation

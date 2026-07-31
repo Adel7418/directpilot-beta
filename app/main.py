@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, timedelta
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -56,6 +58,8 @@ from app.models import (
     YandexAd,
     YandexAdGroup,
     YandexAdGroupList,
+    YandexRegion,
+    YandexRegionResolveResult,
     YandexAdList,
     YandexAdAssetItem,
     YandexAdAssetsMissing,
@@ -89,12 +93,18 @@ from app.models import (
     YandexStrategyResult,
     LiveAdCreateRequest,
     LiveAdCreateResult,
+    LiveTextAdPatchRequest,
+    LiveTextAdPatchResult,
     YandexAdGroupNegativeKeywords,
     YandexAdGroupNegativeKeywordsList,
     YandexAdGroupNegativeKeywordsRequest,
     YandexAdGroupNegativeKeywordsResult,
     LiveAdGroupCreateRequest,
+    LiveAdGroupCreateReadback,
     LiveAdGroupCreateResult,
+    YandexAdGroupGeoState,
+    YandexAdGroupGeoUpdateRequest,
+    YandexAdGroupGeoUpdateResult,
     AdsModerateRequest,
     AdsModerateResult,
     ProviderWarning,
@@ -118,7 +128,11 @@ from app.models import (
     BidModifiersUpdateResult,
 )
 from app.store import store
-from app.yandex_direct import YandexDirectClient, YandexDirectError
+from app.yandex_direct import (
+    YandexDirectClient,
+    YandexDirectError,
+    YandexDirectReportPendingError,
+)
 from app.yandex_facade import mock_yandex
 from app.yandex_metrika import (
     YandexMetrikaClient,
@@ -156,6 +170,15 @@ app = FastAPI(
 YANDEX_DIRECT_ERROR_RESPONSES = {
     502: {"model": ApiErrorResponse, "description": "Yandex Direct upstream error"},
     503: {"model": ApiErrorResponse, "description": "YANDEX_OAUTH_TOKEN is not configured"},
+}
+
+YANDEX_REPORT_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    409: {"model": ApiErrorResponse, "description": "Yandex credentials/client are unavailable."},
+    502: {"model": ApiErrorResponse, "description": "Redacted Yandex Direct Reports API error."},
+    503: {
+        "model": ApiErrorResponse,
+        "description": "Yandex Direct report is still processing; retry after the Retry-After header.",
+    },
 }
 
 
@@ -578,8 +601,23 @@ def audit_log() -> AuditLog:
 # ---------------------------------------------------------------------------
 
 
+def _yandex_report_pending_to_503(exc: YandexDirectReportPendingError) -> HTTPException:
+    """Expose a queued report without provider payload, credentials, or report data."""
+    return HTTPException(
+        status_code=503,
+        headers={"Retry-After": str(exc.retry_after)},
+        detail={
+            "error_type": "YandexDirectReportPending",
+            "message": "Yandex Direct report is still processing; retry the identical request later.",
+            "retry_after": exc.retry_after,
+        },
+    )
+
+
 def _yandex_error_to_502(exc: YandexDirectError) -> HTTPException:
-    """Translate a YandexDirectError into an HTTP 502 with no token in detail."""
+    """Translate a Direct client error into a redacted upstream HTTP response."""
+    if isinstance(exc, YandexDirectReportPendingError):
+        return _yandex_report_pending_to_503(exc)
     return HTTPException(
         status_code=502,
         detail={
@@ -650,23 +688,441 @@ def _extract_campaigns(result: dict[str, Any] | None) -> list[dict[str, Any]]:
     return items
 
 
-def _extract_ad_groups(result: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _extract_ad_groups(
+    result: dict[str, Any] | None, *, require_region_ids: bool = False
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     if not isinstance(result, dict):
+        if require_region_ids:
+            raise YandexDirectError("Yandex Direct adgroups.get response is incomplete.")
         return items
     raw = result.get("AdGroups") or result.get("adgroups") or []
+    if not isinstance(raw, list):
+        raise YandexDirectError("Yandex Direct adgroups.get response is incomplete.")
     for g in raw:
         if not isinstance(g, dict):
-            continue
+            raise YandexDirectError("Yandex Direct adgroups.get response is incomplete.")
+        raw_region_ids = g.get("RegionIds", g.get("regionIds"))
+        if raw_region_ids is None:
+            if require_region_ids:
+                raise YandexDirectError("Yandex Direct adgroups.get response is missing RegionIds.")
+            raw_region_ids = []
+        if not isinstance(raw_region_ids, list):
+            raise YandexDirectError("Yandex Direct adgroups.get returned invalid RegionIds.")
+        region_ids: list[int] = []
+        for raw_region_id in raw_region_ids:
+            if isinstance(raw_region_id, bool):
+                raise YandexDirectError("Yandex Direct adgroups.get returned invalid RegionIds.")
+            try:
+                region_ids.append(int(raw_region_id))
+            except (TypeError, ValueError) as exc:
+                raise YandexDirectError(
+                    "Yandex Direct adgroups.get returned invalid RegionIds."
+                ) from exc
         items.append(
             {
                 "id": str(g.get("Id") or g.get("id") or ""),
                 "campaign_id": str(g.get("CampaignId") or g.get("campaignId") or ""),
                 "name": str(g.get("Name") or g.get("name") or ""),
                 "status": str(g.get("Status") or g.get("status") or "UNKNOWN"),
+                "region_ids": region_ids,
+                "geo_scope": "ad_group",
             }
         )
     return items
+
+
+def _parent_geo_region_names_from_items(raw_parent_names: Any) -> list[str]:
+    """Parse the documented ``ParentGeoRegionNames.Items`` shape exactly."""
+    if not isinstance(raw_parent_names, dict):
+        raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+    raw_items = raw_parent_names.get("Items")
+    if not isinstance(raw_items, list) or any(
+        not isinstance(item, str) or not item.strip() for item in raw_items
+    ):
+        raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+    return [item.strip() for item in raw_items]
+
+
+def _geo_regions_from_dictionary_result(result: dict[str, Any] | None) -> list[YandexRegion]:
+    """Parse full ``dictionaries.get`` GeoRegions for readback ID->name mapping."""
+    if not isinstance(result, dict):
+        raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+    raw_regions = result.get("GeoRegions")
+    if isinstance(raw_regions, dict):
+        raw_regions = raw_regions.get("Items")
+    if not isinstance(raw_regions, list):
+        raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+
+    regions: list[YandexRegion] = []
+    for raw_region in raw_regions:
+        if not isinstance(raw_region, dict):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+        raw_region_id = raw_region.get("GeoRegionId")
+        raw_name = raw_region.get("GeoRegionName")
+        if (
+            raw_region_id is None
+            or isinstance(raw_region_id, bool)
+            or not isinstance(raw_name, str)
+            or not raw_name.strip()
+        ):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+        try:
+            region_id = int(raw_region_id)
+        except (TypeError, ValueError) as exc:
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.") from exc
+
+        raw_parent_id: Any = raw_region.get("ParentId")
+        if isinstance(raw_parent_id, bool):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+        try:
+            parent_id = int(raw_parent_id) if raw_parent_id is not None else None
+        except (TypeError, ValueError) as exc:
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.") from exc
+        raw_parent_name = raw_region.get("ParentName")
+        if raw_parent_name is not None and not isinstance(raw_parent_name, str):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+        raw_type = raw_region.get("GeoRegionType")
+        if raw_type is not None and not isinstance(raw_type, str):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+        parent_names = (
+            _parent_geo_region_names_from_items(raw_region["ParentGeoRegionNames"])
+            if "ParentGeoRegionNames" in raw_region
+            else []
+        )
+        regions.append(
+            YandexRegion(
+                region_id=region_id,
+                name=raw_name.strip(),
+                type=raw_type,
+                parent_id=parent_id,
+                parent_name=raw_parent_name.strip() if raw_parent_name else None,
+                parent_names=parent_names,
+                dictionary_region_id=region_id,
+            )
+        )
+    return regions
+
+
+def _geo_regions_from_resolver_result(result: dict[str, Any] | None) -> list[YandexRegion]:
+    """Parse the ``dictionaries.get`` GeoRegions result shape exactly."""
+    if not isinstance(result, dict):
+        raise YandexDirectError("Yandex Direct GeoRegions resolver response is incomplete.")
+    raw_regions = result.get("GeoRegions")
+    if not isinstance(raw_regions, list):
+        raise YandexDirectError("Yandex Direct GeoRegions resolver response is incomplete.")
+
+    regions: list[YandexRegion] = []
+    for raw_region in raw_regions:
+        if not isinstance(raw_region, dict):
+            raise YandexDirectError("Yandex Direct GeoRegions resolver response is incomplete.")
+        raw_region_id = raw_region.get("GeoRegionId")
+        raw_name = raw_region.get("GeoRegionName")
+        if (
+            raw_region_id is None
+            or isinstance(raw_region_id, bool)
+            or not isinstance(raw_name, str)
+            or not raw_name.strip()
+        ):
+            raise YandexDirectError("Yandex Direct GeoRegions resolver response is incomplete.")
+        try:
+            region_id = int(raw_region_id)
+        except (TypeError, ValueError) as exc:
+            raise YandexDirectError("Yandex Direct GeoRegions resolver response is incomplete.") from exc
+        regions.append(
+            YandexRegion(
+                region_id=region_id,
+                name=raw_name.strip(),
+                parent_names=(
+                    _parent_geo_region_names_from_items(raw_region["ParentGeoRegionNames"])
+                    if "ParentGeoRegionNames" in raw_region
+                    else []
+                ),
+                dictionary_region_id=region_id,
+            )
+        )
+    return regions
+
+
+def _attach_authoritative_regions(
+    ad_groups: list[dict[str, Any]], geo_regions_result: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    requires_dictionary = any(
+        region_id != 0 for ad_group in ad_groups for region_id in ad_group["region_ids"]
+    )
+    if requires_dictionary and geo_regions_result is None:
+        raise YandexDirectError("Yandex Direct GeoRegions dictionary response is incomplete.")
+    regions_by_id = (
+        {region.region_id: region for region in _geo_regions_from_dictionary_result(geo_regions_result)}
+        if requires_dictionary
+        else {}
+    )
+    for ad_group in ad_groups:
+        resolved: list[YandexRegion] = []
+        for signed_region_id in ad_group["region_ids"]:
+            if signed_region_id == 0:
+                # Direct's all-regions sentinel is not a dictionary item.
+                resolved.append(
+                    YandexRegion(
+                        region_id=0,
+                        name="All regions",
+                        dictionary_region_id=None,
+                        excluded=False,
+                        all_regions=True,
+                        dictionary_resolved=False,
+                    )
+                )
+                continue
+            region = regions_by_id.get(abs(signed_region_id))
+            if region is None:
+                raise YandexDirectError(
+                    "Yandex Direct GeoRegions dictionary did not contain every requested ad-group RegionId."
+                )
+            resolved.append(
+                YandexRegion(
+                    region_id=signed_region_id,
+                    name=region.name,
+                    type=region.type,
+                    parent_id=region.parent_id,
+                    parent_name=region.parent_name,
+                    parent_names=region.parent_names,
+                    dictionary_region_id=abs(signed_region_id),
+                    excluded=signed_region_id < 0,
+                )
+            )
+        ad_group["regions"] = resolved
+    return ad_groups
+
+
+_AD_GROUP_GEO_PRESERVED_ENTITIES = [
+    "negative_keywords",
+    "keywords",
+    "ads",
+    "strategy",
+    "budget",
+    "goals",
+    "links_utm_assets",
+]
+
+
+def _normalize_ad_group_region_ids(region_ids: list[int]) -> list[int]:
+    """Return the complete deterministic Direct RegionIds target or fail closed."""
+    normalized = sorted(set(region_ids))
+    if not normalized:
+        raise HTTPException(status_code=422, detail="region_ids must contain at least one item")
+    if 0 in normalized and len(normalized) != 1:
+        raise HTTPException(status_code=422, detail="RegionIds=0 cannot be combined with other region IDs")
+    if all(region_id < 0 for region_id in normalized):
+        raise HTTPException(status_code=422, detail="region_ids cannot contain only negative IDs")
+    return normalized
+
+
+def _ad_group_geo_request_fingerprint(
+    *, campaign_id: str, ad_group_id: str, region_ids: list[int]
+) -> str:
+    canonical = json.dumps(
+        {
+            "operation": "ad_group_geo_update",
+            "campaign_id": str(campaign_id),
+            "ad_group_id": str(ad_group_id),
+            "region_ids": region_ids,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _resolve_ad_group_geo_target_region_ids(
+    payload: YandexAdGroupGeoUpdateRequest, client: YandexDirectClient
+) -> list[int]:
+    if payload.region_ids is not None:
+        return _normalize_ad_group_region_ids(payload.region_ids)
+
+    resolved_ids: list[int] = []
+    for name in payload.region_names or []:
+        response = client.geo_regions_get_by_name(name)
+        if not response.get("ok"):
+            raise YandexDirectError("Yandex Direct GeoRegions resolver failed before geo mutation.")
+        resolved_ids.append(_resolve_unique_geo_region(name, response.get("result")).region_id)
+    return _normalize_ad_group_region_ids(resolved_ids)
+
+
+def _resolve_ad_group_create_target_region_ids(
+    payload: LiveAdGroupCreateRequest, client: YandexDirectClient
+) -> list[int]:
+    if payload.region_ids is not None:
+        return _normalize_ad_group_region_ids(payload.region_ids)
+
+    resolved_ids: list[int] = []
+    for name in payload.region_names or []:
+        response = client.geo_regions_get_by_name(name)
+        if not response.get("ok"):
+            raise YandexDirectError("Yandex Direct GeoRegions resolver failed before ad-group create.")
+        resolved_ids.append(_resolve_unique_geo_region(name, response.get("result")).region_id)
+    return _normalize_ad_group_region_ids(resolved_ids)
+
+
+def _authoritative_regions_for_ids(
+    region_ids: list[int], client: YandexDirectClient
+) -> list[YandexRegion]:
+    states = [{"region_ids": list(region_ids)}]
+    requires_dictionary = any(region_id != 0 for region_id in region_ids)
+    geo_regions_result: dict[str, Any] | None = None
+    if requires_dictionary:
+        response = client.geo_regions_get()
+        if not response.get("ok"):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary read failed.")
+        geo_regions_result = response.get("result")
+    return _attach_authoritative_regions(states, geo_regions_result)[0]["regions"]
+
+
+def _read_created_ad_group(
+    *,
+    campaign_id: str,
+    ad_group_id: int,
+    expected_name: str,
+    expected_region_ids: list[int],
+    expected_negative_keywords: list[str],
+    client: YandexDirectClient,
+) -> LiveAdGroupCreateReadback:
+    response = client.adgroups_get(campaign_id)
+    if not response.get("ok"):
+        raise YandexDirectError("Yandex Direct adgroups.get failed after ad-group create.")
+    raw_groups = (response.get("result") or {}).get("AdGroups")
+    if not isinstance(raw_groups, list):
+        raise YandexDirectError("Yandex Direct adgroups.get response is incomplete after ad-group create.")
+    matches = [
+        group
+        for group in raw_groups
+        if isinstance(group, dict) and str(group.get("Id")) == str(ad_group_id)
+    ]
+    if len(matches) != 1:
+        raise YandexDirectError("Yandex Direct did not return exactly one created ad group.")
+    raw_group = matches[0]
+    parsed_groups = _extract_ad_groups({"AdGroups": [raw_group]}, require_region_ids=True)
+    if len(parsed_groups) != 1:
+        raise YandexDirectError("Yandex Direct created ad-group readback is incomplete.")
+    group = parsed_groups[0]
+    if (
+        group["campaign_id"] != str(campaign_id)
+        or group["name"] != expected_name
+        or sorted(group["region_ids"]) != sorted(expected_region_ids)
+    ):
+        raise YandexDirectError("Yandex Direct created ad-group readback did not match the requested state.")
+    negatives = _negative_keywords_from_adgroup(raw_group)
+    if negatives != expected_negative_keywords:
+        raise YandexDirectError("Yandex Direct created ad-group negative-keyword readback did not match.")
+    return LiveAdGroupCreateReadback(
+        ad_group_id=ad_group_id,
+        campaign_id=str(campaign_id),
+        name=group["name"],
+        region_ids=group["region_ids"],
+        negative_keywords=negatives,
+        regions=_authoritative_regions_for_ids(group["region_ids"], client),
+    )
+
+
+def _ad_group_create_request_fingerprint(
+    *, campaign_id: str, name: str, region_ids: list[int], negative_keywords: list[str]
+) -> str:
+    canonical = json.dumps(
+        {
+            "operation": "ad_group_create",
+            "campaign_id": str(campaign_id),
+            "name": name,
+            "region_ids": region_ids,
+            "negative_keywords": negative_keywords,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _read_live_ad_group_geo_states(
+    *,
+    campaign_id: str,
+    ad_group_id: str,
+    target_region_ids: list[int],
+    client: YandexDirectClient,
+) -> tuple[str, YandexAdGroupGeoState, YandexAdGroupGeoState]:
+    """Read one live ad group and resolve both before/after geo names safely."""
+    response = client.adgroups_get(campaign_id)
+    if not response.get("ok"):
+        raise YandexDirectError("Yandex Direct adgroups.get failed before geo mutation.")
+    groups = _extract_ad_groups(response.get("result"), require_region_ids=True)
+    matches = [group for group in groups if group["id"] == str(ad_group_id)]
+    if len(matches) != 1:
+        raise YandexDirectError("Yandex Direct did not return exactly one requested ad group.")
+    group = matches[0]
+    if group["campaign_id"] != str(campaign_id):
+        raise YandexDirectError("Yandex Direct returned the ad group for a different campaign.")
+    if not group["region_ids"]:
+        raise YandexDirectError("Yandex Direct adgroups.get response has incomplete RegionIds.")
+
+    state_groups = [
+        {"region_ids": list(group["region_ids"])},
+        {"region_ids": list(target_region_ids)},
+    ]
+    requires_dictionary = any(
+        region_id != 0 for state in state_groups for region_id in state["region_ids"]
+    )
+    geo_regions_result: dict[str, Any] | None = None
+    if requires_dictionary:
+        dictionary_response = client.geo_regions_get()
+        if not dictionary_response.get("ok"):
+            raise YandexDirectError("Yandex Direct GeoRegions dictionary read failed before geo mutation.")
+        geo_regions_result = dictionary_response.get("result")
+    states = _attach_authoritative_regions(state_groups, geo_regions_result)
+    before = YandexAdGroupGeoState(
+        region_ids=list(group["region_ids"]), regions=states[0]["regions"]
+    )
+    after = YandexAdGroupGeoState(
+        region_ids=list(target_region_ids), regions=states[1]["regions"]
+    )
+    return group["name"], before, after
+
+
+def _normalize_geo_region_name(value: str) -> str:
+    return " ".join(value.casefold().split())
+
+
+def _resolve_unique_geo_region(name: str, geo_regions_result: dict[str, Any] | None) -> YandexRegion:
+    normalized_name = _normalize_geo_region_name(name)
+    if not normalized_name:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_type": "YandexRegionResolutionError",
+                "message": "Region name must contain non-whitespace characters.",
+                "reason": "invalid_name",
+            },
+        )
+    matches = [
+        region
+        for region in _geo_regions_from_resolver_result(geo_regions_result)
+        if _normalize_geo_region_name(region.name) == normalized_name
+    ]
+    if not matches:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_type": "YandexRegionResolutionError",
+                "message": "No exact Yandex GeoRegions match was found.",
+                "reason": "unknown",
+            },
+        )
+    if len(matches) != 1:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_type": "YandexRegionResolutionError",
+                "message": "Yandex GeoRegions returned more than one exact match.",
+                "reason": "ambiguous",
+            },
+        )
+    return matches[0]
 
 
 def _normalize_negative_keyword(value: str) -> str:
@@ -831,24 +1287,47 @@ def yandex_ad_groups(
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> YandexAdGroupList:
-    if _is_live_read_mode(settings) and client is not None:
+    if _is_live_read_mode(settings):
+        direct = _require_yandex_read_client(settings, client)
         try:
-            response = client.adgroups_get(campaign_id)
+            response = direct.adgroups_get(campaign_id)
+            if not response.get("ok"):
+                err = response.get("error") or {}
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error_type": "YandexDirectError",
+                        "message": (
+                            f"Yandex Direct rejected adgroups.get: "
+                            f"error_code={err.get('error_code')!r}"
+                        ),
+                    },
+                )
+            items = _extract_ad_groups(response.get("result"), require_region_ids=True)
+            if any(group["region_ids"] for group in items):
+                # Full dictionaries.get powers both ID -> name readback and
+                # local exact-name resolution.
+                geo_regions_result: dict[str, Any] | None = None
+                if any(
+                    region_id != 0 for group in items for region_id in group["region_ids"]
+                ):
+                    geo_regions_response = direct.geo_regions_get()
+                    if not geo_regions_response.get("ok"):
+                        err = geo_regions_response.get("error") or {}
+                        raise HTTPException(
+                            status_code=502,
+                            detail={
+                                "error_type": "YandexDirectError",
+                                "message": (
+                                    "Yandex Direct rejected dictionaries.get GeoRegions: "
+                                    f"error_code={err.get('error_code')!r}"
+                                ),
+                            },
+                        )
+                    geo_regions_result = geo_regions_response.get("result")
+                items = _attach_authoritative_regions(items, geo_regions_result)
         except YandexDirectError as exc:
             raise _yandex_error_to_502(exc) from exc
-        if not response.get("ok"):
-            err = response.get("error") or {}
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "error_type": "YandexDirectError",
-                    "message": (
-                        f"Yandex Direct rejected adgroups.get: "
-                        f"error_code={err.get('error_code')!r}"
-                    ),
-                },
-            )
-        items = _extract_ad_groups(response.get("result"))
         return YandexAdGroupList(
             items=[YandexAdGroup(**g) for g in items],
             source="yandex",
@@ -1049,6 +1528,50 @@ def yandex_dictionaries(
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> YandexRawResult:
     return _call_raw_read(settings, client, "dictionaries", "get", lambda c: c.dictionaries_get())
+
+
+@app.get(
+    "/yandex/regions/resolve",
+    response_model=YandexRegionResolveResult,
+    summary="Resolve one authoritative Yandex Direct region by name",
+    description=(
+        "Read-only authoritative lookup against Direct v5 dictionaries.get GeoRegions. "
+        "Only one exact match after local whitespace/case normalization is accepted; "
+        "unknown or ambiguous names fail closed."
+    ),
+)
+def yandex_region_resolve(
+    name: str = Query(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Region name to resolve by exact normalized Yandex GeoRegions name.",
+    ),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRegionResolveResult:
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        response = direct.geo_regions_get_by_name(name)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    "Yandex Direct rejected dictionaries.get GeoRegions: "
+                    f"error_code={err.get('error_code')!r}"
+                ),
+            },
+        )
+    try:
+        region = _resolve_unique_geo_region(name, response.get("result"))
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    return YandexRegionResolveResult(region=region)
 
 
 @app.get("/yandex/campaigns/{campaign_id}/bid-modifiers", response_model=YandexRawResult)
@@ -1346,6 +1869,146 @@ def yandex_ads_business_attach(
 
 
 @app.post(
+    "/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/geo",
+    response_model=YandexAdGroupGeoUpdateResult,
+)
+def yandex_ad_group_geo_update(
+    campaign_id: str,
+    ad_group_id: str,
+    payload: YandexAdGroupGeoUpdateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexAdGroupGeoUpdateResult:
+    if not payload.dry_run:
+        _require_live_write_for_apply(settings, dry_run=False, approved=payload.approved)
+    if not _is_live_read_mode(settings) or client is None:
+        raise HTTPException(
+            status_code=409,
+            detail="An authoritative Yandex Direct client is required for ad-group geo mutation.",
+        )
+    try:
+        target_region_ids = _resolve_ad_group_geo_target_region_ids(payload, client)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+    fingerprint: str | None = None
+    if not payload.dry_run:
+        fingerprint = _ad_group_geo_request_fingerprint(
+            campaign_id=campaign_id,
+            ad_group_id=ad_group_id,
+            region_ids=target_region_ids,
+        )
+        cached = store._ad_group_geo_results_by_key.get(payload.idempotency_key)
+        if cached is not None:
+            if cached.get("fingerprint") != fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency key was already used for a different ad-group geo request.",
+                )
+            cached_result = cached.get("result")
+            if not isinstance(cached_result, YandexAdGroupGeoUpdateResult):
+                raise HTTPException(status_code=409, detail="Idempotency record is incomplete.")
+            return cached_result
+
+    try:
+        ad_group_name, before, after = _read_live_ad_group_geo_states(
+            campaign_id=campaign_id,
+            ad_group_id=ad_group_id,
+            target_region_ids=target_region_ids,
+            client=client,
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+    before_ids = set(before.region_ids)
+    after_ids = set(after.region_ids)
+    update_item = {
+        "Id": int(ad_group_id) if str(ad_group_id).isdigit() else ad_group_id,
+        "RegionIds": target_region_ids,
+    }
+    preview = {"method": "adgroups.update", "params": {"AdGroups": [update_item]}}
+    audit = store.append_audit(
+        "yandex_ad_group_geo_preview" if payload.dry_run else "yandex_ad_group_geo_apply",
+        str(ad_group_id),
+        dry_run=payload.dry_run,
+        details={"campaign_id": campaign_id},
+    )
+    result = YandexAdGroupGeoUpdateResult(
+        dry_run=payload.dry_run,
+        applied=False,
+        mode=settings.directpilot_mode,
+        audit_id=audit.id,
+        campaign_id=campaign_id,
+        ad_group_id=ad_group_id,
+        ad_group_name=ad_group_name,
+        before=before,
+        after=after,
+        added=[region for region in after.regions if region.region_id not in before_ids],
+        removed=[region for region in before.regions if region.region_id not in after_ids],
+        payload_preview=preview,
+        risk_warning="Changing ad-group geo can change reach and spend.",
+        preserved_entities=_AD_GROUP_GEO_PRESERVED_ENTITIES,
+    )
+    if payload.dry_run:
+        return result
+
+    try:
+        response = client.adgroups_update([update_item])
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        raise _yandex_business_error_to_502(response, "ad-group geo update")
+    update_results = (response.get("result") or {}).get("UpdateResults")
+    if not isinstance(update_results, list) or len(update_results) != 1:
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct geo update did not return exactly one UpdateResults item.")
+        )
+    update_result = update_results[0]
+    if not isinstance(update_result, dict):
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct geo update returned an invalid UpdateResults item.")
+        )
+    item_errors = update_result.get("Errors")
+    returned_id = update_result.get("Id")
+    if (
+        item_errors not in (None, [])
+        or returned_id is None
+        or isinstance(returned_id, bool)
+        or str(returned_id) != str(ad_group_id)
+    ):
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct geo update result was incomplete or contained item errors.")
+        )
+
+    try:
+        _, readback, _ = _read_live_ad_group_geo_states(
+            campaign_id=campaign_id,
+            ad_group_id=ad_group_id,
+            target_region_ids=target_region_ids,
+            client=client,
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if sorted(readback.region_ids) != sorted(target_region_ids):
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct readback RegionIds did not match the requested target.")
+        )
+
+    verified = result.model_copy(
+        update={
+            "dry_run": False,
+            "applied": True,
+            "readback": readback,
+        }
+    )
+    store._ad_group_geo_results_by_key[payload.idempotency_key] = {
+        "fingerprint": fingerprint,
+        "result": verified,
+    }
+    return verified
+
+
+@app.post(
     "/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords",
     response_model=YandexAdGroupNegativeKeywordsResult,
 )
@@ -1436,13 +2099,48 @@ def yandex_campaign_ad_group_create(
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> LiveAdGroupCreateResult:
-    _require_live_write_for_apply(settings, dry_run=payload.dry_run, approved=payload.approved)
-    ad_group = {
+    if not payload.dry_run:
+        _require_live_write_for_apply(settings, dry_run=False, approved=payload.approved)
+    if not _is_live_read_mode(settings) or client is None:
+        raise HTTPException(
+            status_code=409,
+            detail="An authoritative Yandex Direct client is required for ad-group create.",
+        )
+    try:
+        target_region_ids = _resolve_ad_group_create_target_region_ids(payload, client)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    negatives = _normalize_negative_keywords(payload.negative_keywords)
+
+    fingerprint: str | None = None
+    if not payload.dry_run:
+        fingerprint = _ad_group_create_request_fingerprint(
+            campaign_id=campaign_id,
+            name=payload.name,
+            region_ids=target_region_ids,
+            negative_keywords=negatives,
+        )
+        cached = store._ad_group_create_results_by_key.get(payload.idempotency_key)
+        if cached is not None:
+            if cached.get("fingerprint") != fingerprint:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Idempotency key was already used for a different ad-group create request.",
+                )
+            cached_result = cached.get("result")
+            if not isinstance(cached_result, LiveAdGroupCreateResult):
+                raise HTTPException(status_code=409, detail="Idempotency record is incomplete.")
+            return cached_result
+
+    try:
+        regions = _authoritative_regions_for_ids(target_region_ids, client)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    ad_group: dict[str, Any] = {
         "Name": payload.name,
         "CampaignId": int(campaign_id) if str(campaign_id).isdigit() else campaign_id,
-        "RegionIds": payload.region_ids,
+        "RegionIds": target_region_ids,
     }
-    negatives = _normalize_negative_keywords(payload.negative_keywords)
     if negatives:
         ad_group["NegativeKeywords"] = {"Items": negatives}
     preview = {"method": "adgroups.add", "params": {"AdGroups": [ad_group]}}
@@ -1456,30 +2154,58 @@ def yandex_campaign_ad_group_create(
         return LiveAdGroupCreateResult(
             dry_run=True,
             applied=False,
-            source="yandex" if _is_live_read_mode(settings) else "mock",
+            source="yandex",
             mode=settings.directpilot_mode,
             audit_id=audit.id,
             campaign_id=campaign_id,
+            regions=regions,
             payload_preview=preview,
             warnings=["Creates only an ad group; ads, keywords, and moderation are separate next steps."],
         )
-    if payload.idempotency_key in store.apply_results_by_key:
-        return store.apply_results_by_key[payload.idempotency_key]
-    if client is None:
-        raise HTTPException(status_code=409, detail="Yandex client is required for live_write apply")
+
     try:
         response = client.adgroups_add([ad_group])
     except YandexDirectError as exc:
         raise _yandex_error_to_502(exc) from exc
     if not response.get("ok"):
         raise _yandex_business_error_to_502(response, "ad-group create")
-    add_results = []
-    ad_group_ids: list[int] = []
-    if response.get("ok"):
-        add_results = (response.get("result") or {}).get("AddResults") or []
-        for item in add_results:
-            if isinstance(item, dict) and item.get("Id") is not None:
-                ad_group_ids.append(int(item["Id"]))
+    add_results = (response.get("result") or {}).get("AddResults")
+    if not isinstance(add_results, list) or len(add_results) != 1:
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct ad-group create did not return exactly one AddResults item.")
+        )
+    add_result = add_results[0]
+    if not isinstance(add_result, dict):
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct ad-group create returned an invalid AddResults item.")
+        )
+    created_id = add_result.get("Id")
+    if (
+        add_result.get("Errors") not in (None, [])
+        or created_id is None
+        or isinstance(created_id, bool)
+    ):
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct ad-group create result was incomplete or contained item errors.")
+        )
+    try:
+        ad_group_id = int(created_id)
+    except (TypeError, ValueError) as exc:
+        raise _yandex_error_to_502(
+            YandexDirectError("Yandex Direct ad-group create result returned an invalid created ID.")
+        ) from exc
+
+    try:
+        readback = _read_created_ad_group(
+            campaign_id=campaign_id,
+            ad_group_id=ad_group_id,
+            expected_name=payload.name,
+            expected_region_ids=target_region_ids,
+            expected_negative_keywords=negatives,
+            client=client,
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
     result = LiveAdGroupCreateResult(
         dry_run=False,
         applied=True,
@@ -1487,12 +2213,16 @@ def yandex_campaign_ad_group_create(
         mode=settings.directpilot_mode,
         audit_id=audit.id,
         campaign_id=campaign_id,
-        ad_group_ids=ad_group_ids,
+        ad_group_ids=[ad_group_id],
+        regions=regions,
         add_results=add_results,
-        provider_response=response.get("result") if response.get("ok") else response,
+        readback=readback,
         warnings=["Creates only an ad group; ads, keywords, and moderation are separate next steps."],
     )
-    store.apply_results_by_key[payload.idempotency_key] = result
+    store._ad_group_create_results_by_key[payload.idempotency_key] = {
+        "fingerprint": fingerprint,
+        "result": result,
+    }
     return result
 
 
@@ -1509,6 +2239,29 @@ def yandex_ad_group_ads_add(
     try:
         return store.yandex_ad_group_ads_add(
             ad_group_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        message = str(exc)
+        if "Live writes require" in message or "live_readonly" in message:
+            raise HTTPException(status_code=409, detail=message) from exc
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.patch("/yandex/ads/{ad_id}", response_model=LiveTextAdPatchResult)
+def yandex_text_ad_patch(
+    ad_id: int,
+    payload: LiveTextAdPatchRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> LiveTextAdPatchResult:
+    try:
+        return store.yandex_text_ad_patch(
+            ad_id,
+            payload,
+            settings=settings,
+            client=client,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1675,7 +2428,11 @@ def yandex_wordstat_delete(
     )
 
 
-@app.get("/yandex/reports/live/{report_type}", response_model=YandexRawResult)
+@app.get(
+    "/yandex/reports/live/{report_type}",
+    response_model=YandexRawResult,
+    responses=YANDEX_REPORT_ERROR_RESPONSES,
+)
 def yandex_report(
     report_type: str,
     date_from: str,
@@ -1692,7 +2449,11 @@ def yandex_report(
     )
 
 
-@app.get("/yandex/reports/search-queries-live", response_model=YandexRawResult)
+@app.get(
+    "/yandex/reports/search-queries-live",
+    response_model=YandexRawResult,
+    responses=YANDEX_REPORT_ERROR_RESPONSES,
+)
 def yandex_search_queries_live(
     date_from: str,
     date_to: str,
@@ -1718,6 +2479,7 @@ def yandex_search_queries_live(
     responses={
         409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
         502: {"description": "Redacted Yandex Direct Reports API error."},
+        503: {"description": "Yandex Direct report is still processing; retry after Retry-After."},
     },
 )
 def yandex_reports_summary(
@@ -2019,6 +2781,7 @@ def _aggregate_search_query_tsv(
     responses={
         409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
         502: {"description": "Redacted Yandex Direct Reports API error."},
+        503: {"description": "Yandex Direct report is still processing; retry after Retry-After."},
     },
 )
 def yandex_search_queries(

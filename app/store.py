@@ -6,6 +6,7 @@ import json
 import uuid as _uuid
 from itertools import count
 from typing import Any, Iterable, Literal
+from urllib.parse import parse_qsl, urlsplit
 
 from app.config import Settings
 from app.models import (
@@ -51,6 +52,8 @@ from app.models import (
     LiveAdCreateResult,
     LiveAdCreateItem,
     LiveAdCreateWarning,
+    LiveTextAdPatchRequest,
+    LiveTextAdPatchResult,
     AdsModerateRequest,
     AdsModerateResult,
     ProviderWarning,
@@ -630,6 +633,11 @@ class MockStore:
         self._keyword_bids_results_by_key: dict[str, dict[str, Any]] = {}
         # Bid modifiers update cache mirrors keyword bids idempotency semantics.
         self._bid_modifiers_results_by_key: dict[str, dict[str, Any]] = {}
+        # Ad-group geo mutations store a result and a canonical request
+        # fingerprint so a reused key cannot return another payload's success.
+        self._ad_group_geo_results_by_key: dict[str, dict[str, Any]] = {}
+        # Live ad-group create follows the same replay/conflict semantics.
+        self._ad_group_create_results_by_key: dict[str, dict[str, Any]] = {}
         # In-memory Yandex campaign status mirror (mock only).
         self.yandex_campaign_status: dict[str, str] = {
             "cmp_mock_local_services": "active",
@@ -4920,6 +4928,247 @@ class MockStore:
     # Live existing-campaign ads — add ads to an existing ad group
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _read_single_text_ad(
+        *,
+        client: YandexDirectClient,
+        ad_id: int,
+        expected_ad_group_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Read one complete TextAd or fail before building a write payload."""
+        try:
+            response = client.ads_get_by_ids([ad_id])
+        except YandexDirectError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise YandexDirectError(
+                f"unexpected error while reading TextAd {ad_id}: {type(exc).__name__}"
+            ) from exc
+        if not response.get("ok"):
+            error = response.get("error") or {}
+            raise YandexDirectError(
+                f"Yandex Direct rejected ads.get for TextAd {ad_id}: "
+                f"error_code={error.get('error_code')!r}"
+            )
+        ads = (response.get("result") or {}).get("Ads")
+        if not isinstance(ads, list):
+            raise YandexDirectError("Yandex Direct returned an incomplete TextAd readback.")
+        matches = [
+            ad for ad in ads
+            if isinstance(ad, dict) and _try_int(ad.get("Id")) == ad_id
+        ]
+        if len(matches) != 1:
+            raise YandexDirectError(
+                f"Yandex Direct did not return exactly one readable TextAd for id {ad_id}."
+            )
+        ad = matches[0]
+        if ad.get("Type") != "TEXT_AD":
+            raise YandexDirectError(f"Ad {ad_id} is not a TextAd.")
+        text_ad = ad.get("TextAd")
+        if not isinstance(text_ad, dict):
+            raise YandexDirectError(f"TextAd {ad_id} response is incomplete.")
+        for required_field in ("Title", "Text"):
+            if not isinstance(text_ad.get(required_field), str) or not text_ad[required_field]:
+                raise YandexDirectError(
+                    f"TextAd {ad_id} response is incomplete: {required_field} is missing."
+                )
+        if expected_ad_group_id is not None:
+            actual_group_id = _try_int(ad.get("AdGroupId"))
+            if actual_group_id != expected_ad_group_id:
+                raise YandexDirectError(
+                    f"TextAd {ad_id} does not belong to ad group {expected_ad_group_id}."
+                )
+        return ad
+
+    @staticmethod
+    def _utm_preview(href: str | None) -> dict[str, str]:
+        """Return UTM pairs for visibility only; the Href itself is never rebuilt."""
+        if not href:
+            return {}
+        return {
+            key: value
+            for key, value in parse_qsl(urlsplit(href).query, keep_blank_values=True)
+            if key.lower().startswith("utm_")
+        }
+
+    @classmethod
+    def _build_text_ad_add_item(
+        cls,
+        *,
+        item: LiveAdCreateItem,
+        inherited_ad: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        """Build one official TextAdAdd block and its explicit/reused field map."""
+        inherited_text_ad = (inherited_ad or {}).get("TextAd") or {}
+        if not isinstance(inherited_text_ad, dict):
+            raise YandexDirectError("Inherited TextAd response is incomplete.")
+
+        field_map = (
+            ("title", "Title"),
+            ("title2", "Title2"),
+            ("text", "Text"),
+            ("href", "Href"),
+            ("business_id", "BusinessId"),
+            ("sitelink_set_id", "SitelinkSetId"),
+            ("prefer_vcard_over_business", "PreferVCardOverBusiness"),
+        )
+        text_ad: dict[str, Any] = {}
+        field_preview: dict[str, dict[str, Any]] = {}
+        for request_name, provider_name in field_map:
+            if request_name in item.model_fields_set:
+                value = getattr(item, request_name)
+                source = "explicit"
+            elif provider_name in inherited_text_ad and inherited_text_ad[provider_name] is not None:
+                value = inherited_text_ad[provider_name]
+                source = "reused"
+            else:
+                continue
+            text_ad[provider_name] = value
+            field_preview[provider_name] = {"source": source, "value": value}
+
+        # TurboPageId and VCardId are destination/contact assets. They can only
+        # be carried through an explicitly selected parent; this request model
+        # deliberately has no implicit detach/replace operation for either.
+        for inherited_field in ("TurboPageId", "VCardId"):
+            if (
+                inherited_field in inherited_text_ad
+                and inherited_text_ad[inherited_field] is not None
+            ):
+                text_ad[inherited_field] = inherited_text_ad[inherited_field]
+                field_preview[inherited_field] = {
+                    "source": "reused",
+                    "value": inherited_text_ad[inherited_field],
+                }
+
+        for required_field in ("Title", "Text"):
+            if not isinstance(text_ad.get(required_field), str) or not text_ad[required_field]:
+                raise YandexDirectError(
+                    f"TextAd add requires {required_field}; provide it or inherit it from a complete TextAd."
+                )
+        if not any(text_ad.get(key) for key in ("Href", "TurboPageId", "BusinessId", "VCardId")):
+            raise YandexDirectError(
+                "TextAd add requires at least one destination or contact field "
+                "(Href, TurboPageId, BusinessId, or inherited VCardId)."
+            )
+        if (
+            text_ad.get("SitelinkSetId") is not None
+            and not text_ad.get("Href")
+            and not text_ad.get("TurboPageId")
+        ):
+            raise YandexDirectError("SitelinkSetId requires Href or TurboPageId.")
+
+        # Direct defaults Mobile to NO. Send it explicitly to retain a stable,
+        # auditable TextAdAdd contract.
+        text_ad["Mobile"] = "NO"
+        field_preview["Mobile"] = {"source": "provider_default", "value": "NO"}
+        href_source = field_preview.get("Href", {}).get("source", "not_set")
+        field_preview["UTM"] = {
+            "source": href_source,
+            "value": cls._utm_preview(text_ad.get("Href")),
+        }
+        return text_ad, field_preview
+
+    @staticmethod
+    def _validated_add_result_ids(
+        add_results: Any,
+        *,
+        expected_count: int,
+    ) -> list[int]:
+        """Validate every per-item ``ads.add`` result before readback."""
+        if not isinstance(add_results, list) or len(add_results) != expected_count:
+            raise YandexDirectError(
+                "Yandex Direct ads.add did not return one AddResults item per requested ad."
+            )
+        ad_ids: list[int] = []
+        for index, item in enumerate(add_results):
+            if not isinstance(item, dict) or item.get("Errors") not in (None, []):
+                raise YandexDirectError(
+                    f"Yandex Direct ads.add item {index} contained errors or an invalid result."
+                )
+            ad_id = _try_int(item.get("Id"))
+            if ad_id is None or ad_id in ad_ids:
+                raise YandexDirectError(
+                    f"Yandex Direct ads.add item {index} did not return a unique created ID."
+                )
+            ad_ids.append(ad_id)
+        return ad_ids
+
+    @classmethod
+    def _readback_created_text_ads(
+        cls,
+        *,
+        client: YandexDirectClient,
+        ad_ids: list[int],
+        expected_ad_group_id: int | None,
+        expected_ads: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Require detailed factual TextAd readback for every created ID."""
+        try:
+            response = client.ads_get_by_ids(ad_ids)
+        except YandexDirectError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise YandexDirectError(
+                f"unexpected error while reading created TextAds: {type(exc).__name__}"
+            ) from exc
+        if not response.get("ok"):
+            error = response.get("error") or {}
+            raise YandexDirectError(
+                "Yandex Direct rejected ads.get after ads.add: "
+                f"error_code={error.get('error_code')!r}"
+            )
+        returned_ads = (response.get("result") or {}).get("Ads")
+        if not isinstance(returned_ads, list):
+            raise YandexDirectError("Yandex Direct returned an incomplete ads.add readback.")
+        by_id: dict[int, dict[str, Any]] = {}
+        for ad in returned_ads:
+            if not isinstance(ad, dict):
+                continue
+            ad_id = _try_int(ad.get("Id"))
+            if ad_id in ad_ids and ad_id not in by_id:
+                by_id[ad_id] = ad
+        if set(by_id) != set(ad_ids):
+            raise YandexDirectError(
+                "Yandex Direct ads.add readback did not include every expected created ID."
+            )
+
+        verified: list[dict[str, Any]] = []
+        for ad_id, expected_entry in zip(ad_ids, expected_ads, strict=True):
+            actual = by_id[ad_id]
+            if actual.get("Type") != "TEXT_AD":
+                raise YandexDirectError(f"Created ad {ad_id} is not a TextAd on readback.")
+            if not isinstance(actual.get("Status"), str) or not actual["Status"]:
+                raise YandexDirectError(f"Created ad {ad_id} has no factual Status on readback.")
+            if expected_ad_group_id is not None and _try_int(actual.get("AdGroupId")) != expected_ad_group_id:
+                raise YandexDirectError(
+                    f"Created ad {ad_id} read back from an unexpected ad group."
+                )
+            actual_text_ad = actual.get("TextAd")
+            expected_text_ad = expected_entry.get("TextAd")
+            if not isinstance(actual_text_ad, dict) or not isinstance(expected_text_ad, dict):
+                raise YandexDirectError(f"Created TextAd {ad_id} readback is incomplete.")
+            for field_name, expected_value in expected_text_ad.items():
+                if actual_text_ad.get(field_name) != expected_value:
+                    raise YandexDirectError(
+                        f"Created TextAd {ad_id} readback mismatch for {field_name}."
+                    )
+            verified.append(actual)
+        return verified
+
+    @staticmethod
+    def _live_ad_add_fingerprint(
+        *,
+        ad_group_id: str,
+        dry_run: bool,
+        ads: list[dict[str, Any]],
+    ) -> str:
+        canonical = json.dumps(
+            {"ad_group_id": ad_group_id, "dry_run": dry_run, "ads": ads},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
     def yandex_ad_group_ads_add(
         self,
         ad_group_id: str,
@@ -4943,6 +5192,8 @@ class MockStore:
         """
         if not payload.approved:
             raise ValueError("Action requires explicit approval")
+        if (_try_int(ad_group_id) or 0) < 1:
+            raise ValueError("ad_group_id must be a positive numeric Yandex Direct ID.")
 
         mode = settings.directpilot_mode if settings is not None else "mock"
         is_live = mode in ("sandbox", "live_readonly", "live_write")
@@ -4957,8 +5208,6 @@ class MockStore:
         if cached is None:
             cached = {}
             self.adgroup_ads_add_results_by_key = cached
-        if cache_key in cached:
-            return cached[cache_key]
 
         # Pre-flight mode gate for apply.
         if not payload.dry_run and not can_write:
@@ -5032,32 +5281,65 @@ class MockStore:
             )
         )
 
-        # Build the v5 ads.add payload.
-        v5_ads: list[dict[str, Any]] = []
+        # Build the v5 ads.add payload. Inheritance is deliberately per-item
+        # and read from the single named parent, never inferred from sibling
+        # ads or a group-level majority.
         _adg_int = _try_int(ad_group_id)
+        inherited_ads: dict[int, dict[str, Any]] = {}
+        for inherited_id in {
+            item.inherit_from_ad_id
+            for item in payload.ads
+            if item.inherit_from_ad_id is not None
+        }:
+            if client is None:
+                raise YandexDirectError(
+                    "YandexDirectClient is required to inherit from an existing TextAd."
+                )
+            inherited_ads[inherited_id] = self._read_single_text_ad(
+                client=client,
+                ad_id=inherited_id,
+                expected_ad_group_id=_adg_int,
+            )
+
+        v5_ads: list[dict[str, Any]] = []
+        inheritance_preview: list[dict[str, Any]] = []
         for item in payload.ads:
-            text_ad: dict[str, Any] = {
-                "Title": item.title,
-                "Text": item.text,
-                "Href": item.href,
-            }
-            if item.title2:
-                text_ad["Title2"] = item.title2
-            if item.sitelink_set_id is not None:
-                text_ad["SitelinkSetId"] = item.sitelink_set_id
-            if item.business_id is not None:
-                text_ad["BusinessId"] = item.business_id
-            if item.prefer_vcard_over_business is not None:
-                text_ad["PreferVCardOverBusiness"] = item.prefer_vcard_over_business
+            text_ad, field_preview = self._build_text_ad_add_item(
+                item=item,
+                inherited_ad=(
+                    inherited_ads[item.inherit_from_ad_id]
+                    if item.inherit_from_ad_id is not None
+                    else None
+                ),
+            )
             ad_entry: dict[str, Any] = {"TextAd": text_ad}
             if _adg_int is not None:
                 ad_entry["AdGroupId"] = _adg_int
             v5_ads.append(ad_entry)
+            inheritance_preview.append(
+                {
+                    "inherit_from_ad_id": item.inherit_from_ad_id,
+                    "fields": field_preview,
+                }
+            )
 
         payload_preview = {
             "method": "ads.add",
             "params": {"Ads": _redact_ads_payload(v5_ads)},
+            "inheritance": inheritance_preview,
         }
+        request_fingerprint = self._live_ad_add_fingerprint(
+            ad_group_id=ad_group_id,
+            dry_run=payload.dry_run,
+            ads=v5_ads,
+        )
+        cached_entry = cached.get(cache_key)
+        if cached_entry is not None:
+            if cached_entry.get("fingerprint") != request_fingerprint:
+                raise ValueError(
+                    "Idempotency key was already used for a different TextAd add payload."
+                )
+            return cached_entry["result"]
 
         # Dry-run: never touch the network.
         if payload.dry_run:
@@ -5110,24 +5392,17 @@ class MockStore:
             sent_units = _safe_units(yandex_result.get("units"))
             provider_warnings = _provider_warnings_from_result(yandex_result)
 
-            # Extract ad ids from AddResults.
-            add_results = (
-                (yandex_result.get("result") or {}).get("AddResults") or []
+            add_results = (yandex_result.get("result") or {}).get("AddResults")
+            ad_ids = self._validated_add_result_ids(
+                add_results,
+                expected_count=len(v5_ads),
             )
-            ad_ids: list[int] = []
-            for ar in add_results:
-                if isinstance(ar, dict) and "Id" in ar:
-                    ad_ids.append(ar["Id"])
-
-            # Readback if feasible.
-            readback = None
-            if ad_ids:
-                try:
-                    rb_result = client.ads_get_by_ids(ad_ids)
-                    if rb_result.get("ok"):
-                        readback = (rb_result.get("result") or {}).get("Ads") or []
-                except Exception:
-                    pass
+            readback = self._readback_created_text_ads(
+                client=client,
+                ad_ids=ad_ids,
+                expected_ad_group_id=_adg_int,
+                expected_ads=v5_ads,
+            )
 
             audit = self.append_audit(
                 "yandex_ad_group_ads_add_applied",
@@ -5163,7 +5438,10 @@ class MockStore:
                 provider_warnings=provider_warnings,
                 yandex_units=sent_units,
             )
-            cached[cache_key] = result
+            cached[cache_key] = {
+                "fingerprint": request_fingerprint,
+                "result": result,
+            }
             return result
         except YandexDirectError as exc:
             self.append_audit(
@@ -5193,6 +5471,280 @@ class MockStore:
                     "idempotency_key": payload.idempotency_key,
                     "mode": mode,
                     "ad_count": len(v5_ads),
+                    "yandex_error": str(safe),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            raise safe from exc
+
+    # ------------------------------------------------------------------
+    # Live TextAd PATCH — explicit fields only, read-before-write
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_text_ad_patch(
+        *,
+        payload: LiveTextAdPatchRequest,
+        current_text_ad: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+        """Return the minimal v5 TextAd patch and field-level before/after."""
+        field_map = (
+            ("title", "Title"),
+            ("title2", "Title2"),
+            ("text", "Text"),
+            ("display_url_path", "DisplayUrlPath"),
+            ("href", "Href"),
+            ("business_id", "BusinessId"),
+            ("sitelink_set_id", "SitelinkSetId"),
+            ("prefer_vcard_over_business", "PreferVCardOverBusiness"),
+        )
+        text_patch: dict[str, Any] = {}
+        before_after: dict[str, dict[str, Any]] = {}
+        for request_name, provider_name in field_map:
+            if request_name not in payload.model_fields_set:
+                continue
+            after = getattr(payload, request_name)
+            before = current_text_ad.get(provider_name)
+            if after == before:
+                continue
+            text_patch[provider_name] = after
+            before_after[provider_name] = {"before": before, "after": after}
+            if provider_name == "Href":
+                before_after["UTM"] = {
+                    "before": MockStore._utm_preview(before),
+                    "after": MockStore._utm_preview(after),
+                }
+        if not text_patch:
+            raise ValueError("TextAd PATCH does not contain an effective field change.")
+        if text_patch.get("SitelinkSetId") is not None:
+            effective_href = text_patch.get("Href", current_text_ad.get("Href"))
+            effective_turbo_page = current_text_ad.get("TurboPageId")
+            if not effective_href and not effective_turbo_page:
+                raise ValueError("SitelinkSetId requires Href or TurboPageId.")
+        return text_patch, before_after
+
+    @staticmethod
+    def _validated_update_result(
+        update_results: Any,
+        *,
+        ad_id: int,
+    ) -> dict[str, Any]:
+        """Validate the sole per-item ``ads.update`` result or fail closed."""
+        if not isinstance(update_results, list) or len(update_results) != 1:
+            raise YandexDirectError(
+                "Yandex Direct ads.update did not return exactly one UpdateResults item."
+            )
+        result = update_results[0]
+        if (
+            not isinstance(result, dict)
+            or result.get("Errors") not in (None, [])
+            or _try_int(result.get("Id")) != ad_id
+        ):
+            raise YandexDirectError(
+                "Yandex Direct ads.update result contained errors or an unexpected ID."
+            )
+        return result
+
+    @classmethod
+    def _readback_patched_text_ad(
+        cls,
+        *,
+        client: YandexDirectClient,
+        ad_id: int,
+        previous_ad: dict[str, Any],
+        changed_text_fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Verify changed fields plus unrequested destination/contact assets."""
+        actual_ad = cls._read_single_text_ad(client=client, ad_id=ad_id)
+        if not isinstance(actual_ad.get("Status"), str) or not actual_ad["Status"]:
+            raise YandexDirectError(f"Patched TextAd {ad_id} has no factual Status on readback.")
+        previous_text_ad = previous_ad.get("TextAd")
+        actual_text_ad = actual_ad.get("TextAd")
+        if not isinstance(previous_text_ad, dict) or not isinstance(actual_text_ad, dict):
+            raise YandexDirectError(f"Patched TextAd {ad_id} readback is incomplete.")
+        for field_name, expected_value in changed_text_fields.items():
+            if actual_text_ad.get(field_name) != expected_value:
+                raise YandexDirectError(
+                    f"Patched TextAd {ad_id} readback mismatch for {field_name}."
+                )
+        for field_name in (
+            "Href",
+            "BusinessId",
+            "SitelinkSetId",
+            "PreferVCardOverBusiness",
+            "VCardId",
+            "TurboPageId",
+        ):
+            if field_name not in changed_text_fields and (
+                actual_text_ad.get(field_name) != previous_text_ad.get(field_name)
+            ):
+                raise YandexDirectError(
+                    f"Patched TextAd {ad_id} unexpectedly changed {field_name}."
+                )
+        return actual_ad
+
+    @staticmethod
+    def _live_text_ad_patch_fingerprint(
+        *,
+        ad_id: int,
+        dry_run: bool,
+        text_patch: dict[str, Any],
+    ) -> str:
+        canonical = json.dumps(
+            {"ad_id": ad_id, "dry_run": dry_run, "TextAd": text_patch},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def yandex_text_ad_patch(
+        self,
+        ad_id: int,
+        payload: LiveTextAdPatchRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> LiveTextAdPatchResult:
+        """Safely patch one existing TextAd through v5 ``ads.update``."""
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        if not payload.dry_run and mode != "live_write":
+            raise YandexDirectError(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {mode!r}; refusing to dispatch ads.update"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "YandexDirectClient is required to read an existing TextAd before PATCH."
+            )
+
+        previous_ad = self._read_single_text_ad(client=client, ad_id=ad_id)
+        previous_text_ad = previous_ad["TextAd"]
+        text_patch, before_after = self._build_text_ad_patch(
+            payload=payload,
+            current_text_ad=previous_text_ad,
+        )
+        update_item = {"Id": ad_id, "TextAd": text_patch}
+        payload_preview = {"method": "ads.update", "params": {"Ads": [update_item]}}
+        fingerprint = self._live_text_ad_patch_fingerprint(
+            ad_id=ad_id,
+            dry_run=payload.dry_run,
+            text_patch=text_patch,
+        )
+        cache_key = f"text_ad_patch:{ad_id}:{payload.idempotency_key}:{'dry' if payload.dry_run else 'apply'}"
+        cached = getattr(self, "text_ad_patch_results_by_key", None)
+        if cached is None:
+            cached = {}
+            self.text_ad_patch_results_by_key = cached
+        cached_entry = cached.get(cache_key)
+        if cached_entry is not None:
+            if cached_entry.get("fingerprint") != fingerprint:
+                raise ValueError(
+                    "Idempotency key was already used for a different TextAd PATCH payload."
+                )
+            return cached_entry["result"]
+
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_text_ad_patch_requested",
+                str(ad_id),
+                dry_run=True,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "reason": payload.reason,
+                    "stage": "dry_run_preview",
+                    "changed_fields": list(text_patch),
+                },
+            )
+            return LiveTextAdPatchResult(
+                dry_run=True,
+                applied=False,
+                source="yandex" if is_live else "mock",
+                mode=mode,
+                audit_id=audit.id,
+                ad_id=ad_id,
+                before_after=before_after,
+                payload_preview=payload_preview,
+            )
+
+        try:
+            response = client.ads_update([update_item])
+            if not response.get("ok"):
+                error = response.get("error") or {}
+                raise YandexDirectError(
+                    "Yandex Direct rejected ads.update: "
+                    f"error_code={error.get('error_code')!r}"
+                )
+            update_results = (response.get("result") or {}).get("UpdateResults")
+            self._validated_update_result(update_results, ad_id=ad_id)
+            provider_warnings = _provider_warnings_from_result(response)
+            readback = self._readback_patched_text_ad(
+                client=client,
+                ad_id=ad_id,
+                previous_ad=previous_ad,
+                changed_text_fields=text_patch,
+            )
+            sent_units = _safe_units(response.get("units"))
+            audit = self.append_audit(
+                "yandex_text_ad_patch_applied",
+                str(ad_id),
+                dry_run=False,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "reason": payload.reason,
+                    "stage": "ads.update",
+                    "changed_fields": list(text_patch),
+                    "yandex_units": sent_units,
+                    "provider_warnings": [warning.model_dump() for warning in provider_warnings],
+                },
+            )
+            result = LiveTextAdPatchResult(
+                dry_run=False,
+                applied=True,
+                source="yandex",
+                mode=mode,
+                audit_id=audit.id,
+                ad_id=ad_id,
+                before_after=before_after,
+                payload_preview=payload_preview,
+                readback=readback,
+                update_results=update_results,
+                provider_warnings=provider_warnings,
+                yandex_units=sent_units,
+            )
+            cached[cache_key] = {"fingerprint": fingerprint, "result": result}
+            return result
+        except YandexDirectError as exc:
+            self.append_audit(
+                "yandex_text_ad_patch_failed",
+                str(ad_id),
+                dry_run=False,
+                details={
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "changed_fields": list(text_patch),
+                    "yandex_error": str(exc),
+                },
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            safe = YandexDirectError(
+                f"unexpected error during TextAd PATCH: {type(exc).__name__}: {exc}"
+            )
+            self.append_audit(
+                "yandex_text_ad_patch_failed",
+                str(ad_id),
+                dry_run=False,
+                details={
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "changed_fields": list(text_patch),
                     "yandex_error": str(safe),
                     "exception_type": type(exc).__name__,
                 },
@@ -6286,8 +6838,10 @@ class MockStore:
         return result
 
 
-def _try_int(value: str | int) -> int | None:
-    """Try to parse a value as int; return None on failure."""
+def _try_int(value: Any) -> int | None:
+    """Try to parse a provider value as an integer; return ``None`` otherwise."""
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int):
         return value
     if isinstance(value, str) and value.isdigit():
