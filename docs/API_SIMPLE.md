@@ -698,6 +698,10 @@ Direct payload будет минимальным и безопасным:
 
 **Pitfall:** Direct может вернуть warning `10162` / `Дневной бюджет сброшен`. Это ожидаемо: дневной бюджет имеет смысл для ручных стратегий, а максимум конверсий использует недельный бюджет `WeeklySpendLimit`.
 
+**Pitfall:** when migrating a campaign from multi-goal `PriorityGoals` back to a single `goal_id`, Direct v5 must receive `TextCampaign.PriorityGoals=null` to clear the prior multi-goal set. Do not use `PriorityGoals.Items=[]`, and do not omit `PriorityGoals`; neither is the documented clear contract. For non-empty `PriorityGoals.Items`, every item must include `Operation="SET"` together with `GoalId` and `Value`.
+
+**Pitfall:** for strategy live apply, a missing or null current `DailyBudget` is acceptable only when the readback strategy confirms `Search.WbMaximumConversionRate.BudgetType="WEEKLY_BUDGET"`. If DirectPilot cannot prove that shape, it fails closed before sending `campaigns.update`.
+
 **Pitfall:** при автостратегии `WB_MAXIMUM_CONVERSION_RATE` ставки в `keywords.add` могут вернуться с warning `10160` / `Ставка не будет применена`: `Bid` не применяется из-за автобюджетной стратегии, `ContextBid` не применяется при выключенной РСЯ. Это нормально; управление идёт через `WeeklySpendLimit` и `BidCeiling` стратегии.
 
 ---

@@ -44,6 +44,15 @@ client = TestClient(app)
 SECRET_TOKEN = "TOPSECRET-STRATEGY-001"
 
 
+_DEFAULT_DAILY_BUDGET = {
+    "Amount": 5000000000,
+    "SpendMode": "STANDARD",
+}
+
+
+_SENTINEL = object()
+
+
 def _settings(mode: str, token: str | None = SECRET_TOKEN) -> Settings:
     return Settings(
         _env_file=None, directpilot_mode=mode, yandex_oauth_token=token
@@ -65,6 +74,8 @@ def _strategy_get_handler(
     search_type: str = "HIGHEST_POSITION",
     network_type: str = "SERVING_OFF",
     budget_type: str | None = None,
+    daily_budget: dict[str, Any] | None | object = _SENTINEL,
+    omit_daily_budget: bool = False,
 ) -> callable:
     """Build a campaigns.get handler returning a deterministic strategy envelope."""
 
@@ -75,6 +86,11 @@ def _strategy_get_handler(
         if "State" in params.get("FieldNames", []):
             assert "CounterIds" not in params.get("FieldNames", [])
             assert "CounterIds" in params.get("TextCampaignFieldNames", [])
+        if daily_budget is _SENTINEL:
+            daily_budget_value: dict[str, Any] | None = dict(_DEFAULT_DAILY_BUDGET)
+        else:
+            daily_budget_value = daily_budget  # type: ignore[assignment]
+
         # Build the TextCampaign block
         search_block: dict[str, Any] = {
             "BiddingStrategyType": search_type,
@@ -101,15 +117,14 @@ def _strategy_get_handler(
             "Type": "TEXT_CAMPAIGN",
             "State": "ON",
             "Status": "ACCEPTED",
-            "DailyBudget": {
-                "Amount": 5000000000,
-                "SpendMode": "STANDARD",
-            },
+            "DailyBudget": daily_budget_value,
             "TextCampaign": {
                 "BiddingStrategy": strategy,
                 "CounterIds": [123456],
             },
         }
+        if omit_daily_budget:
+            del campaign["DailyBudget"]
         return httpx.Response(
             200,
             json={
@@ -578,6 +593,72 @@ class TestStrategyUpdate:
         assert body["source"] == "yandex"
         assert body["readback"] is not None
 
+    def test_apply_single_goal_clears_priority_goals_and_preserves_strategy_fields(self):
+        """Single-goal apply sends the documented clear shape and reports it read back."""
+        dispatched: list[dict[str, Any]] = []
+        get_calls = 0
+
+        def update_handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["method"] == "update"
+            dispatched.append(body)
+            return httpx.Response(200, json={"result": {}})
+
+        base_get_handler = _strategy_get_handler(
+            search_type="WB_MAXIMUM_CONVERSION_RATE",
+            network_type="SERVING_OFF",
+            budget_type="WEEKLY_BUDGET",
+        )
+
+        def get_handler(request: httpx.Request) -> httpx.Response:
+            nonlocal get_calls
+            response = base_get_handler(request)
+            response_body = response.json()
+            if get_calls == 0:
+                response_body["result"]["Campaigns"][0]["TextCampaign"][
+                    "PriorityGoals"
+                ] = {
+                    "Items": [
+                        {"GoalId": 574143019, "Value": 1_000_000},
+                        {"GoalId": 567738778, "Value": 1_000_000},
+                    ]
+                }
+            get_calls += 1
+            return httpx.Response(200, json=response_body)
+
+        self._override(
+            "live_write",
+            get_handler=get_handler,
+            update_handler=update_handler,
+        )
+
+        payload = dict(self.BASE_PAYLOAD)
+        payload["goal_id"] = 589785255
+        payload["weekly_spend_limit"] = 20_000
+        payload["bid_ceiling"] = 460.0
+        payload["dry_run"] = False
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert len(dispatched) == 1
+        campaign = dispatched[0]["params"]["Campaigns"][0]
+        text_campaign = campaign["TextCampaign"]
+        assert text_campaign["PriorityGoals"] is None
+
+        strategy = text_campaign["BiddingStrategy"]
+        wb = strategy["Search"]["WbMaximumConversionRate"]
+        assert wb == {
+            "GoalId": 589785255,
+            "WeeklySpendLimit": 20_000_000_000,
+            "BidCeiling": 460_000_000,
+            "BudgetType": "WEEKLY_BUDGET",
+        }
+        assert strategy["Network"] == {"BiddingStrategyType": "SERVING_OFF"}
+        assert get_calls == 2
+        assert resp.json()["readback"]["PriorityGoals"] is None
+
     def test_apply_live_write_no_token_leakage(self):
         """Real apply never leaks the token."""
         get_handler = _strategy_get_handler(
@@ -647,6 +728,107 @@ class TestStrategyUpdate:
         bs = preview["params"]["Campaigns"][0]["TextCampaign"]["BiddingStrategy"]
         wb = bs["Search"]["WbMaximumConversionRate"]
         assert wb.get("BudgetType") == "WEEKLY_BUDGET"
+
+    def test_null_daily_budget_with_weekly_budget_allows_preview_and_live_apply(self):
+        """Null DailyBudget is safe for weekly-budget strategy updates."""
+        get_handler = _strategy_get_handler(
+            search_type="WB_MAXIMUM_CONVERSION_RATE",
+            budget_type="WEEKLY_BUDGET",
+            daily_budget=None,
+        )
+        update_handler = _strategy_update_handler(success=True)
+        self._override(
+            "live_write",
+            get_handler=get_handler,
+            update_handler=update_handler,
+        )
+
+        dry_run_payload = dict(self.BASE_PAYLOAD)
+        dry_run_payload["dry_run"] = True
+        dry_run_resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=dry_run_payload
+        )
+        assert dry_run_resp.status_code == 200, dry_run_resp.text
+        dry_run_body = dry_run_resp.json()
+        dry_run_preview = dry_run_body["payload_preview"]
+        dry_run_bs = dry_run_preview["params"]["Campaigns"][0]["TextCampaign"][
+            "BiddingStrategy"
+        ]
+        assert (
+            dry_run_bs["Search"]["WbMaximumConversionRate"]["BidCeiling"]
+            == 1_500_000_000
+        )
+
+        live_payload = dict(self.BASE_PAYLOAD)
+        live_payload["dry_run"] = False
+        live_payload["idempotency_key"] = "strat-test-live-002"
+        live_resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=live_payload
+        )
+        assert live_resp.status_code == 200, live_resp.text
+        live_body = live_resp.json()
+        assert live_body["applied"] is True
+        assert live_body["payload_preview"] is None
+
+    def test_missing_daily_budget_with_weekly_budget_allows_live_apply(self):
+        """A missing DailyBudget is safe for confirmed weekly-budget strategy."""
+        get_handler = _strategy_get_handler(
+            search_type="WB_MAXIMUM_CONVERSION_RATE",
+            budget_type="WEEKLY_BUDGET",
+            omit_daily_budget=True,
+        )
+        update_handler = _strategy_update_handler(success=True)
+        self._override(
+            "live_write",
+            get_handler=get_handler,
+            update_handler=update_handler,
+        )
+
+        payload = dict(self.BASE_PAYLOAD)
+        payload["dry_run"] = False
+        payload["idempotency_key"] = "strat-test-live-003"
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["applied"] is True
+
+    @pytest.mark.parametrize(
+        ("daily_budget", "omit_daily_budget"),
+        [(None, False), (_SENTINEL, True)],
+        ids=("null", "missing"),
+    )
+    def test_missing_or_null_daily_budget_without_weekly_budget_is_rejected(
+        self, daily_budget, omit_daily_budget
+    ):
+        """Absent/null DailyBudget stays unsafe without a weekly-budget strategy."""
+        dispatched: list[dict[str, Any]] = []
+        get_handler = _strategy_get_handler(
+            search_type="HIGHEST_POSITION",
+            daily_budget=daily_budget,
+            omit_daily_budget=omit_daily_budget,
+        )
+
+        def update_handler(request: httpx.Request) -> httpx.Response:
+            dispatched.append(json.loads(request.content))
+            return httpx.Response(200, json={"result": {}})
+
+        self._override(
+            "live_write",
+            get_handler=get_handler,
+            update_handler=update_handler,
+        )
+
+        payload = dict(self.BASE_PAYLOAD)
+        payload["dry_run"] = False
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+        assert resp.status_code == 502, resp.text
+        body = resp.json()
+        assert "Could not read current DailyBudget" in body["detail"]["message"]
+        assert dispatched == []
 
     # --- Network preserve / SERVING_OFF behavior ---------------------------
 
@@ -865,10 +1047,10 @@ class TestMultiGoalStrategy:
         )
         assert resp.status_code == 422
 
-    def test_goal_id_alone_still_works(self):
-        """Single goal_id (backward-compatible) still works."""
+    def test_single_goal_dry_run_clears_priority_goals(self):
+        """Single-goal dry-runs use the documented PriorityGoals=null clear shape."""
         payload = dict(self.BASE_PAYLOAD)
-        payload["goal_id"] = 567732835
+        payload["goal_id"] = 589785255
         self._override("mock")
         resp = client.post(
             "/yandex/campaigns/710691939/strategy", json=payload
@@ -881,12 +1063,9 @@ class TestMultiGoalStrategy:
         wb = campaigns[0]["TextCampaign"]["BiddingStrategy"]["Search"][
             "WbMaximumConversionRate"
         ]
-        assert wb["GoalId"] == 567732835
-        # Single-goal mode explicitly clears PriorityGoals to avoid
-        # ambiguous omission semantics on Direct API v5.
+        assert wb["GoalId"] == 589785255
         tc = campaigns[0]["TextCampaign"]
-        assert "PriorityGoals" in tc
-        assert tc["PriorityGoals"]["Items"] == []
+        assert tc["PriorityGoals"] is None
 
     # --- validation: goal_ids ---------------------------------------------
 
@@ -1131,13 +1310,8 @@ class TestMultiGoalStrategy:
 
     # --- PriorityGoals explicit clearing / preservation --------------------
 
-    def test_single_goal_clears_priority_goals_explicitly(self):
-        """Single-goal mode includes PriorityGoals.Items=[] to
-        explicitly clear any previously-set multi-goal PriorityGoals.
-
-        Omission semantics are ambiguous on Direct API v5 — the
-        payload must be explicit to guarantee clearing.
-        """
+    def test_single_goal_clears_priority_goals(self):
+        """Single-goal mode clears prior goals without Items=[]."""
         payload = dict(self.BASE_PAYLOAD)
         payload["goal_id"] = 567732835
         payload["priority_goals"] = None  # explicit single-goal intent
@@ -1149,32 +1323,14 @@ class TestMultiGoalStrategy:
         body = resp.json()
         tc = body["payload_preview"]["params"]["Campaigns"][0]["TextCampaign"]
 
-        # PriorityGoals MUST be present with Items=[]
-        assert "PriorityGoals" in tc, (
-            "Single-goal payload must include PriorityGoals to"
-            " explicitly clear multi-goal state"
-        )
-        pg = tc["PriorityGoals"]
-        assert "Items" in pg
-        assert pg["Items"] == [], (
-            "Single-goal PriorityGoals.Items must be empty list,"
-            " not absent — omission semantics are ambiguous"
-        )
-        # Single-goal clear must NOT include Operation on any item
-        # (there are no items, and Operation is only required for
-        # multi-goal PriorityGoals.Items elements per Direct API v5).
-        assert "Operation" not in pg, (
-            "Single-goal PriorityGoals with Items=[] must not"
-            " carry Operation — Operation only belongs on individual Items elements"
-        )
+        assert tc["PriorityGoals"] is None
 
         # Verify the goal_id is the user's, not the multi-goal constant
         wb = tc["BiddingStrategy"]["Search"]["WbMaximumConversionRate"]
         assert wb["GoalId"] == 567732835
 
-    def test_single_goal_no_token_leakage_with_empty_priority_goals(self):
-        """Single-goal with explicit PriorityGoals clearing never
-        leaks the token."""
+    def test_single_goal_no_token_leakage_with_cleared_priority_goals(self):
+        """Single-goal mode with PriorityGoals=null never leaks the token."""
         payload = dict(self.BASE_PAYLOAD)
         payload["goal_id"] = 567732835
         payload["priority_goals"] = None
