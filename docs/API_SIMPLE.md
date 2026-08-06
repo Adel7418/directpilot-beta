@@ -499,6 +499,122 @@ write и без утечки тела/токена в ошибке).
 - top-level failure от `keywordbids.set` / upstream Direct error → HTTP 502 с редактированными diagnostics.
 - `dry_run=true` всегда разрешён, никогда не пишет.
 
+### Live Direct: read keyword bids (canonical KeywordBids.get)
+
+```http
+GET /yandex/campaigns/{campaign_id}/keyword-bids
+```
+
+Canonical typed read endpoint for current Yandex Direct v5 `keywordbids.get` data.
+The older `GET /yandex/campaigns/{campaign_id}/bids` remains available only as a
+deprecated raw `bids.get` compatibility route; it returns `YandexRawResult`.
+`POST /yandex/campaigns/{campaign_id}/bids` is still the existing manual
+`keywordbids.set` endpoint for fixed SearchBid/ContextBid changes and is not
+deprecated.
+
+Query parameters are typed: optional `ad_group_ids`, `keyword_ids`,
+`serving_statuses`, positive `limit`, and non-negative `offset`. The route is
+always constrained by the path `campaign_id`; selector limits follow Direct:
+up to 1 campaign here, up to 1,000 ad groups, and up to 10,000 keyword IDs.
+
+Response is read-only (`read_only=true`) and includes:
+
+- `items[]` with `campaign_id`, `ad_group_id`, `keyword_id`, `row_kind`
+  (`keyword`, `autotargeting`, or `unknown`), optional keyword text, serving
+  status, strategy priority, Search bid/autotargeting-auto data, auction bids,
+  Network bid, and coverage;
+- RUB-normalized fields plus explicit Direct micros fields;
+- `limited_by` / `next_offset` for provider `LimitedBy` pagination;
+- sanitized warnings only.
+
+DirectPilot reads the current campaign strategy first and requests only safe
+fields: no Search auction bids when Search is `SERVING_OFF`, and no Network
+coverage when Network is `SERVING_OFF`. Row kind is enriched from `keywords.get`
+(`Keyword == "---autotargeting"`); unresolved rows are reported as `unknown`,
+not guessed from missing auction/coverage fields. Provider errors are sanitized.
+
+### Live Direct: calculate automatic keyword bids (KeywordBids.setAuto)
+
+```http
+POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto
+```
+
+Typed wrapper for Yandex Direct v5 `keywordbids.setAuto`. This endpoint asks
+Direct to **calculate bids** for existing campaign/ad-group/keyword targets. It
+is **not** autotargeting settings, does not create/delete/convert
+`---autotargeting` rows, does not switch campaign strategy, and does not change
+payment model. Use `/autotargeting` for autotargeting categories and `/strategy`
+for strategy conversion.
+
+Request scopes are homogeneous: choose exactly one `scope`.
+
+- `scope="campaign"`: target the path campaign; do not send `ad_group_ids` or
+  `keyword_ids`.
+- `scope="ad_group"`: send unique `ad_group_ids` (1..1,000), all owned by the
+  path campaign.
+- `scope="keyword"`: send unique `keyword_ids` (1..10,000), all owned by the
+  path campaign; autotargeting rows are rejected for keyword scope.
+
+Rules are a discriminated union; choose exactly one:
+
+```json
+{
+  "scope": "keyword",
+  "keyword_ids": [57440007797],
+  "rule": {
+    "type": "search_by_traffic_volume",
+    "target_traffic_volume": 85,
+    "increase_percent": 0,
+    "bid_ceiling_rub": 250.0
+  },
+  "dry_run": true,
+  "approved": false,
+  "idempotency_key": "optional-preview-key",
+  "reason": "Preview calculated search bids"
+}
+```
+
+- `search_by_traffic_volume`: Direct
+  `SearchByTrafficVolume.TargetTrafficVolume` is `5..100`;
+  `IncreasePercent` is `0..1000`; DirectPilot requires positive
+  `bid_ceiling_rub` and previews Direct `BidCeiling` in micros
+  (`250.0` RUB → `250000000`). Compatible only with Search strategy
+  `HIGHEST_POSITION`.
+- `network_by_coverage`: Direct `NetworkByCoverage.TargetCoverage` is `0..100`;
+  `IncreasePercent` is `0..1000`; positive `bid_ceiling_rub` is required.
+  Compatible only with Network strategy `MAXIMUM_COVERAGE` or `MANUAL_CPM`.
+
+`dry_run=true` is the default and never mutates Yandex. It returns
+`applied=false`, `payload_preview` with the exact `setAuto` payload,
+`affected_items`, warnings, and any `blockers`. Schema validation errors can be
+HTTP 422 before business validation.
+
+Real apply requires all gates: explicit human approval of the dry-run/diff,
+`DIRECTPILOT_MODE=live_write`, `approved=true`, valid `idempotency_key`, and
+`dry_run=false`. Idempotency fingerprints the material `setAuto` payload; exact
+replay returns the cached result, while the same key with a different payload is
+rejected before mutation. The endpoint never auto-switches strategy to make a
+request compatible.
+
+Safety behavior:
+
+- Incompatible strategy, mixed selectors, ownership mismatch, missing affected
+  targets, keyword-scope autotargeting, or provider `LimitedBy` before write
+  blocks before mutation with `blocked=true`, `applied=false`, and sanitized
+  blockers.
+- Large keyword-scope requests may include up to 10,000 keyword IDs. If a
+  pre-write read is truncated by Direct `LimitedBy`, the endpoint fails closed
+  before `setAuto`; it does not mutate a partially verified scope.
+- After a successful provider apply, DirectPilot performs a same-scope
+  `keywordbids.get` readback because `setAuto` returns per-item outcomes but not
+  the calculated bids.
+- Per-item `SetAutoResults` errors are sanitized into `set_auto_results`; if any
+  item has errors, the response reports `applied=false`, `partial_failure=true`.
+- If the write succeeded but post-apply readback is truncated or fails, the
+  response is truthful: `applied=false`, `partial_failure=true`,
+  `readback_failed=true`, plus sanitized `verification_error`. It never claims
+  rollback and never fabricates calculated bids.
+
 ### Live Direct: читать и изменять/создавать корректировки ставок
 
 ```http
@@ -1559,7 +1675,10 @@ GET /metrika/counters/{counter_id}/traffic-sources?date1=YYYY-MM-DD&date2=YYYY-M
 #### Настройки и диагностика кампаний
 
 ```text
-GET /yandex/campaigns/{campaign_id}/bids              -> bids.get
+GET /yandex/campaigns/{campaign_id}/keyword-bids      -> canonical keywordbids.get (typed read)
+GET /yandex/campaigns/{campaign_id}/bids              -> legacy deprecated raw bids.get
+POST /yandex/campaigns/{campaign_id}/bids             -> manual keywordbids.set (fixed SearchBid/ContextBid; gated)
+POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto -> keywordbids.setAuto bid calculation (dry-run/apply gated)
 GET /yandex/campaigns/{campaign_id}/bid-modifiers     -> bidmodifiers.get
 POST /yandex/campaigns/{campaign_id}/bid-modifiers    -> bidmodifiers.set (dry-run/apply gated)
 POST /yandex/campaigns/{campaign_id}/bid-modifiers/create -> bidmodifiers.add (dry-run/apply gated, documented families only; weather create unsupported)

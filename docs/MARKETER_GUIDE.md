@@ -30,6 +30,8 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
+| Посмотреть ставки ключей кампании | `GET /yandex/campaigns/{campaign_id}/keyword-bids` | canonical typed `keywordbids.get`; use this instead of deprecated raw `GET .../bids` |
+| Рассчитать авто-ставки для ключей | `POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto` | `keywordbids.setAuto` bid calculation only; dry-run default; apply requires explicit human approval + `live_write` + `approved=true` + idempotency |
 | Посмотреть демографические ставки кампании | `GET /yandex/campaigns/{campaign_id}/bid-modifiers` | текущие `AgeRange`/`BidModifier` для `Age` сегментов |
 | Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; read existing rows через GET и передавайте `modifier_id` |
 | Создать новую корректировку ставок | `POST /yandex/campaigns/{campaign_id}/bid-modifiers/create` | `dry_run=true` для preview + readback контракт; apply только с `live_write` + `approved=true` + `idempotency_key` + `dry_run=false`; documented families покрывают устройства включая Smart TV, пол/возраст, аудитории, регионы, видео/формат, платежеспособность и group-level; `WEATHER_ADJUSTMENT` create отключён после live `error_code=8000` unknown `WeatherAdjustment` |
@@ -167,6 +169,59 @@ GET /yandex/reports/search-queries?campaign_id=<campaign_id>&date_from=YYYY-MM-D
 Если `partial_failure=true` или `has_errors=true` у отдельных item, ставки не применены.
 Item-ошибки редиректятся (только `code`/`message`/`details`), сырой v5 payload не показывается.
 Предупреждения (код 10160 и др.) дублируются в `provider_warnings` и `set_results[].warnings`.
+
+
+### Reading and calculating keyword bids
+
+Use `GET /yandex/campaigns/{campaign_id}/keyword-bids` as the canonical
+read-only bid endpoint. It is backed by Yandex Direct v5 `keywordbids.get` and
+returns typed rows with `row_kind`, Search/Network bid values in RUB and micros,
+auction/coverage data only when the current strategy permits it, and
+`limited_by`/`next_offset` pagination. The legacy `GET .../bids` route is
+deprecated raw `bids.get`; keep it only for compatibility diagnostics. Existing
+`POST .../bids` is still manual `keywordbids.set` for fixed
+SearchBid/ContextBid changes.
+
+Use `POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto` when the goal
+is to ask Direct to calculate bids from a rule. This is **bid calculation**, not
+autotargeting setup, strategy conversion, payment-model change, or automatic
+Network/Search enablement. It never switches strategy to make a request pass;
+read `/strategy` first if compatibility is unclear.
+
+Safe marketer workflow:
+
+1. Read current strategy: `GET /yandex/campaigns/{campaign_id}/strategy`.
+2. Read current bid rows: `GET /yandex/campaigns/{campaign_id}/keyword-bids`.
+3. Build a dry-run setAuto request with one homogeneous scope: `campaign`,
+   `ad_group` (unique `ad_group_ids`, up to 1,000), or `keyword` (unique
+   `keyword_ids`, up to 10,000; excludes `---autotargeting` rows).
+4. Choose one rule only:
+   - `search_by_traffic_volume`: `target_traffic_volume=5..100`, optional
+     `increase_percent=0..1000`, positive `bid_ceiling_rub`; compatible only
+     with Search `HIGHEST_POSITION`.
+   - `network_by_coverage`: `target_coverage=0..100`, optional
+     `increase_percent=0..1000`, positive `bid_ceiling_rub`; compatible only
+     with Network `MAXIMUM_COVERAGE` or `MANUAL_CPM`.
+5. Show the dry-run `payload_preview` and impact to the user/operator. `BidCeiling`
+   is previewed in Direct micros (`RUB * 1,000,000`).
+6. Apply only after explicit human approval with `DIRECTPILOT_MODE=live_write`,
+   `approved=true`, valid `idempotency_key`, and `dry_run=false`.
+7. Inspect `set_auto_results`, `partial_failure`, and the post-apply
+   `keywordbids.get` readback. If readback failed or was truncated, treat the
+   response as not business-verified.
+
+Fail-closed safety notes:
+
+- Schema validation can return HTTP 422 before business logic.
+- Incompatible strategy, mixed selectors, ownership mismatch, keyword-scope
+  autotargeting, missing targets, or pre-write `LimitedBy` returns a blocked
+  non-mutating response.
+- Large scopes are allowed up to 10,000 keyword IDs, but pre-write truncated
+  reads block before mutation. If truncation/failure appears only after a real
+  write, DirectPilot reports `applied=false`, `partial_failure=true`, and
+  `readback_failed=true` instead of pretending success.
+- Provider errors and warnings are sanitized; do not expect raw Yandex envelopes
+  or token-bearing diagnostics in responses.
 
 ### Корректировки ставок по возрасту/демографии
 

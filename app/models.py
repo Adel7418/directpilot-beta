@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
@@ -2469,6 +2470,198 @@ class KeywordBidUpdateResult(BaseModel):
         ),
     )
     not_implemented: list[str] = Field(default_factory=list)
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# KeywordBids.get / keywordbids.setAuto
+# ---------------------------------------------------------------------------
+
+
+def _rubles_to_direct_micros(value: float) -> int:
+    """Convert a public RUB value to an integral Direct micro value.
+
+    Converting through ``str`` keeps the REST boundary deterministic instead
+    of inheriting binary-float representation artefacts (for example 0.3).
+    """
+
+    return int(
+        (Decimal(str(value)) * Decimal(_MICROS_PER_RUBLE)).to_integral_value(
+            rounding=ROUND_HALF_UP
+        )
+    )
+
+
+class KeywordBidsAuctionBidItem(BaseModel):
+    traffic_volume: int | None = None
+    bid_micros: int | None = None
+    bid_rub: float | None = None
+    price_micros: int | None = None
+    price_rub: float | None = None
+
+
+class KeywordBidsCoverageItem(BaseModel):
+    probability: int | None = None
+    bid_micros: int | None = None
+    bid_rub: float | None = None
+
+
+class KeywordBidsGetItem(BaseModel):
+    """Typed, strategy-safe projection of one ``keywordbids.get`` row."""
+
+    campaign_id: int
+    ad_group_id: int | None = None
+    keyword_id: int
+    row_kind: Literal["keyword", "autotargeting", "unknown"]
+    keyword: str | None = None
+    serving_status: str | None = None
+    strategy_priority: str | None = None
+    search_bid_micros: int | None = None
+    search_bid_rub: float | None = None
+    search_autotargeting_is_auto: bool | None = None
+    auction_bids: list[KeywordBidsAuctionBidItem] = Field(default_factory=list)
+    network_bid_micros: int | None = None
+    network_bid_rub: float | None = None
+    coverage: list[KeywordBidsCoverageItem] = Field(default_factory=list)
+
+
+class KeywordBidsGetResult(BaseModel):
+    """Read-only canonical response for ``GET .../keyword-bids``."""
+
+    campaign_id: str
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = True
+    items: list[KeywordBidsGetItem] = Field(default_factory=list)
+    limited_by: int | None = None
+    next_offset: int | None = None
+    warnings: list[ProviderWarning] = Field(default_factory=list)
+
+
+class SearchByTrafficVolumeRule(BaseModel):
+    type: Literal["search_by_traffic_volume"] = "search_by_traffic_volume"
+    target_traffic_volume: int = Field(..., ge=5, le=100)
+    increase_percent: int = Field(default=0, ge=0, le=1000)
+    bid_ceiling_rub: float = Field(..., gt=0)
+
+    def to_direct_rule(self) -> dict:
+        return {
+            "SearchByTrafficVolume": {
+                "TargetTrafficVolume": self.target_traffic_volume,
+                "IncreasePercent": self.increase_percent,
+                "BidCeiling": _rubles_to_direct_micros(self.bid_ceiling_rub),
+            }
+        }
+
+
+class NetworkByCoverageRule(BaseModel):
+    type: Literal["network_by_coverage"] = "network_by_coverage"
+    target_coverage: int = Field(..., ge=0, le=100)
+    increase_percent: int = Field(default=0, ge=0, le=1000)
+    bid_ceiling_rub: float = Field(..., gt=0)
+
+    def to_direct_rule(self) -> dict:
+        return {
+            "NetworkByCoverage": {
+                "TargetCoverage": self.target_coverage,
+                "IncreasePercent": self.increase_percent,
+                "BidCeiling": _rubles_to_direct_micros(self.bid_ceiling_rub),
+            }
+        }
+
+
+class KeywordBidsSetAutoRequest(BaseModel):
+    """Strict preview/apply input for ``keywordbids.setAuto``.
+
+    Scope is intentionally homogeneous: campaign scope uses the route campaign,
+    while ad-group and keyword scopes require one non-empty, unique id list.
+    """
+
+    scope: Literal["campaign", "ad_group", "keyword"]
+    ad_group_ids: list[int] | None = Field(default=None, max_length=1000)
+    keyword_ids: list[int] | None = Field(default=None, max_length=10000)
+    rule: SearchByTrafficVolumeRule | NetworkByCoverageRule = Field(discriminator="type")
+    dry_run: bool = True
+    approved: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=6)
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_scope_and_apply_key(self) -> "KeywordBidsSetAutoRequest":
+        ad_group_ids = self.ad_group_ids or []
+        keyword_ids = self.keyword_ids or []
+        if self.scope == "campaign":
+            if ad_group_ids or keyword_ids:
+                raise ValueError("campaign scope must not include ad_group_ids or keyword_ids")
+        elif self.scope == "ad_group":
+            if not ad_group_ids or keyword_ids:
+                raise ValueError("ad_group scope requires only non-empty ad_group_ids")
+            if len(set(ad_group_ids)) != len(ad_group_ids):
+                raise ValueError("ad_group_ids must be unique")
+        elif self.scope == "keyword":
+            if not keyword_ids or ad_group_ids:
+                raise ValueError("keyword scope requires only non-empty keyword_ids")
+            if len(set(keyword_ids)) != len(keyword_ids):
+                raise ValueError("keyword_ids must be unique")
+        if not self.dry_run and not self.idempotency_key:
+            raise ValueError("idempotency_key is required when dry_run=false")
+        return self
+
+    @property
+    def rule_type(self) -> Literal["search_by_traffic_volume", "network_by_coverage"]:
+        return self.rule.type
+
+    def build_direct_payload(self, campaign_id: int | str) -> dict:
+        """Build the exact, strongly controlled v5 ``setAuto`` payload."""
+
+        direct_campaign_id = int(campaign_id) if str(campaign_id).isdigit() else campaign_id
+        if self.scope == "campaign":
+            targets = [{"CampaignId": direct_campaign_id}]
+        elif self.scope == "ad_group":
+            targets = [{"AdGroupId": item} for item in self.ad_group_ids or []]
+        else:
+            targets = [{"KeywordId": item} for item in self.keyword_ids or []]
+        bidding_rule = self.rule.to_direct_rule()
+        return {
+            "method": "setAuto",
+            "params": {
+                "KeywordBids": [
+                    {**target, "BiddingRule": bidding_rule} for target in targets
+                ]
+            },
+        }
+
+
+class KeywordBidsSetAutoItemResult(BaseModel):
+    campaign_id: int | None = None
+    ad_group_id: int | None = None
+    keyword_id: int | None = None
+    has_errors: bool = False
+    has_warnings: bool = False
+    errors: list[ProviderWarning] = Field(default_factory=list)
+    warnings: list[ProviderWarning] = Field(default_factory=list)
+
+
+class KeywordBidsSetAutoResult(BaseModel):
+    """Typed outcome for preview, blocked request, or gated ``setAuto`` apply."""
+
+    campaign_id: str
+    mode: str
+    dry_run: bool
+    applied: bool
+    blocked: bool = False
+    source: Literal["mock", "yandex"] = "yandex"
+    read_only: bool = False
+    audit_id: str
+    payload_preview: dict | None = None
+    affected_items: list[KeywordBidsGetItem] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    warnings: list[ProviderWarning] = Field(default_factory=list)
+    set_auto_results: list[KeywordBidsSetAutoItemResult] | None = None
+    partial_failure: bool = False
+    readback: KeywordBidsGetResult | None = None
+    readback_failed: bool = False
+    verification_error: str | None = None
     yandex_units: int | None = None
     yandex_error: str | None = None
 
