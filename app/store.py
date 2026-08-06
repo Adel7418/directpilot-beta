@@ -3049,6 +3049,14 @@ class MockStore:
                 current_strategy = None
                 strategy_read_ok = False
 
+        current_strategy_is_weekly_budget = False
+        if current_strategy is not None:
+            current_search = current_strategy.get("Search")
+            if isinstance(current_search, dict):
+                wb = current_search.get("WbMaximumConversionRate")
+                if isinstance(wb, dict) and wb.get("BudgetType") == "WEEKLY_BUDGET":
+                    current_strategy_is_weekly_budget = True
+
         # Build the Search strategy from request.
         # Values in RUBLES → convert to micros for Direct.
         search_wb: dict[str, Any] = {
@@ -3098,17 +3106,14 @@ class MockStore:
             "BiddingStrategy": new_strategy,
         }
 
-        # PriorityGoals: always explicit to avoid ambiguous Direct API
-        # semantics.  Single-goal mode clears any previously-set
-        # PriorityGoals with Items=[].  Multi-goal mode populates
-        # Items with the resolved priority goals.
-        text_campaign_block["PriorityGoals"] = {
-            "Items": (
-                list(priority_goals_items)
-                if priority_goals_items is not None
-                else []
-            ),
-        }
+        # Direct v5 clears existing priority goals only with a literal null.
+        # Omitting the field retains them, while Items=[] is rejected.
+        if priority_goals_items is None:
+            text_campaign_block["PriorityGoals"] = None
+        else:
+            text_campaign_block["PriorityGoals"] = {
+                "Items": list(priority_goals_items),
+            }
 
         # Build the campaigns.update payload entry.
         campaign_entry: dict[str, Any] = {
@@ -3223,8 +3228,16 @@ class MockStore:
                 "YandexDirectClient is required for live strategy writes"
             )
 
-        # Fail closed if budget read was ambiguous.
-        if is_live and not daily_budget_read_ok:
+        # Fail closed if budget read was ambiguous. A literal null
+        # DailyBudget is safe only when the strategy readback confirms a
+        # weekly-budget smart strategy, so there is no daily budget to preserve.
+        if is_live and (
+            not daily_budget_read_ok
+            or (
+                current_daily_budget is None
+                and not current_strategy_is_weekly_budget
+            )
+        ):
             raise YandexDirectError(
                 "Could not read current DailyBudget from campaign "
                 f"{campaign_id!r}; refusing to send campaigns.update"
@@ -3264,7 +3277,10 @@ class MockStore:
                             if isinstance(tc_rb, dict):
                                 bs = tc_rb.get("BiddingStrategy")
                                 if isinstance(bs, dict):
-                                    readback_block = {"BiddingStrategy": dict(bs)}
+                                    readback_block = {
+                                        "BiddingStrategy": dict(bs),
+                                        "PriorityGoals": tc_rb.get("PriorityGoals"),
+                                    }
             except Exception:
                 pass  # Best-effort readback
 
