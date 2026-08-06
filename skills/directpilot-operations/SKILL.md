@@ -215,23 +215,36 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
 
-### Demographic bid modifiers (AGE_0_17)
+### Existing and new bid modifiers (demographic, weather, etc.)
 
-- Endpoint: `POST /yandex/campaigns/{campaign_id}/bid-modifiers`.
+- Endpoints:
+  - `GET /yandex/campaigns/{campaign_id}/bid-modifiers` reads all existing modifier items Direct returns for the campaign, including weather modifiers when present.
+  - `POST /yandex/campaigns/{campaign_id}/bid-modifiers` previews/applies changes to existing modifier coefficients (`bidmodifiers.set`).
+  - `POST /yandex/campaigns/{campaign_id}/bid-modifiers/create` previews/applies creating new modifier rows (`bidmodifiers.add`).
 - Source of record is read-first + write:
-  - `GET /yandex/campaigns/{campaign_id}/bid-modifiers` to get current `modifier_id`.
-  - `POST .../bid-modifiers` with `dry_run=true` for preview.
-  - `POST .../bid-modifiers` with `dry_run=false` only after explicit user approval.
-- Required live apply gates: `DIRECTPILOT_MODE=live_write`, `approved=true`,
+  - read current rows and `modifier_id` first;
+  - updates: `POST .../bid-modifiers` with `dry_run=true` for preview;
+  - updates: `POST .../bid-modifiers` with `dry_run=false` only after explicit user approval;
+  - create: `POST .../bid-modifiers/create` with `dry_run=true` first, then `dry_run=false` after approval.
+- Required live apply gates for both set/create: `DIRECTPILOT_MODE=live_write`, `approved=true`,
   `idempotency_key`, `dry_run=false`.
 - Contract:
-  - only **existing** modifiers can be updated;
-  - map `adjustment_percent=-100` to `BidModifier=0`;
-  - set payload uses `Id + BidModifier` only, do not pass `CampaignId/AgeRange` in set payload.
-- After live apply endpoint does readback via `bidmodifiers.get` and returns changed rows.
+  - existing update requires `modifier_id` and applies by `Id + BidModifier` only;
+  - `adjustment_percent=-100` maps to `BidModifier=0` (or pass direct `bid_modifier`);
+  - create payloads use `bidmodifiers.add` (`CampaignId`/`AdGroupId` + family block), not `modifier_id`;
+  - documented add families include devices (`MOBILE`, `TABLET`, `DESKTOP`, `DESKTOP_ONLY`, `SMART_TV`), demographics, retargeting, regions, video/format, smart ads, SERP layout, income grade and ad-group coefficient;
+  - official create enum values are enforced (`IOS/ANDROID`, `GENDER_MALE/GENDER_FEMALE`, `AGE_*`, `ALONE/SUGGEST`, `VERY_HIGH/HIGH/ABOVE_AVERAGE`);
+  - v5 plural array blocks are required for `DemographicsAdjustments`, `RetargetingAdjustments`, `RegionalAdjustments`, `SerpLayoutAdjustments`, `IncomeGradeAdjustments`;
+  - `type_hint`, `age_range`, and `conditions` are preview/readability metadata for both flows and must not be sent in `bidmodifiers.set` payloads.
+- Store behavior:
+  - `bidmodifiers.add`/`set` use provider `AddResults`/`SetResults`; `AddResults[].Ids` (plural) is the documented bidmodifiers.add envelope; any item errors return `partial_failure=true`, `applied=false` while keeping idempotent replay consistent.
+  - successful writes do best-effort `bidmodifiers.get` readback where possible; Direct `bidmodifiers.get` requires `SelectionCriteria.Levels=["CAMPAIGN","AD_GROUP"]`, otherwise sandbox/live returns `error_code=8000` / missing `Levels`.
 - Error behavior:
-  - missing `modifier_id` on apply -> HTTP 409 before network write;
-  - provider/unexpected failures -> HTTP 502 with redacted diagnostics and audit event `yandex_bid_modifiers_failed`.
+  - missing `modifier_id` on update apply -> HTTP 409 before network write;
+  - provider/unexpected failures -> HTTP 502 with redacted diagnostics and audit event `yandex_bid_modifiers_failed`;
+  - weather create is unsupported and rejected before provider calls: live Direct returned `error_code=8000` unknown parameter `WeatherAdjustment`; do not try guessed alternative shapes. Existing weather update remains Id-based via `bidmodifiers.set`; `humidity`, `wind`, and spend-category/«Уровень трат в категории» are intentionally unsupported until verified mapping exists.
+  - Optional sandbox smoke for existing modifier updates is in `tests/test_yandex_bidmodifiers_sandbox_smoke.py`; it is skipped unless `DIRECTPILOT_YANDEX_SANDBOX_SMOKE=bidmodifiers_set` and `YANDEX_DIRECT_SANDBOX_TOKEN` are set. It can use explicit `YANDEX_DIRECT_SANDBOX_MODIFIER_ID`, or discover an existing modifier via `YANDEX_DIRECT_SANDBOX_CAMPAIGN_ID` plus optional `YANDEX_DIRECT_SANDBOX_MODIFIER_TYPE`, then performs a no-op `bidmodifiers.set` with the current `BidModifier` and readback. Do not auto-create weather modifiers: Direct v5 rejected `WeatherAdjustment` create.
+- After live apply, endpoint returns changed rows from `bidmodifiers.get` readback.
 
 ### Autotargeting settings
 

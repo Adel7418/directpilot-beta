@@ -114,6 +114,10 @@ from app.models import (
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
     # Bid modifiers
+    YandexBidModifierItem,
+    YandexBidModifiersReadResult,
+    BidModifiersCreateRequest,
+    BidModifiersCreateResult,
     BidModifiersUpdateRequest,
     BidModifiersUpdateResult,
 )
@@ -1051,13 +1055,190 @@ def yandex_dictionaries(
     return _call_raw_read(settings, client, "dictionaries", "get", lambda c: c.dictionaries_get())
 
 
-@app.get("/yandex/campaigns/{campaign_id}/bid-modifiers", response_model=YandexRawResult)
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _extract_bid_modifier_items(result_payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(result_payload, dict):
+        return []
+    raw_items = result_payload.get("BidModifiers") or result_payload.get("Items") or []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _infer_bid_modifier_type(item: dict[str, Any]) -> str:
+    for key in (
+        "Type",
+        "BidModifierType",
+        "Level",
+        "Demographics",
+        "MobileAdjustment",
+        "DesktopAdjustment",
+        "RetargetingAdjustment",
+        "RegionalAdjustment",
+        "VideoAdjustment",
+        "SmartAdAdjustment",
+        "SerpLayoutAdjustment",
+        "WeatherAdjustment",
+        "Weather",
+    ):
+        value = item.get(key)
+        if key in item and isinstance(value, str) and value:
+            return value
+        if key in item and isinstance(value, dict):
+            return key.replace("Adjustment", "").upper()
+    return "UNKNOWN"
+
+
+def _bid_modifier_conditions(item: dict[str, Any]) -> dict[str, Any]:
+    common = {"Id", "CampaignId", "AdGroupId", "BidModifier", "Type", "BidModifierType", "Level"}
+    return {key: value for key, value in item.items() if key not in common}
+
+
+def _normalize_bid_modifier_item(item: dict[str, Any]) -> YandexBidModifierItem:
+    bid_modifier = item.get("BidModifier")
+    bid_modifier_int = _safe_int(bid_modifier) if bid_modifier is not None else None
+    return YandexBidModifierItem(
+        id=_safe_int(item.get("Id")) if item.get("Id") is not None else None,
+        campaign_id=_safe_int(item.get("CampaignId")) if item.get("CampaignId") is not None else None,
+        type=_infer_bid_modifier_type(item),
+        bid_modifier=bid_modifier_int,
+        adjustment_percent=bid_modifier_int - 100 if bid_modifier_int is not None else None,
+        conditions=_bid_modifier_conditions(item),
+        raw=item,
+    )
+
+
+@app.get("/yandex/campaigns/{campaign_id}/bid-modifiers", response_model=YandexBidModifiersReadResult)
 def yandex_bid_modifiers(
     campaign_id: str,
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
-) -> YandexRawResult:
-    return _call_raw_read(settings, client, "bidmodifiers", "get", lambda c: c.bidmodifiers_get(campaign_id))
+) -> YandexBidModifiersReadResult:
+    if not _is_live_read_mode(settings):
+        return YandexBidModifiersReadResult(campaign_id=campaign_id, source="mock", items=[])
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        response = direct.bidmodifiers_get(campaign_id)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": f"Yandex Direct rejected bidmodifiers.get: error_code={err.get('error_code')!r}",
+            },
+        )
+    result = response.get("result") or {}
+    items = [_normalize_bid_modifier_item(item) for item in _extract_bid_modifier_items(result)]
+    return YandexBidModifiersReadResult(
+        campaign_id=campaign_id,
+        source="yandex",
+        read_only=True,
+        items=items,
+        raw=result if isinstance(result, dict) else None,
+    )
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/bid-modifiers/create",
+    response_model=BidModifiersCreateResult,
+    responses={
+        409: {
+            "description": "Safety gate or idempotency conflict for bid modifier create.",
+        },
+        502: {
+            "description": "Upstream Yandex Direct bidmodifiers.add / readback failure, with redacted diagnostics only.",
+        },
+    },
+)
+def yandex_bid_modifiers_create(
+    campaign_id: str,
+    payload: BidModifiersCreateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> BidModifiersCreateResult:
+    for item in payload.items:
+        if item.campaign_id is not None and str(item.campaign_id) != str(campaign_id):
+            raise HTTPException(
+                status_code=409,
+                detail="CampaignId in bid modifier payload must match path campaign_id",
+            )
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before bid modifiers create",
+        )
+    if not payload.idempotency_key:
+        raise HTTPException(
+            status_code=409,
+            detail="idempotency_key is required before bid modifiers create",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                f"bid modifiers create is not allowed in this mode "
+                f"(dry_run=True is the only allowed path)"
+            ),
+        )
+    try:
+        return store.yandex_bid_modifiers_create(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        if "payload_preview" in diagnostics:
+            detail["payload_preview"] = diagnostics["payload_preview"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        try:
+            store.append_audit(
+                "yandex_bid_modifiers_create_failed",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "campaign_id": campaign_id,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "endpoint_safety_net": True,
+                    "yandex_error": (
+                        f"unexpected error in bid modifiers create endpoint: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                    "exception_type": type(exc).__name__,
+                },
+            )
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": (
+                    f"unexpected error during bid modifiers create: "
+                    f"{type(exc).__name__}"
+                ),
+            },
+        ) from exc
 
 
 @app.get("/yandex/campaigns/{campaign_id}/negative-keywords", response_model=YandexRawResult)

@@ -71,7 +71,10 @@ from app.models import (
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
     # Bid modifiers
+    BidModifierAddItemResult,
     BidModifierSetItemResult,
+    BidModifiersCreateRequest,
+    BidModifiersCreateResult,
     BidModifiersUpdateRequest,
     BidModifiersUpdateResult,
     # UTM
@@ -479,6 +482,89 @@ def _extract_set_results(
     error_summary: str | None = (
         "; ".join(error_summaries) if error_summaries else None
     )
+    return item_results, error_summary
+
+
+def _warning_items_from_raw(raw: Any) -> list[ProviderWarning]:
+    """Convert v5 Errors/Warnings list into redacted ProviderWarning items."""
+
+    out: list[ProviderWarning] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        out.append(
+            ProviderWarning(
+                code=int(item.get("Code") or 0),
+                message=str(item.get("Message") or ""),
+                details=str(item.get("Details") or ""),
+            )
+        )
+    return out
+
+
+def _extract_bid_modifier_add_results(
+    result_payload: Any,
+) -> tuple[list["BidModifierAddItemResult"] | None, str | None]:
+    """Extract redacted per-item outcomes from ``bidmodifiers.add``.
+
+    Direct can return a top-level successful response while individual
+    ``AddResults`` entries contain ``Errors``. Treat that as a partial failure
+    and never infer ids that Direct did not return.
+    """
+
+    if not isinstance(result_payload, dict):
+        return None, "missing AddResults envelope"
+    add_results_raw = result_payload.get("AddResults")
+    if not isinstance(add_results_raw, list):
+        return None, "missing AddResults envelope"
+
+    item_results: list[BidModifierAddItemResult] = []
+    error_summaries: list[str] = []
+
+    for index, item in enumerate(add_results_raw):
+        if not isinstance(item, dict):
+            error_summaries.append(f"item_index={index}: AddResults item is not an object")
+            item_results.append(BidModifierAddItemResult(has_errors=True))
+            continue
+
+        item_errors = _warning_items_from_raw(item.get("Errors"))
+        item_warnings = _warning_items_from_raw(item.get("Warnings"))
+        ids: list[int] = []
+        if item.get("Id") is not None:
+            try:
+                ids.append(int(item["Id"]))
+            except (TypeError, ValueError):
+                pass
+        raw_ids = item.get("Ids")
+        if isinstance(raw_ids, list):
+            for raw_id in raw_ids:
+                try:
+                    ids.append(int(raw_id))
+                except (TypeError, ValueError):
+                    pass
+
+        has_errors = bool(item_errors)
+        if has_errors:
+            error_summaries.append(
+                f"item_index={index}: {_format_add_result_error(item.get('Errors') or [])}"
+            )
+        elif not ids:
+            has_errors = True
+            error_summaries.append(f"item_index={index}: AddResults item has no Ids/Id")
+
+        item_results.append(
+            BidModifierAddItemResult(
+                ids=ids,
+                has_errors=has_errors,
+                has_warnings=bool(item_warnings),
+                errors=item_errors,
+                warnings=item_warnings,
+            )
+        )
+
+    error_summary = "; ".join(error_summaries) if error_summaries else None
     return item_results, error_summary
 
 
@@ -6086,6 +6172,183 @@ class MockStore:
             yandex_error=yandex_error,
         )
         self._keyword_bids_results_by_key[cache_key] = {
+            "result": result,
+            "request_fingerprint": payload_fingerprint,
+        }
+        return result
+
+    def yandex_bid_modifiers_create(
+        self,
+        campaign_id: str,
+        payload: "BidModifiersCreateRequest",
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "BidModifiersCreateResult":
+        """Preview/apply new Yandex Direct bid modifiers through ``bidmodifiers.add``."""
+
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+        if not payload.idempotency_key:
+            raise ValueError("idempotency_key is required for bid modifiers create")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        is_live = mode in ("sandbox", "live_readonly", "live_write")
+        can_write = mode == "live_write"
+
+        direct_payload = payload.build_direct_add_payload()
+        payload_fingerprint = _bid_modifiers_request_fingerprint(
+            {"method": "add", "params": direct_payload}
+        )
+        cache_key = f"bid_modifiers_create:{campaign_id}:{payload.idempotency_key}"
+
+        if cache_key in self._bid_modifiers_results_by_key:
+            cache_record = self._bid_modifiers_results_by_key[cache_key]
+            cached = cache_record["result"]
+            cached_fingerprint = cache_record.get("request_fingerprint")
+            if cached.dry_run != payload.dry_run:
+                raise ValueError(
+                    f"Idempotency key {payload.idempotency_key!r} was previously "
+                    f"used with dry_run={cached.dry_run}; replay with "
+                    f"dry_run={payload.dry_run} is not allowed"
+                )
+            if cached_fingerprint != payload_fingerprint:
+                raise ValueError(
+                    f"Idempotency key {payload.idempotency_key!r} was previously "
+                    "used with a different bid modifiers create payload; replay is rejected"
+                )
+            return cached
+
+        if payload.dry_run or not is_live:
+            audit = self.append_audit(
+                "yandex_bid_modifiers_create_requested",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "item_count": len(payload.items),
+                    "source": "yandex" if is_live else "mock",
+                    "mode": mode,
+                },
+            )
+            result = BidModifiersCreateResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                source="yandex" if is_live else "mock",
+                read_only=True,
+                audit_id=audit.id,
+                payload_preview=direct_payload,
+                message="Preview-only: no provider calls were made and no changes were applied.",
+            )
+            self._bid_modifiers_results_by_key[cache_key] = {
+                "result": result,
+                "request_fingerprint": payload_fingerprint,
+            }
+            return result
+
+        if not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; use live_write"
+            )
+        if client is None:
+            raise YandexDirectError(
+                "Yandex Direct client is required for live bid modifiers create"
+            )
+
+        v5_items = direct_payload["BidModifiers"]
+        call_payload_preview = {"method": "add", "params": direct_payload}
+        try:
+            response = client.bidmodifiers_add(v5_items)
+        except YandexDirectError:
+            raise
+        except Exception as exc:
+            raise YandexDirectError(
+                f"bidmodifiers.add failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        provider_warnings = _provider_warnings_from_result(response)
+        top_level_ok = response.get("ok", False)
+        if not top_level_ok:
+            error_block = response.get("error") or {}
+            error_code = error_block.get("error_code") or error_block.get("Code")
+            error_detail = (
+                error_block.get("error_detail")
+                or error_block.get("error_string")
+                or error_block.get("Message")
+                or "bidmodifiers.add failed"
+            )
+            raise YandexDirectError(
+                f"bidmodifiers.add failed: {error_code or 'unknown'}",
+                diagnostics={
+                    "error_code": error_code,
+                    "error_detail": str(error_detail)[:500],
+                    "payload_preview": call_payload_preview,
+                },
+            )
+
+        add_results, item_error_summary = _extract_bid_modifier_add_results(
+            response.get("result")
+        )
+        partial_failure = item_error_summary is not None
+        if add_results:
+            for item in add_results:
+                if item.has_warnings:
+                    for warning in item.warnings:
+                        already_present = any(
+                            pw.code == warning.code and pw.message == warning.message
+                            for pw in provider_warnings
+                        )
+                        if not already_present:
+                            provider_warnings.append(warning)
+
+        readback: list[dict] | None = None
+        if not partial_failure:
+            try:
+                readback_response = client.bidmodifiers_get(campaign_id)
+                if readback_response.get("ok"):
+                    result_block = readback_response.get("result") or {}
+                    if isinstance(result_block, dict):
+                        raw_items = result_block.get("BidModifiers") or result_block.get("Items") or []
+                        readback = [item for item in raw_items if isinstance(item, dict)]
+            except Exception:
+                readback = None
+
+        audit = self.append_audit(
+            "yandex_bid_modifiers_create_applied",
+            campaign_id,
+            dry_run=False,
+            details={
+                "approved": payload.approved,
+                "idempotency_key": payload.idempotency_key,
+                "reason": payload.reason,
+                "item_count": len(payload.items),
+                "source": "yandex",
+                "mode": mode,
+                "ok": top_level_ok,
+                "partial_failure": partial_failure,
+                "item_error_summary": item_error_summary,
+            },
+        )
+        response_units = response.get("units")
+        result = BidModifiersCreateResult(
+            campaign_id=campaign_id,
+            mode=mode,
+            dry_run=False,
+            applied=not partial_failure,
+            source="yandex",
+            audit_id=audit.id,
+            readback=readback,
+            provider_warnings=provider_warnings,
+            add_results=add_results,
+            partial_failure=partial_failure,
+            yandex_units=_try_int(response_units) if response_units is not None else None,
+            yandex_error=item_error_summary,
+        )
+        self._bid_modifiers_results_by_key[cache_key] = {
             "result": result,
             "request_fingerprint": payload_fingerprint,
         }

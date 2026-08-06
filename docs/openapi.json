@@ -647,22 +647,93 @@
         "title": "AutotargetingCategories",
         "type": "object"
       },
-      "BidModifierAgeAdjustment": {
-        "description": "Age/demographic bid modifier adjustment for a safe write preview.\n\nYandex Direct v5 ``bidmodifiers.set`` updates an existing modifier by\n``Id`` and ``BidModifier``. DirectPilot keeps the human-facing request in\nadjustment-percent form (``-100`` means exclude the segment) and converts it\nto the Direct coefficient where ``BidModifier = 100 + adjustment_percent``.\nTherefore ``-100`` becomes Direct ``BidModifier=0``.",
+      "BidModifierAddItemResult": {
+        "description": "Per-item outcome from Direct v5 ``bidmodifiers.add`` ``AddResults``.",
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "has_errors": {
+            "default": false,
+            "title": "Has Errors",
+            "type": "boolean"
+          },
+          "has_warnings": {
+            "default": false,
+            "title": "Has Warnings",
+            "type": "boolean"
+          },
+          "ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Ids",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "BidModifierAddItemResult",
+        "type": "object"
+      },
+      "BidModifierAdjustment": {
+        "description": "Generic existing bid-modifier adjustment for safe preview/apply.\n\n``bidmodifiers.set`` updates an existing modifier by ``Id`` and\n``BidModifier``. DirectPilot supports any existing modifier type (including\nweather modifiers returned by readback) by requiring the operator to provide\nthe existing ``modifier_id`` for live apply. Modifier-specific condition\nmetadata is preview-only and is never sent to ``bidmodifiers.set``.",
         "properties": {
           "adjustment_percent": {
+            "anyOf": [
+              {
+                "maximum": 1200.0,
+                "minimum": -100.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "description": "Human-facing adjustment percent. Direct v5 uses BidModifier as a coefficient in percent, so this value is converted with BidModifier = 100 + adjustment_percent.",
-            "maximum": 1200.0,
-            "minimum": -100.0,
-            "title": "Adjustment Percent",
-            "type": "integer"
+            "title": "Adjustment Percent"
           },
           "age_range": {
-            "const": "AGE_0_17",
-            "default": "AGE_0_17",
-            "description": "Under-18 age segment used for demographic exclusion previews.",
-            "title": "Age Range",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "AGE_0_17",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Backward-compatible under-18 demographic segment preview hint.",
+            "title": "Age Range"
+          },
+          "bid_modifier": {
+            "anyOf": [
+              {
+                "maximum": 1300.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Direct v5 BidModifier coefficient. Alternative to adjustment_percent.",
+            "title": "Bid Modifier"
+          },
+          "conditions": {
+            "additionalProperties": true,
+            "description": "Preview-only modifier-specific metadata, e.g. weather condition labels.",
+            "title": "Conditions",
+            "type": "object"
           },
           "modifier_id": {
             "anyOf": [
@@ -676,12 +747,265 @@
             ],
             "description": "Existing Yandex Direct bid modifier Id. Required for live apply; dry-run previews may omit it until readback resolves the modifier.",
             "title": "Modifier Id"
+          },
+          "type_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Operator-facing modifier type hint, e.g. Demographics, Weather, Mobile.",
+            "title": "Type Hint"
+          }
+        },
+        "title": "BidModifierAdjustment",
+        "type": "object"
+      },
+      "BidModifierCreateItem": {
+        "description": "Single bid-modifier create item for ``bidmodifiers.add`` payload building.",
+        "properties": {
+          "ad_group_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "adjustment_percent": {
+            "anyOf": [
+              {
+                "maximum": 1200.0,
+                "minimum": -100.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Human-facing adjustment percent. Converted to Direct coefficient with BidModifier = 100 + adjustment_percent.",
+            "title": "Adjustment Percent"
+          },
+          "age": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age"
+          },
+          "bid_modifier": {
+            "anyOf": [
+              {
+                "maximum": 1300.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Direct v5 BidModifier coefficient. Alternative to adjustment_percent.",
+            "title": "Bid Modifier"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "cloudiness": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloudiness"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "gender": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gender"
+          },
+          "grade": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grade"
+          },
+          "humidity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Humidity"
+          },
+          "operating_system_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operating System Type"
+          },
+          "precipitation": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precipitation"
+          },
+          "region_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region Id"
+          },
+          "retargeting_condition_id": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retargeting Condition Id"
+          },
+          "serp_layout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serp Layout"
+          },
+          "temperature": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Temperature"
+          },
+          "type": {
+            "enum": [
+              "MOBILE_ADJUSTMENT",
+              "TABLET_ADJUSTMENT",
+              "DESKTOP_ADJUSTMENT",
+              "DESKTOP_ONLY_ADJUSTMENT",
+              "SMART_TV_ADJUSTMENT",
+              "SMARTTV_ADJUSTMENT",
+              "DEMOGRAPHICS_ADJUSTMENT",
+              "RETARGETING_ADJUSTMENT",
+              "REGIONAL_ADJUSTMENT",
+              "VIDEO_ADJUSTMENT",
+              "VIDEO_EXTENSION_ADJUSTMENT",
+              "SMART_AD_ADJUSTMENT",
+              "SERP_LAYOUT_ADJUSTMENT",
+              "INCOME_GRADE_ADJUSTMENT",
+              "AD_GROUP_ADJUSTMENT"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "weather_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weather Type"
+          },
+          "wind": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wind"
           }
         },
         "required": [
-          "adjustment_percent"
+          "type"
         ],
-        "title": "BidModifierAgeAdjustment",
+        "title": "BidModifierCreateItem",
         "type": "object"
       },
       "BidModifierSetItemResult": {
@@ -722,12 +1046,200 @@
         "title": "BidModifierSetItemResult",
         "type": "object"
       },
+      "BidModifiersCreateRequest": {
+        "description": "Body model for a live-safe ``bidmodifiers.add`` create endpoint.\n\n``dry_run=True`` is preview-only. A real ``bidmodifiers.add`` apply must be\ngated at the route/store layer by ``DIRECTPILOT_MODE=live_write``,\n``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.",
+        "properties": {
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/BidModifierCreateItem"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BidModifiersCreateRequest",
+        "type": "object"
+      },
+      "BidModifiersCreateResult": {
+        "description": "Response for ``POST /yandex/campaigns/{campaign_id}/bid-modifiers/create``.",
+        "properties": {
+          "add_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BidModifierAddItemResult"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Per-item outcomes from the v5 ``AddResults`` envelope.",
+            "title": "Add Results"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "partial_failure": {
+            "default": false,
+            "description": "True when the top-level v5 add call succeeded but at least one ``AddResults`` item contains provider errors or lacks returned ids.",
+            "title": "Partial Failure",
+            "type": "boolean"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Provider Warnings",
+            "type": "array"
+          },
+          "read_only": {
+            "default": false,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "BidModifiersCreateResult",
+        "type": "object"
+      },
       "BidModifiersUpdateRequest": {
         "description": "Body model for a live-safe bid-modifier update endpoint.\n\n``dry_run=True`` is preview-only. A real ``bidmodifiers.set`` apply must be\ngated at the store/route layer by ``DIRECTPILOT_MODE=live_write``,\n``approved=True``, valid ``idempotency_key``, and ``dry_run=False``.",
         "properties": {
           "adjustments": {
             "items": {
-              "$ref": "#/components/schemas/BidModifierAgeAdjustment"
+              "$ref": "#/components/schemas/BidModifierAdjustment"
             },
             "maxItems": 1000,
             "minItems": 1,
@@ -4963,6 +5475,119 @@
           "audit_id"
         ],
         "title": "YandexAutotargetingResult",
+        "type": "object"
+      },
+      "YandexBidModifierItem": {
+        "description": "Normalized read-only view of one Direct ``bidmodifiers.get`` item.\n\nDirect can return many modifier families (demographic, mobile, retargeting,\nweather, regional, video, etc.). DirectPilot keeps the original provider\nitem for operator diagnostics and extracts common fields without inventing\ncreate/update payload shapes for modifier-specific conditions.",
+        "properties": {
+          "adjustment_percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adjustment Percent"
+          },
+          "bid_modifier": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid Modifier"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "conditions": {
+            "additionalProperties": true,
+            "title": "Conditions",
+            "type": "object"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "raw": {
+            "additionalProperties": true,
+            "title": "Raw",
+            "type": "object"
+          },
+          "type": {
+            "default": "UNKNOWN",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "YandexBidModifierItem",
+        "type": "object"
+      },
+      "YandexBidModifiersReadResult": {
+        "description": "Read-only campaign bid-modifier list.\n\nThe endpoint is intentionally read-only. Weather and other condition\nmodifiers are represented when Direct returns them; writes update existing\nmodifier ids only through the gated POST endpoint.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexBidModifierItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "raw": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "mock",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "YandexBidModifiersReadResult",
         "type": "object"
       },
       "YandexBusinessAssetItem": {
@@ -9209,7 +9834,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/YandexRawResult"
+                  "$ref": "#/components/schemas/YandexBidModifiersReadResult"
                 }
               }
             },
@@ -9281,6 +9906,61 @@
           }
         },
         "summary": "Yandex Bid Modifiers Update"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/bid-modifiers/create": {
+      "post": {
+        "operationId": "yandex_bid_modifiers_create_yandex_campaigns__campaign_id__bid_modifiers_create_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BidModifiersCreateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BidModifiersCreateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate or idempotency conflict for bid modifier create."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Upstream Yandex Direct bidmodifiers.add / readback failure, with redacted diagnostics only."
+          }
+        },
+        "summary": "Yandex Bid Modifiers Create"
       }
     },
     "/yandex/campaigns/{campaign_id}/bids": {

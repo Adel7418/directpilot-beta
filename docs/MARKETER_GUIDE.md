@@ -31,7 +31,8 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
 | Посмотреть демографические ставки кампании | `GET /yandex/campaigns/{campaign_id}/bid-modifiers` | текущие `AgeRange`/`BidModifier` для `Age` сегментов |
-| Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; сначала обязательно `GET`-readback для `modifier_id` |
+| Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; read existing rows через GET и передавайте `modifier_id` |
+| Создать новую корректировку ставок | `POST /yandex/campaigns/{campaign_id}/bid-modifiers/create` | `dry_run=true` для preview + readback контракт; apply только с `live_write` + `approved=true` + `idempotency_key` + `dry_run=false`; documented families покрывают устройства включая Smart TV, пол/возраст, аудитории, регионы, видео/формат, платежеспособность и group-level; `WEATHER_ADJUSTMENT` create отключён после live `error_code=8000` unknown `WeatherAdjustment` |
 | Создать группу в существующей кампании | `POST /yandex/campaigns/{campaign_id}/ad-groups` | создаёт только группу: name/region_ids/optional negative_keywords; затем отдельные шаги для `ads`, ключей и модерации |
 | Посмотреть минус-слова по группам | `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords` | текущие `negative_keywords` и `has_negative_keywords` по `ad_group_id` |
 | Обновить минус-слова группы | `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords` | `operation=add|replace`, `approved=true`, `idempotency_key`, `dry_run`; `dry_run=false` только в `live_write`; preview/readback через ответ endpoint |
@@ -169,7 +170,9 @@ Item-ошибки редиректятся (только `code`/`message`/`detai
 
 ### Корректировки ставок по возрасту/демографии
 
-`POST /yandex/campaigns/{campaign_id}/bid-modifiers` — безопасный dry-run/apply wrapper над Direct v5 `bidmodifiers.set`.
+- `POST /yandex/campaigns/{campaign_id}/bid-modifiers` — безопасный dry-run/apply wrapper над Direct v5 `bidmodifiers.set` для изменения существующих корректировок.
+- `POST /yandex/campaigns/{campaign_id}/bid-modifiers/create` — wrapper над `bidmodifiers.add` для создания новых корректировок.
+
 Для сценария «возраст 0–17 = -100%» сначала делайте `dry_run=true`:
 
 ```json
@@ -181,7 +184,7 @@ Item-ошибки редиректятся (только `code`/`message`/`detai
 }
 ```
 
-Пакет для real apply должен быть сформирован после `GET /yandex/campaigns/{campaign_id}/bid-modifiers`, где берется `modifier_id` существующего сегмента:
+Пакет для реального update формируется после `GET /yandex/campaigns/{campaign_id}/bid-modifiers`, где берется `modifier_id` существующего сегмента:
 
 ```json
 {
@@ -192,9 +195,23 @@ Item-ошибки редиректятся (только `code`/`message`/`detai
 }
 ```
 
+Для создания нового корректировочного элемента используйте `POST /.../bid-modifiers/create` (`campaign_id` для campaign-level families, `ad_group_id` для `AD_GROUP_ADJUSTMENT`):
+
+```json
+{
+  "approved": true,
+  "idempotency_key": "bidmod-create-001",
+  "dry_run": true,
+  "items": [{"type": "DEMOGRAPHICS_ADJUSTMENT", "age": "AGE_0_17", "campaign_id": 1234567, "adjustment_percent": -100}]
+}
+```
+
 Важно:
-- `bidmodifiers.set` меняет только **существующую** корректировку по `Id` + `BidModifier`, создание нового модификатора через этот endpoint не поддерживается;
-- `adjustment_percent=-100` конвертируется в Direct `BidModifier=0`; в live payload не должно быть `CampaignId/AgeRange` — только `Id` и `BidModifier`;
+
+- `bidmodifiers.set` меняет только **существующую** корректировку по `Id` + `BidModifier`; создание нового модификатора через `.../bid-modifiers` не поддерживается.
+- `adjustment_percent=-100` конвертируется в Direct `BidModifier=0`;
+- `bidmodifiers.add` create использует documented v5 shapes: plural arrays для `DemographicsAdjustments`, `RetargetingAdjustments`, `RegionalAdjustments`, `SerpLayoutAdjustments`, `IncomeGradeAdjustments`; official enum values: `GENDER_MALE/GENDER_FEMALE`, `AGE_*`, `IOS/ANDROID`, `ALONE/SUGGEST`, `VERY_HIGH/HIGH/ABOVE_AVERAGE`;
+- `WEATHER_ADJUSTMENT` через create не поддерживается: live Direct вернул `error_code=8000` unknown parameter `WeatherAdjustment`; public `bidmodifiers.add` не содержит weather block. Не искать guessed shape в live; update existing weather по-прежнему делается только через `modifier_id` + `BidModifier`, если row прочитана через `bidmodifiers.get`; `humidity`/`wind` и «Уровень трат в категории» не реализованы;
 - `live_apply` доступен только после явного согласования с пользователем: `DIRECTPILOT_MODE=live_write`, `approved=true`, `idempotency_key`, `dry_run=false`;
 - после apply endpoint делает readback через `bidmodifiers.get`.
 

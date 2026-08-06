@@ -21,3 +21,6 @@ dev = [
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "live_smoke: opt-in tests that call external sandbox/live APIs and are skipped unless explicitly enabled",
+]

@@ -343,9 +343,40 @@ class YandexDirectClient:
         )
 
     def bidmodifiers_get(self, campaign_id: int | str) -> dict[str, Any]:
+        selection = self._selection_by_campaign(campaign_id)
+        # Direct API requires Levels for bidmodifiers.get. Sandbox/live returns
+        # error_code=8000 / "Отсутствует обязательный параметр Levels" without it.
+        selection["Levels"] = ["CAMPAIGN", "AD_GROUP"]
         return self._call(
             "bidmodifiers",
-            {"method": "get", "params": {"SelectionCriteria": self._selection_by_campaign(campaign_id)}},
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": selection,
+                    "FieldNames": ["Id", "CampaignId", "AdGroupId", "Level", "Type"],
+                    "MobileAdjustmentFieldNames": ["BidModifier", "OperatingSystemType"],
+                    "TabletAdjustmentFieldNames": ["BidModifier", "OperatingSystemType"],
+                    "DesktopAdjustmentFieldNames": ["BidModifier"],
+                    "DesktopOnlyAdjustmentFieldNames": ["BidModifier"],
+                    "DemographicsAdjustmentFieldNames": ["Gender", "Age", "BidModifier", "Enabled"],
+                    "RetargetingAdjustmentFieldNames": ["RetargetingConditionId", "BidModifier", "Accessible", "Enabled"],
+                    "RegionalAdjustmentFieldNames": ["RegionId", "BidModifier", "Enabled"],
+                    "VideoAdjustmentFieldNames": ["BidModifier"],
+                    "SmartAdAdjustmentFieldNames": ["BidModifier"],
+                    "SerpLayoutAdjustmentFieldNames": ["SerpLayout", "BidModifier", "Enabled"],
+                    "IncomeGradeAdjustmentFieldNames": ["Grade", "BidModifier", "Enabled"],
+                    "AdGroupAdjustmentFieldNames": ["BidModifier"],
+                },
+            },
+        )
+
+    def bidmodifiers_add(
+        self, payload: dict[str, Any] | list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        bid_modifiers = [payload] if isinstance(payload, dict) else list(payload)
+        return self._call(
+            "bidmodifiers",
+            {"method": "add", "params": {"BidModifiers": bid_modifiers}},
         )
 
     def bidmodifiers_set(self, payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
