@@ -345,7 +345,25 @@ class YandexDirectClient:
     def bidmodifiers_get(self, campaign_id: int | str) -> dict[str, Any]:
         return self._call(
             "bidmodifiers",
-            {"method": "get", "params": {"SelectionCriteria": self._selection_by_campaign(campaign_id)}},
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": self._selection_by_campaign(campaign_id),
+                    "FieldNames": ["Id", "CampaignId", "AdGroupId", "Level", "Type"],
+                    "MobileAdjustmentFieldNames": ["BidModifier", "OperatingSystemType"],
+                    "TabletAdjustmentFieldNames": ["BidModifier", "OperatingSystemType"],
+                    "DesktopAdjustmentFieldNames": ["BidModifier"],
+                    "DesktopOnlyAdjustmentFieldNames": ["BidModifier"],
+                    "DemographicsAdjustmentFieldNames": ["Gender", "Age", "BidModifier", "Enabled"],
+                    "RetargetingAdjustmentFieldNames": ["RetargetingConditionId", "BidModifier", "Accessible", "Enabled"],
+                    "RegionalAdjustmentFieldNames": ["RegionId", "BidModifier", "Enabled"],
+                    "VideoAdjustmentFieldNames": ["BidModifier"],
+                    "SmartAdAdjustmentFieldNames": ["BidModifier"],
+                    "SerpLayoutAdjustmentFieldNames": ["SerpLayout", "BidModifier", "Enabled"],
+                    "IncomeGradeAdjustmentFieldNames": ["Grade", "BidModifier", "Enabled"],
+                    "AdGroupAdjustmentFieldNames": ["BidModifier"],
+                },
+            },
         )
 
     def bidmodifiers_set(self, payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:

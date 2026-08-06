@@ -215,19 +215,22 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
 
-### Demographic bid modifiers (AGE_0_17)
+### Existing bid modifiers (demographic, weather, etc.)
 
-- Endpoint: `POST /yandex/campaigns/{campaign_id}/bid-modifiers`.
+- Endpoints:
+  - `GET /yandex/campaigns/{campaign_id}/bid-modifiers` reads all existing modifier items Direct returns for the campaign, including weather modifiers when present.
+  - `POST /yandex/campaigns/{campaign_id}/bid-modifiers` previews/applies changes to existing modifier coefficients.
 - Source of record is read-first + write:
-  - `GET /yandex/campaigns/{campaign_id}/bid-modifiers` to get current `modifier_id`.
-  - `POST .../bid-modifiers` with `dry_run=true` for preview.
+  - read current rows and `modifier_id` first;
+  - `POST .../bid-modifiers` with `dry_run=true` for preview;
   - `POST .../bid-modifiers` with `dry_run=false` only after explicit user approval.
 - Required live apply gates: `DIRECTPILOT_MODE=live_write`, `approved=true`,
   `idempotency_key`, `dry_run=false`.
 - Contract:
-  - only **existing** modifiers can be updated;
-  - map `adjustment_percent=-100` to `BidModifier=0`;
-  - set payload uses `Id + BidModifier` only, do not pass `CampaignId/AgeRange` in set payload.
+  - only **existing** modifiers can be updated; DirectPilot does not create new weather/demographic modifiers through this endpoint;
+  - map `adjustment_percent=-100` to `BidModifier=0`, or pass direct `bid_modifier`;
+  - `type_hint`, `age_range`, and `conditions` are preview/readability metadata;
+  - set payload uses `Id + BidModifier` only, do not pass `CampaignId/AgeRange/type_hint/conditions` in set payload.
 - After live apply endpoint does readback via `bidmodifiers.get` and returns changed rows.
 - Error behavior:
   - missing `modifier_id` on apply -> HTTP 409 before network write;

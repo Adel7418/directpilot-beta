@@ -114,6 +114,8 @@ from app.models import (
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
     # Bid modifiers
+    YandexBidModifierItem,
+    YandexBidModifiersReadResult,
     BidModifiersUpdateRequest,
     BidModifiersUpdateResult,
 )
@@ -1051,13 +1053,95 @@ def yandex_dictionaries(
     return _call_raw_read(settings, client, "dictionaries", "get", lambda c: c.dictionaries_get())
 
 
-@app.get("/yandex/campaigns/{campaign_id}/bid-modifiers", response_model=YandexRawResult)
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _extract_bid_modifier_items(result_payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(result_payload, dict):
+        return []
+    raw_items = result_payload.get("BidModifiers") or result_payload.get("Items") or []
+    return [item for item in raw_items if isinstance(item, dict)]
+
+
+def _infer_bid_modifier_type(item: dict[str, Any]) -> str:
+    for key in (
+        "Type",
+        "BidModifierType",
+        "Level",
+        "Demographics",
+        "MobileAdjustment",
+        "DesktopAdjustment",
+        "RetargetingAdjustment",
+        "RegionalAdjustment",
+        "VideoAdjustment",
+        "SmartAdAdjustment",
+        "SerpLayoutAdjustment",
+        "WeatherAdjustment",
+        "Weather",
+    ):
+        value = item.get(key)
+        if key in item and isinstance(value, str) and value:
+            return value
+        if key in item and isinstance(value, dict):
+            return key.replace("Adjustment", "").upper()
+    return "UNKNOWN"
+
+
+def _bid_modifier_conditions(item: dict[str, Any]) -> dict[str, Any]:
+    common = {"Id", "CampaignId", "AdGroupId", "BidModifier", "Type", "BidModifierType", "Level"}
+    return {key: value for key, value in item.items() if key not in common}
+
+
+def _normalize_bid_modifier_item(item: dict[str, Any]) -> YandexBidModifierItem:
+    bid_modifier = item.get("BidModifier")
+    bid_modifier_int = _safe_int(bid_modifier) if bid_modifier is not None else None
+    return YandexBidModifierItem(
+        id=_safe_int(item.get("Id")) if item.get("Id") is not None else None,
+        campaign_id=_safe_int(item.get("CampaignId")) if item.get("CampaignId") is not None else None,
+        type=_infer_bid_modifier_type(item),
+        bid_modifier=bid_modifier_int,
+        adjustment_percent=bid_modifier_int - 100 if bid_modifier_int is not None else None,
+        conditions=_bid_modifier_conditions(item),
+        raw=item,
+    )
+
+
+@app.get("/yandex/campaigns/{campaign_id}/bid-modifiers", response_model=YandexBidModifiersReadResult)
 def yandex_bid_modifiers(
     campaign_id: str,
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
-) -> YandexRawResult:
-    return _call_raw_read(settings, client, "bidmodifiers", "get", lambda c: c.bidmodifiers_get(campaign_id))
+) -> YandexBidModifiersReadResult:
+    if not _is_live_read_mode(settings):
+        return YandexBidModifiersReadResult(campaign_id=campaign_id, source="mock", items=[])
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        response = direct.bidmodifiers_get(campaign_id)
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if not response.get("ok"):
+        err = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": f"Yandex Direct rejected bidmodifiers.get: error_code={err.get('error_code')!r}",
+            },
+        )
+    result = response.get("result") or {}
+    items = [_normalize_bid_modifier_item(item) for item in _extract_bid_modifier_items(result)]
+    return YandexBidModifiersReadResult(
+        campaign_id=campaign_id,
+        source="yandex",
+        read_only=True,
+        items=items,
+        raw=result if isinstance(result, dict) else None,
+    )
 
 
 @app.get("/yandex/campaigns/{campaign_id}/negative-keywords", response_model=YandexRawResult)
