@@ -234,6 +234,47 @@ def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_ts
     ]
 
 
+def test_search_queries_parses_localized_numeric_tsv_with_campaign_filter(
+    client_with_client: TestClient,
+):
+    """A non-empty localized Direct TSV must not be silently parsed as empty.
+
+    The fixture is sanitized but preserves the production shape: the raw
+    SEARCH_QUERY_PERFORMANCE_REPORT has the requested columns and uses comma
+    decimal separators for CTR and cost.
+    """
+    tsv = (
+        "Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n"
+        "ремонт квартир\t710691939\t1001\t540\t22\t4,07\t660,00\n"
+        "сантехник на дом\t710691939\t1001\t320\t11\t3,44\t320,00\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=tsv)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get(
+            "/yandex/reports/search-queries",
+            params={"campaign_id": "710691939"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["source"] == "yandex"
+    assert [item["query"] for item in body["items"]] == [
+        "ремонт квартир",
+        "сантехник на дом",
+    ]
+    assert all(item["campaign_id"] == "710691939" for item in body["items"])
+    assert all(item["ad_group_id"] == "1001" for item in body["items"])
+    assert [item["cost"] for item in body["items"]] == [660.0, 320.0]
+
+
 def test_search_queries_live_raw_endpoint_uses_search_query_field_names(
     client_with_client: TestClient,
 ):

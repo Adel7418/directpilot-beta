@@ -2081,6 +2081,11 @@ def _find_search_query_column(
     return fallback_index
 
 
+def _parse_yandex_report_number(value: str) -> float:
+    """Parse numeric cells from Direct's TSV in either decimal locale."""
+    return float(value.strip().replace(",", "."))
+
+
 def _lookup_search_query_campaign_names(
     client: YandexDirectClient,
     campaign_ids: set[str],
@@ -2162,7 +2167,7 @@ def _aggregate_search_query_tsv(
         try:
             impressions = int(cols[impressions_idx])
             clicks = int(cols[clicks_idx])
-            ctr = float(cols[ctr_idx])
+            ctr = _parse_yandex_report_number(cols[ctr_idx])
         except (IndexError, ValueError):
             continue
 
@@ -2175,7 +2180,7 @@ def _aggregate_search_query_tsv(
             cost_text = cols[cost_idx].strip()
             if cost_text:
                 try:
-                    cost = float(cost_text)
+                    cost = _parse_yandex_report_number(cost_text)
                 except ValueError:
                     cost = None
 
