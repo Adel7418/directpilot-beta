@@ -3003,6 +3003,7 @@ class MockStore:
         current_daily_budget: dict[str, Any] | None = None
         current_strategy: dict[str, Any] | None = None
         daily_budget_read_ok = False
+        daily_budget_is_missing_or_null = False
         strategy_read_ok = False
 
         if is_live and client is not None:
@@ -3022,6 +3023,7 @@ class MockStore:
                                 raw_budget = camp.get("DailyBudget")
                                 daily_budget_read_ok = True
                                 if raw_budget is None:
+                                    daily_budget_is_missing_or_null = True
                                     current_daily_budget = None
                                 elif isinstance(raw_budget, dict) and raw_budget:
                                     current_daily_budget = dict(raw_budget)
@@ -3033,8 +3035,11 @@ class MockStore:
                                     elif "Mode" not in current_daily_budget:
                                         current_daily_budget = None
                             else:
-                                # Field requested but absent — fail closed
+                                # A missing field can represent a weekly-budget
+                                # strategy; it is safe only after strategy
+                                # readback confirms that exact shape.
                                 daily_budget_read_ok = False
+                                daily_budget_is_missing_or_null = True
 
                             # TextCampaign.BiddingStrategy
                             tc = camp.get("TextCampaign")
@@ -3046,6 +3051,7 @@ class MockStore:
             except Exception:
                 current_daily_budget = None
                 daily_budget_read_ok = False
+                daily_budget_is_missing_or_null = False
                 current_strategy = None
                 strategy_read_ok = False
 
@@ -3228,15 +3234,17 @@ class MockStore:
                 "YandexDirectClient is required for live strategy writes"
             )
 
-        # Fail closed if budget read was ambiguous. A literal null
-        # DailyBudget is safe only when the strategy readback confirms a
-        # weekly-budget smart strategy, so there is no daily budget to preserve.
-        if is_live and (
-            not daily_budget_read_ok
-            or (
-                current_daily_budget is None
-                and not current_strategy_is_weekly_budget
-            )
+        # Fail closed unless we can preserve a valid daily budget, or the
+        # absent/null DailyBudget is confirmed to be a weekly-budget strategy.
+        has_valid_daily_budget = (
+            daily_budget_read_ok and current_daily_budget is not None
+        )
+        has_confirmed_weekly_budget_without_daily_budget = (
+            daily_budget_is_missing_or_null and current_strategy_is_weekly_budget
+        )
+        if is_live and not (
+            has_valid_daily_budget
+            or has_confirmed_weekly_budget_without_daily_budget
         ):
             raise YandexDirectError(
                 "Could not read current DailyBudget from campaign "

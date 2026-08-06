@@ -75,6 +75,7 @@ def _strategy_get_handler(
     network_type: str = "SERVING_OFF",
     budget_type: str | None = None,
     daily_budget: dict[str, Any] | None | object = _SENTINEL,
+    omit_daily_budget: bool = False,
 ) -> callable:
     """Build a campaigns.get handler returning a deterministic strategy envelope."""
 
@@ -122,6 +123,8 @@ def _strategy_get_handler(
                 "CounterIds": [123456],
             },
         }
+        if omit_daily_budget:
+            del campaign["DailyBudget"]
         return httpx.Response(
             200,
             json={
@@ -767,13 +770,55 @@ class TestStrategyUpdate:
         assert live_body["applied"] is True
         assert live_body["payload_preview"] is None
 
-    def test_missing_daily_budget_without_weekly_budget_is_rejected(self):
-        """Missing DailyBudget stays unsafe when strategy is not weekly-budget."""
+    def test_missing_daily_budget_with_weekly_budget_allows_live_apply(self):
+        """A missing DailyBudget is safe for confirmed weekly-budget strategy."""
+        get_handler = _strategy_get_handler(
+            search_type="WB_MAXIMUM_CONVERSION_RATE",
+            budget_type="WEEKLY_BUDGET",
+            omit_daily_budget=True,
+        )
+        update_handler = _strategy_update_handler(success=True)
+        self._override(
+            "live_write",
+            get_handler=get_handler,
+            update_handler=update_handler,
+        )
+
+        payload = dict(self.BASE_PAYLOAD)
+        payload["dry_run"] = False
+        payload["idempotency_key"] = "strat-test-live-003"
+        resp = client.post(
+            "/yandex/campaigns/710691939/strategy", json=payload
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["applied"] is True
+
+    @pytest.mark.parametrize(
+        ("daily_budget", "omit_daily_budget"),
+        [(None, False), (_SENTINEL, True)],
+        ids=("null", "missing"),
+    )
+    def test_missing_or_null_daily_budget_without_weekly_budget_is_rejected(
+        self, daily_budget, omit_daily_budget
+    ):
+        """Absent/null DailyBudget stays unsafe without a weekly-budget strategy."""
+        dispatched: list[dict[str, Any]] = []
         get_handler = _strategy_get_handler(
             search_type="HIGHEST_POSITION",
-            daily_budget=None,
+            daily_budget=daily_budget,
+            omit_daily_budget=omit_daily_budget,
         )
-        self._override("live_write", get_handler=get_handler)
+
+        def update_handler(request: httpx.Request) -> httpx.Response:
+            dispatched.append(json.loads(request.content))
+            return httpx.Response(200, json={"result": {}})
+
+        self._override(
+            "live_write",
+            get_handler=get_handler,
+            update_handler=update_handler,
+        )
 
         payload = dict(self.BASE_PAYLOAD)
         payload["dry_run"] = False
@@ -783,6 +828,7 @@ class TestStrategyUpdate:
         assert resp.status_code == 502, resp.text
         body = resp.json()
         assert "Could not read current DailyBudget" in body["detail"]["message"]
+        assert dispatched == []
 
     # --- Network preserve / SERVING_OFF behavior ---------------------------
 
