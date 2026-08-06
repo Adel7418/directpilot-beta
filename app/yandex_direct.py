@@ -1380,7 +1380,7 @@ class YandexDirectClient:
                 json=payload,
                 headers={
                     "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
-                    "Accept-Language": "ru",
+                    "Accept-Language": "en",
                     "processingMode": "auto",
                     "returnMoneyInMicros": "false",
                     "skipReportHeader": "true",

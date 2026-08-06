@@ -36,7 +36,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.main import app
+from app.main import _aggregate_search_query_tsv, app
 from app.yandex_direct import YandexDirectClient
 
 
@@ -232,6 +232,67 @@ def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_ts
         "Ctr",
         "Cost",
     ]
+
+
+@pytest.mark.parametrize(
+    "ctr",
+    [
+        "4,07",
+        "1,234",
+        "4.07 ",
+        "4.07\u00a0",
+        "1,234.56",
+        "1.234,56",
+        "4.07%",
+        "4.07e0",
+    ],
+)
+def test_search_query_parser_rejects_non_direct_ctr_tokens(ctr: str):
+    tsv = (
+        "Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n"
+        f"strict-decimal\t710691939\t1001\t540\t22\t{ctr}\t660.00\n"
+    )
+
+    assert _aggregate_search_query_tsv(tsv) == []
+
+
+@pytest.mark.parametrize(
+    "cost",
+    [
+        "660,00",
+        "1,234",
+        "1496.500",
+        "660.00 ",
+        "660.00\u00a0",
+        "1,234.56",
+        "1.234,56",
+        "660.00%",
+        "660e0",
+    ],
+)
+def test_search_query_parser_keeps_row_with_none_for_malformed_cost(cost: str):
+    tsv = (
+        "Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n"
+        f"strict-cost\t710691939\t1001\t540\t22\t4.07\t{cost}\n"
+    )
+
+    items = _aggregate_search_query_tsv(tsv)
+
+    assert len(items) == 1
+    assert items[0].ctr == 4.07
+    assert items[0].cost is None
+
+
+def test_search_query_parser_accepts_direct_dot_decimal_ctr_and_cost():
+    tsv = (
+        "Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n"
+        "valid-660\t710691939\t1001\t540\t22\t4.07\t660.00\n"
+        "valid-1496\t710691939\t1001\t100\t4\t4.07\t1496.50\n"
+    )
+
+    items = _aggregate_search_query_tsv(tsv)
+
+    assert [(item.ctr, item.cost) for item in items] == [(4.07, 660.0), (4.07, 1496.5)]
 
 
 def test_search_queries_live_raw_endpoint_uses_search_query_field_names(

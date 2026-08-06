@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -2081,6 +2082,24 @@ def _find_search_query_column(
     return fallback_index
 
 
+_DIRECT_REPORT_DOT_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+
+
+def _parse_yandex_report_number(
+    value: str,
+    *,
+    max_fractional_digits: int | None = None,
+) -> float:
+    """Parse a Direct-owned ASCII dot-decimal report token."""
+    if _DIRECT_REPORT_DOT_DECIMAL.fullmatch(value) is None:
+        raise ValueError("Direct report number must be an ASCII dot-decimal token")
+    if max_fractional_digits is not None and "." in value:
+        fractional_digits = len(value.rsplit(".", maxsplit=1)[1])
+        if fractional_digits > max_fractional_digits:
+            raise ValueError("Direct report number has too many fractional digits")
+    return float(value)
+
+
 def _lookup_search_query_campaign_names(
     client: YandexDirectClient,
     campaign_ids: set[str],
@@ -2130,7 +2149,7 @@ def _aggregate_search_query_tsv(
     """
     normalized_filter = _normalize_direct_id(campaign_id)
 
-    rows = [line.strip() for line in tsv_text.splitlines() if line.strip()]
+    rows = [line for line in tsv_text.splitlines() if line.strip()]
     if not rows:
         return []
 
@@ -2162,7 +2181,7 @@ def _aggregate_search_query_tsv(
         try:
             impressions = int(cols[impressions_idx])
             clicks = int(cols[clicks_idx])
-            ctr = float(cols[ctr_idx])
+            ctr = _parse_yandex_report_number(cols[ctr_idx])
         except (IndexError, ValueError):
             continue
 
@@ -2172,10 +2191,10 @@ def _aggregate_search_query_tsv(
 
         cost: float | None = None
         if len(cols) > cost_idx:
-            cost_text = cols[cost_idx].strip()
+            cost_text = cols[cost_idx]
             if cost_text:
                 try:
-                    cost = float(cost_text)
+                    cost = _parse_yandex_report_number(cost_text, max_fractional_digits=2)
                 except ValueError:
                     cost = None
 

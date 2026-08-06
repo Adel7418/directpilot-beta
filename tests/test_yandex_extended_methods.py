@@ -283,6 +283,8 @@ def test_report_method_posts_to_reports_endpoint_with_report_name():
     )
     assert captured["body"]["params"]["ReportType"] == "CAMPAIGN_PERFORMANCE_REPORT"
     assert captured["body"]["params"]["DateRangeType"] == "CUSTOM_DATE"
+    assert captured["headers"]["accept-language"] == "en"
+    assert captured["headers"]["returnmoneyinmicros"] == "false"
     assert result["ok"] is True
     assert "SECRET-TOKEN" not in str(result)
 
