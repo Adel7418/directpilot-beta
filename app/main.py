@@ -114,6 +114,9 @@ from app.models import (
     KeywordBidItem,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
+    KeywordBidsGetResult,
+    KeywordBidsSetAutoRequest,
+    KeywordBidsSetAutoResult,
     # Bid modifiers
     YandexBidModifierItem,
     YandexBidModifiersReadResult,
@@ -1023,13 +1026,56 @@ def _call_raw_read(
     return _raw_yandex_result(service, method, response)
 
 
-@app.get("/yandex/campaigns/{campaign_id}/bids", response_model=YandexRawResult)
+@app.get(
+    "/yandex/campaigns/{campaign_id}/bids",
+    response_model=YandexRawResult,
+    deprecated=True,
+)
 def yandex_bids(
     campaign_id: str,
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> YandexRawResult:
     return _call_raw_read(settings, client, "bids", "get", lambda c: c.bids_get(campaign_id))
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/keyword-bids",
+    response_model=KeywordBidsGetResult,
+    responses=YANDEX_DIRECT_ERROR_RESPONSES,
+)
+def yandex_keyword_bids_get(
+    campaign_id: str,
+    ad_group_ids: list[int] | None = Query(default=None),
+    keyword_ids: list[int] | None = Query(default=None),
+    serving_statuses: list[str] | None = Query(default=None),
+    limit: int = 1000,
+    offset: int = 0,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> KeywordBidsGetResult:
+    """Read typed current bids through v5 ``keywordbids.get``.
+
+    The legacy ``/bids`` route remains available for its raw ``bids.get``
+    compatibility envelope.  This route accepts only controlled selectors and
+    maps keyword/autotargeting identity via the existing ``keywords.get`` read.
+    """
+
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        return store.yandex_keyword_bids_get(
+            campaign_id,
+            client=direct,
+            ad_group_ids=ad_group_ids,
+            keyword_ids=keyword_ids,
+            serving_statuses=serving_statuses,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
 
 
 @app.get("/yandex/changes/check", response_model=YandexRawResult)
@@ -3843,6 +3889,58 @@ def yandex_keyword_bids_update(
                     f"{type(exc).__name__}"
                 ),
             },
+        ) from exc
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/keyword-bids/set-auto",
+    response_model=KeywordBidsSetAutoResult,
+    responses={
+        409: {
+            "description": "Safety gate or endpoint-scoped idempotency conflict.",
+        },
+        502: {
+            "description": "Upstream KeywordBids read/setAuto failure with redacted diagnostics.",
+        },
+    },
+)
+def yandex_keyword_bids_set_auto(
+    campaign_id: str,
+    payload: KeywordBidsSetAutoRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> KeywordBidsSetAutoResult:
+    """Preview or apply typed ``keywordbids.setAuto`` without changing strategy.
+
+    A preview remains non-mutating.  Apply is gated to ``live_write`` plus
+    explicit approval and a valid idempotency key; successful provider writes
+    are read back through ``keywordbids.get``.
+    """
+
+    if not payload.dry_run:
+        if not payload.approved:
+            raise HTTPException(
+                status_code=409,
+                detail="Action requires explicit approval before setAuto apply",
+            )
+        if settings.directpilot_mode != "live_write":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Live writes require DIRECTPILOT_MODE=live_write; "
+                    "dry_run=True is the only allowed path in this mode"
+                ),
+            )
+    try:
+        return store.yandex_keyword_bids_set_auto(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error_type": "YandexDirectError", "message": str(exc)},
         ) from exc
 
 

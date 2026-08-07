@@ -2371,6 +2371,629 @@
         "title": "KeywordBidUpdateResult",
         "type": "object"
       },
+      "KeywordBidsAuctionBidItem": {
+        "properties": {
+          "bid_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid Micros"
+          },
+          "bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid Rub"
+          },
+          "price_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Micros"
+          },
+          "price_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Rub"
+          },
+          "traffic_volume": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Traffic Volume"
+          }
+        },
+        "title": "KeywordBidsAuctionBidItem",
+        "type": "object"
+      },
+      "KeywordBidsCoverageItem": {
+        "properties": {
+          "bid_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid Micros"
+          },
+          "bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bid Rub"
+          },
+          "probability": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probability"
+          }
+        },
+        "title": "KeywordBidsCoverageItem",
+        "type": "object"
+      },
+      "KeywordBidsGetItem": {
+        "description": "Typed, strategy-safe projection of one ``keywordbids.get`` row.",
+        "properties": {
+          "ad_group_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "auction_bids": {
+            "items": {
+              "$ref": "#/components/schemas/KeywordBidsAuctionBidItem"
+            },
+            "title": "Auction Bids",
+            "type": "array"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "integer"
+          },
+          "coverage": {
+            "items": {
+              "$ref": "#/components/schemas/KeywordBidsCoverageItem"
+            },
+            "title": "Coverage",
+            "type": "array"
+          },
+          "keyword": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword"
+          },
+          "keyword_id": {
+            "title": "Keyword Id",
+            "type": "integer"
+          },
+          "network_bid_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network Bid Micros"
+          },
+          "network_bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Network Bid Rub"
+          },
+          "row_kind": {
+            "enum": [
+              "keyword",
+              "autotargeting",
+              "unknown"
+            ],
+            "title": "Row Kind",
+            "type": "string"
+          },
+          "search_autotargeting_is_auto": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Autotargeting Is Auto"
+          },
+          "search_bid_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Bid Micros"
+          },
+          "search_bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Bid Rub"
+          },
+          "serving_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serving Status"
+          },
+          "strategy_priority": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy Priority"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "keyword_id",
+          "row_kind"
+        ],
+        "title": "KeywordBidsGetItem",
+        "type": "object"
+      },
+      "KeywordBidsGetResult": {
+        "description": "Read-only canonical response for ``GET .../keyword-bids``.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KeywordBidsGetItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "limited_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limited By"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "KeywordBidsGetResult",
+        "type": "object"
+      },
+      "KeywordBidsSetAutoItemResult": {
+        "properties": {
+          "ad_group_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "has_errors": {
+            "default": false,
+            "title": "Has Errors",
+            "type": "boolean"
+          },
+          "has_warnings": {
+            "default": false,
+            "title": "Has Warnings",
+            "type": "boolean"
+          },
+          "keyword_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Id"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "KeywordBidsSetAutoItemResult",
+        "type": "object"
+      },
+      "KeywordBidsSetAutoRequest": {
+        "description": "Strict preview/apply input for ``keywordbids.setAuto``.\n\nScope is intentionally homogeneous: campaign scope uses the route campaign,\nwhile ad-group and keyword scopes require one non-empty, unique id list.",
+        "properties": {
+          "ad_group_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "maxItems": 1000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Ids"
+          },
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "keyword_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "maxItems": 10000,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Keyword Ids"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "rule": {
+            "discriminator": {
+              "mapping": {
+                "network_by_coverage": "#/components/schemas/NetworkByCoverageRule",
+                "search_by_traffic_volume": "#/components/schemas/SearchByTrafficVolumeRule"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SearchByTrafficVolumeRule"
+              },
+              {
+                "$ref": "#/components/schemas/NetworkByCoverageRule"
+              }
+            ],
+            "title": "Rule"
+          },
+          "scope": {
+            "enum": [
+              "campaign",
+              "ad_group",
+              "keyword"
+            ],
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scope",
+          "rule"
+        ],
+        "title": "KeywordBidsSetAutoRequest",
+        "type": "object"
+      },
+      "KeywordBidsSetAutoResult": {
+        "description": "Typed outcome for preview, blocked request, or gated ``setAuto`` apply.",
+        "properties": {
+          "affected_items": {
+            "items": {
+              "$ref": "#/components/schemas/KeywordBidsGetItem"
+            },
+            "title": "Affected Items",
+            "type": "array"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "blocked": {
+            "default": false,
+            "title": "Blocked",
+            "type": "boolean"
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "partial_failure": {
+            "default": false,
+            "title": "Partial Failure",
+            "type": "boolean"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "read_only": {
+            "default": false,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KeywordBidsGetResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "readback_failed": {
+            "default": false,
+            "title": "Readback Failed",
+            "type": "boolean"
+          },
+          "set_auto_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/KeywordBidsSetAutoItemResult"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set Auto Results"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "verification_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Error"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "KeywordBidsSetAutoResult",
+        "type": "object"
+      },
       "LiveAdCreateItem": {
         "description": "One ad to add to an existing ad group.\n\n``title``, ``text``, ``href`` are required (Direct v5 TextAd contract).\n``title2`` — optional second headline.\n``sitelink_set_id`` — optional quick-link set id.\n``business_id`` — optional Yandex Business organization id.\n``prefer_vcard_over_business`` — ``\"YES\"`` / ``\"NO\"``, optional.",
         "properties": {
@@ -3009,6 +3632,40 @@
         "title": "NegativeKeywordsReplace",
         "type": "object"
       },
+      "NetworkByCoverageRule": {
+        "properties": {
+          "bid_ceiling_rub": {
+            "exclusiveMinimum": 0.0,
+            "title": "Bid Ceiling Rub",
+            "type": "number"
+          },
+          "increase_percent": {
+            "default": 0,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Increase Percent",
+            "type": "integer"
+          },
+          "target_coverage": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Target Coverage",
+            "type": "integer"
+          },
+          "type": {
+            "const": "network_by_coverage",
+            "default": "network_by_coverage",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_coverage",
+          "bid_ceiling_rub"
+        ],
+        "title": "NetworkByCoverageRule",
+        "type": "object"
+      },
       "PreviewPayload": {
         "properties": {
           "ad_groups": {
@@ -3280,6 +3937,40 @@
           "cpc"
         ],
         "title": "ReportSummary",
+        "type": "object"
+      },
+      "SearchByTrafficVolumeRule": {
+        "properties": {
+          "bid_ceiling_rub": {
+            "exclusiveMinimum": 0.0,
+            "title": "Bid Ceiling Rub",
+            "type": "number"
+          },
+          "increase_percent": {
+            "default": 0,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Increase Percent",
+            "type": "integer"
+          },
+          "target_traffic_volume": {
+            "maximum": 100.0,
+            "minimum": 5.0,
+            "title": "Target Traffic Volume",
+            "type": "integer"
+          },
+          "type": {
+            "const": "search_by_traffic_volume",
+            "default": "search_by_traffic_volume",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_traffic_volume",
+          "bid_ceiling_rub"
+        ],
+        "title": "SearchByTrafficVolumeRule",
         "type": "object"
       },
       "SemanticChangeApplyRequest": {
@@ -9965,6 +10656,7 @@
     },
     "/yandex/campaigns/{campaign_id}/bids": {
       "get": {
+        "deprecated": true,
         "operationId": "yandex_bids_yandex_campaigns__campaign_id__bids_get",
         "parameters": [
           {
@@ -10054,6 +10746,199 @@
           }
         },
         "summary": "Yandex Keyword Bids Update"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/keyword-bids": {
+      "get": {
+        "description": "Read typed current bids through v5 ``keywordbids.get``.\n\nThe legacy ``/bids`` route remains available for its raw ``bids.get``\ncompatibility envelope.  This route accepts only controlled selectors and\nmaps keyword/autotargeting identity via the existing ``keywords.get`` read.",
+        "operationId": "yandex_keyword_bids_get_yandex_campaigns__campaign_id__keyword_bids_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "keyword_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Keyword Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "serving_statuses",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Serving Statuses"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeywordBidsGetResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Direct upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "YANDEX_OAUTH_TOKEN is not configured"
+          }
+        },
+        "summary": "Yandex Keyword Bids Get"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/keyword-bids/set-auto": {
+      "post": {
+        "description": "Preview or apply typed ``keywordbids.setAuto`` without changing strategy.\n\nA preview remains non-mutating.  Apply is gated to ``live_write`` plus\nexplicit approval and a valid idempotency key; successful provider writes\nare read back through ``keywordbids.get``.",
+        "operationId": "yandex_keyword_bids_set_auto_yandex_campaigns__campaign_id__keyword_bids_set_auto_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeywordBidsSetAutoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeywordBidsSetAutoResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate or endpoint-scoped idempotency conflict."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Upstream KeywordBids read/setAuto failure with redacted diagnostics."
+          }
+        },
+        "summary": "Yandex Keyword Bids Set Auto"
       }
     },
     "/yandex/campaigns/{campaign_id}/keywords": {

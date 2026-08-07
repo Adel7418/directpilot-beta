@@ -70,6 +70,13 @@ from app.models import (
     KeywordBidSetItemResult,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
+    KeywordBidsAuctionBidItem,
+    KeywordBidsCoverageItem,
+    KeywordBidsGetItem,
+    KeywordBidsGetResult,
+    KeywordBidsSetAutoItemResult,
+    KeywordBidsSetAutoRequest,
+    KeywordBidsSetAutoResult,
     # Bid modifiers
     BidModifierAddItemResult,
     BidModifierSetItemResult,
@@ -98,6 +105,9 @@ from app.yandex_direct import YandexDirectClient, YandexDirectError
 from app.yandex_facade import mock_yandex
 
 
+_KEYWORD_BIDS_MAX_PAGE_LIMIT = 10_000
+
+
 def _normalize_phrase(value: str) -> str:
     return " ".join(value.split()).strip().lower()
 
@@ -115,6 +125,81 @@ def _keyword_bids_request_fingerprint(v5_items: list[dict[str, Any]]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _keyword_bids_set_auto_request_fingerprint(payload: dict[str, Any]) -> str:
+    """Fingerprint a canonical ``keywordbids.setAuto`` apply payload."""
+
+    items = payload.get("params", {}).get("KeywordBids", [])
+    normalized = sorted(
+        [dict(item) for item in items if isinstance(item, dict)],
+        key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+    )
+    canonical = json.dumps(
+        {"method": "setAuto", "params": {"KeywordBids": normalized}},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _keyword_bids_set_auto_read_limit(payload: KeywordBidsSetAutoRequest) -> int:
+    """Return one bounded page that can safely cover a setAuto scope."""
+
+    if payload.scope == "keyword":
+        return min(len(payload.keyword_ids or []), _KEYWORD_BIDS_MAX_PAGE_LIMIT)
+    return _KEYWORD_BIDS_MAX_PAGE_LIMIT
+
+
+def _as_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _micros_to_rub(value: Any) -> float | None:
+    micros = _as_int_or_none(value)
+    return micros / 1_000_000 if micros is not None else None
+
+
+def validate_keyword_bids_set_auto_strategy(
+    campaign: Any,
+    rule_type: str,
+) -> list[str]:
+    """Pure, fail-closed compatibility matrix for ``keywordbids.setAuto``."""
+
+    if not isinstance(campaign, dict):
+        return ["Campaign strategy is unavailable; setAuto is blocked"]
+    if campaign.get("Type") != "TEXT_CAMPAIGN":
+        return ["setAuto is supported only for TEXT_CAMPAIGN campaigns"]
+    text_campaign = campaign.get("TextCampaign")
+    if not isinstance(text_campaign, dict):
+        return ["Text campaign strategy is unavailable; setAuto is blocked"]
+    strategy = text_campaign.get("BiddingStrategy")
+    if not isinstance(strategy, dict):
+        return ["Campaign bidding strategy is unavailable; setAuto is blocked"]
+
+    def strategy_type(channel: str) -> str | None:
+        block = strategy.get(channel)
+        if not isinstance(block, dict):
+            return None
+        value = block.get("BiddingStrategyType") or block.get("Type")
+        return value if isinstance(value, str) else None
+
+    if rule_type == "search_by_traffic_volume":
+        if strategy_type("Search") != "HIGHEST_POSITION":
+            return [
+                "SearchByTrafficVolume requires Search strategy HIGHEST_POSITION; setAuto is blocked"
+            ]
+        return []
+    if rule_type == "network_by_coverage":
+        if strategy_type("Network") not in {"MAXIMUM_COVERAGE", "MANUAL_CPM"}:
+            return [
+                "NetworkByCoverage requires Network strategy MAXIMUM_COVERAGE or MANUAL_CPM; setAuto is blocked"
+            ]
+        return []
+    return ["Unknown setAuto rule type is blocked"]
 
 
 def _bid_modifiers_request_fingerprint(payload: dict[str, Any]) -> str:
@@ -714,6 +799,10 @@ class MockStore:
         # Stored value includes result + canonical request fingerprint for
         # payload-equality guard before replay.
         self._keyword_bids_results_by_key: dict[str, dict[str, Any]] = {}
+        # ``setAuto`` has an independent idempotency namespace. Preview requests
+        # intentionally never enter this cache, so a dry run cannot consume an
+        # apply key or replay a mutation result.
+        self._keyword_bids_set_auto_results_by_key: dict[str, dict[str, Any]] = {}
         # Bid modifiers update cache mirrors keyword bids idempotency semantics.
         self._bid_modifiers_results_by_key: dict[str, dict[str, Any]] = {}
         # In-memory Yandex campaign status mirror (mock only).
@@ -5934,6 +6023,502 @@ class MockStore:
             )
             raise safe from exc
 
+
+    # ------------------------------------ KeywordBids.get / setAuto (v5)
+
+    def _read_keyword_bids_v5(
+        self,
+        campaign_id: str,
+        *,
+        client: YandexDirectClient,
+        ad_group_ids: list[int] | None = None,
+        keyword_ids: list[int] | None = None,
+        serving_statuses: list[str] | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+        campaign_strategy: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], KeywordBidsGetResult]:
+        """Read/map controlled KeywordBids rows and their keyword classification."""
+
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must be non-negative")
+        if ad_group_ids is not None and (not ad_group_ids or len(ad_group_ids) > 1000):
+            raise ValueError("ad_group_ids must contain between 1 and 1000 ids")
+        if keyword_ids is not None and (not keyword_ids or len(keyword_ids) > 10000):
+            raise ValueError("keyword_ids must contain between 1 and 10000 ids")
+        if serving_statuses is not None and any(
+            status not in {"ELIGIBLE", "RARELY_SERVED"} for status in serving_statuses
+        ):
+            raise ValueError("serving_statuses supports only ELIGIBLE and RARELY_SERVED")
+
+        campaign = campaign_strategy
+        if campaign is None:
+            strategy_response = client.campaigns_get_strategy(campaign_id)
+            if not strategy_response.get("ok"):
+                raise YandexDirectError("campaign strategy read failed before keywordbids.get")
+            strategy_result = strategy_response.get("result") or {}
+            campaigns = strategy_result.get("Campaigns") if isinstance(strategy_result, dict) else None
+            campaign = campaigns[0] if isinstance(campaigns, list) and campaigns else None
+            if not isinstance(campaign, dict):
+                raise YandexDirectError("campaign strategy result is unavailable before keywordbids.get")
+
+        strategy = (
+            campaign.get("TextCampaign", {}).get("BiddingStrategy", {})
+            if isinstance(campaign.get("TextCampaign"), dict)
+            else {}
+        )
+        search = strategy.get("Search") if isinstance(strategy, dict) else None
+        network = strategy.get("Network") if isinstance(strategy, dict) else None
+        search_type = (
+            (search.get("BiddingStrategyType") or search.get("Type"))
+            if isinstance(search, dict)
+            else None
+        )
+        network_type = (
+            (network.get("BiddingStrategyType") or network.get("Type"))
+            if isinstance(network, dict)
+            else None
+        )
+
+        response = client.keywordbids_get(
+            campaign_id,
+            ad_group_ids=ad_group_ids,
+            keyword_ids=keyword_ids,
+            serving_statuses=serving_statuses,
+            limit=limit,
+            offset=offset,
+            include_auction_bids=search_type != "SERVING_OFF",
+            include_coverage=network_type != "SERVING_OFF",
+        )
+        if not response.get("ok"):
+            raise YandexDirectError("keywordbids.get failed")
+        response_result = response.get("result") or {}
+        if not isinstance(response_result, dict):
+            raise YandexDirectError("keywordbids.get returned an invalid result envelope")
+        raw_rows = response_result.get("KeywordBids")
+        if not isinstance(raw_rows, list):
+            raw_rows = []
+
+        warnings = _provider_warnings_from_result(response)
+        keyword_rows: dict[int, dict[str, Any]] = {}
+        try:
+            keywords_response = client.keywords_get(campaign_id)
+            if keywords_response.get("ok"):
+                keyword_result = keywords_response.get("result") or {}
+                raw_keywords = keyword_result.get("Keywords") if isinstance(keyword_result, dict) else []
+                if isinstance(raw_keywords, list):
+                    for row in raw_keywords:
+                        if not isinstance(row, dict):
+                            continue
+                        row_id = _as_int_or_none(row.get("Id"))
+                        if row_id is not None:
+                            keyword_rows[row_id] = row
+            else:
+                warnings.append(
+                    ProviderWarning(code=0, message="Keyword classification unavailable", details="")
+                )
+        except Exception:
+            warnings.append(
+                ProviderWarning(code=0, message="Keyword classification unavailable", details="")
+            )
+
+        items: list[KeywordBidsGetItem] = []
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                continue
+            keyword_id = _as_int_or_none(raw_row.get("KeywordId"))
+            row_campaign_id = _as_int_or_none(raw_row.get("CampaignId"))
+            if keyword_id is None or row_campaign_id is None:
+                continue
+            source_keyword = keyword_rows.get(keyword_id)
+            if source_keyword is None:
+                row_kind: Literal["keyword", "autotargeting", "unknown"] = "unknown"
+                keyword_text = None
+            elif source_keyword.get("Keyword") == "---autotargeting":
+                row_kind = "autotargeting"
+                keyword_text = None
+            else:
+                row_kind = "keyword"
+                keyword_text = source_keyword.get("Keyword") if isinstance(source_keyword.get("Keyword"), str) else None
+
+            raw_search = raw_row.get("Search") if isinstance(raw_row.get("Search"), dict) else {}
+            raw_network = raw_row.get("Network") if isinstance(raw_row.get("Network"), dict) else {}
+            raw_auction = raw_search.get("AuctionBids") if isinstance(raw_search, dict) else None
+            raw_auction_items = raw_auction.get("AuctionBidItems") if isinstance(raw_auction, dict) else []
+            auction_bids = [
+                KeywordBidsAuctionBidItem(
+                    traffic_volume=_as_int_or_none(entry.get("TrafficVolume")),
+                    bid_micros=_as_int_or_none(entry.get("Bid")),
+                    bid_rub=_micros_to_rub(entry.get("Bid")),
+                    price_micros=_as_int_or_none(entry.get("Price")),
+                    price_rub=_micros_to_rub(entry.get("Price")),
+                )
+                for entry in raw_auction_items
+                if isinstance(entry, dict)
+            ] if isinstance(raw_auction_items, list) else []
+            raw_coverage = raw_network.get("Coverage") if isinstance(raw_network, dict) else None
+            raw_coverage_items = raw_coverage.get("CoverageItems") if isinstance(raw_coverage, dict) else []
+            coverage = [
+                KeywordBidsCoverageItem(
+                    probability=_as_int_or_none(entry.get("Probability")),
+                    bid_micros=_as_int_or_none(entry.get("Bid")),
+                    bid_rub=_micros_to_rub(entry.get("Bid")),
+                )
+                for entry in raw_coverage_items
+                if isinstance(entry, dict)
+            ] if isinstance(raw_coverage_items, list) else []
+            auto_value = raw_search.get("AutotargetingSearchBidIsAuto") if isinstance(raw_search, dict) else None
+            items.append(
+                KeywordBidsGetItem(
+                    campaign_id=row_campaign_id,
+                    ad_group_id=_as_int_or_none(raw_row.get("AdGroupId")),
+                    keyword_id=keyword_id,
+                    row_kind=row_kind,
+                    keyword=keyword_text,
+                    serving_status=raw_row.get("ServingStatus") if isinstance(raw_row.get("ServingStatus"), str) else None,
+                    strategy_priority=raw_row.get("StrategyPriority") if isinstance(raw_row.get("StrategyPriority"), str) else None,
+                    search_bid_micros=_as_int_or_none(raw_search.get("Bid")),
+                    search_bid_rub=_micros_to_rub(raw_search.get("Bid")),
+                    search_autotargeting_is_auto=True if auto_value == "YES" else False if auto_value == "NO" else None,
+                    auction_bids=auction_bids,
+                    network_bid_micros=_as_int_or_none(raw_network.get("Bid")),
+                    network_bid_rub=_micros_to_rub(raw_network.get("Bid")),
+                    coverage=coverage,
+                )
+            )
+
+        limited_by = _as_int_or_none(response_result.get("LimitedBy"))
+        return campaign, KeywordBidsGetResult(
+            campaign_id=campaign_id,
+            source="yandex",
+            items=items,
+            limited_by=limited_by,
+            next_offset=limited_by + 1 if limited_by is not None else None,
+            warnings=warnings,
+        )
+
+    def yandex_keyword_bids_get(
+        self,
+        campaign_id: str,
+        *,
+        client: YandexDirectClient,
+        ad_group_ids: list[int] | None = None,
+        keyword_ids: list[int] | None = None,
+        serving_statuses: list[str] | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> KeywordBidsGetResult:
+        """Canonical typed read endpoint backed by ``keywordbids.get``."""
+
+        _, result = self._read_keyword_bids_v5(
+            campaign_id,
+            client=client,
+            ad_group_ids=ad_group_ids,
+            keyword_ids=keyword_ids,
+            serving_statuses=serving_statuses,
+            limit=limit,
+            offset=offset,
+        )
+        return result
+
+    def _set_auto_ownership_blockers(
+        self,
+        campaign_id: str,
+        payload: KeywordBidsSetAutoRequest,
+        *,
+        client: YandexDirectClient,
+        campaign: dict[str, Any],
+    ) -> list[str]:
+        """Verify every non-campaign target belongs to the route campaign."""
+
+        expected_campaign_id = _as_int_or_none(campaign_id)
+        if expected_campaign_id is None:
+            return ["Route campaign id must be numeric for setAuto"]
+        if _as_int_or_none(campaign.get("Id")) != expected_campaign_id:
+            return ["Campaign strategy response does not match the route campaign"]
+        if payload.scope == "campaign":
+            return []
+        if payload.scope == "ad_group":
+            response = client.adgroups_get(campaign_id)
+            if not response.get("ok"):
+                return ["Ad-group ownership could not be verified; setAuto is blocked"]
+            result = response.get("result") or {}
+            rows = result.get("AdGroups") if isinstance(result, dict) else None
+            owned = {
+                _as_int_or_none(row.get("Id"))
+                for row in rows or []
+                if isinstance(row, dict) and _as_int_or_none(row.get("CampaignId")) == expected_campaign_id
+            }
+            missing = sorted(set(payload.ad_group_ids or []) - {item for item in owned if item is not None})
+            return ["Selected ad groups do not belong to the route campaign"] if missing else []
+
+        response = client.keywords_get(campaign_id)
+        if not response.get("ok"):
+            return ["Keyword ownership could not be verified; setAuto is blocked"]
+        result = response.get("result") or {}
+        rows = result.get("Keywords") if isinstance(result, dict) else None
+        indexed = {
+            _as_int_or_none(row.get("Id")): row
+            for row in rows or []
+            if isinstance(row, dict) and _as_int_or_none(row.get("Id")) is not None
+        }
+        blockers: list[str] = []
+        for keyword_id in payload.keyword_ids or []:
+            row = indexed.get(keyword_id)
+            if not isinstance(row, dict) or _as_int_or_none(row.get("CampaignId")) != expected_campaign_id:
+                blockers.append("Selected keywords do not belong to the route campaign")
+                break
+            if row.get("Keyword") == "---autotargeting":
+                blockers.append("keyword-scoped setAuto does not support autotargeting identifiers")
+                break
+        return blockers
+
+    @staticmethod
+    def _set_auto_item_results(
+        result_payload: Any,
+    ) -> tuple[list[KeywordBidsSetAutoItemResult] | None, str | None]:
+        if not isinstance(result_payload, dict):
+            return None, "setAuto response is missing SetAutoResults"
+        raw_results = result_payload.get("SetAutoResults")
+        if not isinstance(raw_results, list) or not raw_results:
+            return None, "setAuto response is missing SetAutoResults"
+        items: list[KeywordBidsSetAutoItemResult] = []
+        has_errors = False
+        for raw in raw_results:
+            if not isinstance(raw, dict):
+                has_errors = True
+                continue
+            errors = [
+                ProviderWarning(
+                    code=_as_int_or_none(entry.get("Code")) or 0,
+                    message=str(entry.get("Message") or ""),
+                    details=str(entry.get("Details") or ""),
+                )
+                for entry in raw.get("Errors") or []
+                if isinstance(entry, dict)
+            ]
+            warnings = [
+                ProviderWarning(
+                    code=_as_int_or_none(entry.get("Code")) or 0,
+                    message=str(entry.get("Message") or ""),
+                    details=str(entry.get("Details") or ""),
+                )
+                for entry in raw.get("Warnings") or []
+                if isinstance(entry, dict)
+            ]
+            has_errors = has_errors or bool(errors)
+            items.append(
+                KeywordBidsSetAutoItemResult(
+                    campaign_id=_as_int_or_none(raw.get("CampaignId")),
+                    ad_group_id=_as_int_or_none(raw.get("AdGroupId")),
+                    keyword_id=_as_int_or_none(raw.get("KeywordId")),
+                    has_errors=bool(errors),
+                    has_warnings=bool(warnings),
+                    errors=errors,
+                    warnings=warnings,
+                )
+            )
+        return items, "setAuto returned per-item errors" if has_errors else None
+
+    def yandex_keyword_bids_set_auto(
+        self,
+        campaign_id: str,
+        payload: KeywordBidsSetAutoRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> KeywordBidsSetAutoResult:
+        """Preview/apply fail-closed automatic bid rules without strategy edits."""
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        direct_payload = payload.build_direct_payload(campaign_id)
+        v5_items = direct_payload["params"]["KeywordBids"]
+        source: Literal["mock", "yandex"] = "yandex" if client is not None else "mock"
+
+        if not payload.dry_run:
+            if not payload.approved:
+                raise ValueError("Action requires explicit approval")
+            if mode != "live_write":
+                raise YandexDirectError("Live writes require DIRECTPILOT_MODE=live_write")
+            if not payload.idempotency_key:
+                raise ValueError("idempotency_key is required when dry_run=false")
+            cache_key = f"keyword_bids_set_auto:{campaign_id}:{payload.idempotency_key}"
+            fingerprint = _keyword_bids_set_auto_request_fingerprint(direct_payload)
+            cached_record = self._keyword_bids_set_auto_results_by_key.get(cache_key)
+            if cached_record is not None:
+                if cached_record.get("request_fingerprint") != fingerprint:
+                    raise ValueError(
+                        f"Idempotency key {payload.idempotency_key!r} was previously used with a different setAuto payload; replay is rejected"
+                    )
+                return cached_record["result"]
+        else:
+            cache_key = None
+            fingerprint = None
+
+        if client is None:
+            audit = self.append_audit(
+                "yandex_keyword_bids_set_auto_blocked",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={"mode": mode, "reason": "client_unavailable"},
+            )
+            return KeywordBidsSetAutoResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=payload.dry_run,
+                applied=False,
+                blocked=True,
+                source=source,
+                audit_id=audit.id,
+                payload_preview=direct_payload,
+                blockers=["Campaign strategy and ownership could not be read; setAuto is blocked"],
+            )
+
+        ad_group_ids = payload.ad_group_ids if payload.scope == "ad_group" else None
+        keyword_ids = payload.keyword_ids if payload.scope == "keyword" else None
+        affected_limit = _keyword_bids_set_auto_read_limit(payload)
+        campaign, affected = self._read_keyword_bids_v5(
+            campaign_id,
+            client=client,
+            ad_group_ids=ad_group_ids,
+            keyword_ids=keyword_ids,
+            limit=affected_limit,
+        )
+        if affected.limited_by is not None:
+            blockers = [
+                "setAuto scope exceeds the safely verifiable KeywordBids result window; operation is blocked"
+            ]
+        else:
+            blockers = validate_keyword_bids_set_auto_strategy(campaign, payload.rule_type)
+            blockers.extend(
+                self._set_auto_ownership_blockers(
+                    campaign_id, payload, client=client, campaign=campaign
+                )
+            )
+        warnings = list(affected.warnings)
+        if payload.rule_type == "search_by_traffic_volume" and payload.scope in {"campaign", "ad_group"}:
+            warnings.append(
+                ProviderWarning(
+                    code=0,
+                    message="Direct may affect autotargeting search bids for campaign or ad-group scope",
+                    details="",
+                )
+            )
+
+        if blockers:
+            audit = self.append_audit(
+                "yandex_keyword_bids_set_auto_blocked",
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={"mode": mode, "blocker_count": len(blockers), "scope": payload.scope},
+            )
+            return KeywordBidsSetAutoResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=payload.dry_run,
+                applied=False,
+                blocked=True,
+                source=source,
+                audit_id=audit.id,
+                payload_preview=direct_payload,
+                affected_items=affected.items,
+                blockers=blockers,
+                warnings=warnings,
+            )
+
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_keyword_bids_set_auto_previewed",
+                campaign_id,
+                dry_run=True,
+                details={"mode": mode, "scope": payload.scope, "item_count": len(v5_items)},
+            )
+            return KeywordBidsSetAutoResult(
+                campaign_id=campaign_id,
+                mode=mode,
+                dry_run=True,
+                applied=False,
+                source=source,
+                audit_id=audit.id,
+                payload_preview=direct_payload,
+                affected_items=affected.items,
+                warnings=warnings,
+            )
+
+        response = client.keywordbids_set_auto(v5_items)
+        if not response.get("ok"):
+            raise YandexDirectError("keywordbids.setAuto failed")
+        provider_warnings = _provider_warnings_from_result(response)
+        set_auto_results, item_error = self._set_auto_item_results(response.get("result"))
+        if set_auto_results:
+            for item in set_auto_results:
+                for warning in item.warnings:
+                    if not any(
+                        existing.code == warning.code and existing.message == warning.message
+                        for existing in provider_warnings
+                    ):
+                        provider_warnings.append(warning)
+        partial_failure = item_error is not None
+        readback: KeywordBidsGetResult | None = None
+        readback_failed = False
+        verification_error: str | None = None
+        if not partial_failure:
+            try:
+                _, readback = self._read_keyword_bids_v5(
+                    campaign_id,
+                    client=client,
+                    ad_group_ids=ad_group_ids,
+                    keyword_ids=keyword_ids,
+                    limit=affected_limit,
+                    campaign_strategy=campaign,
+                )
+                if readback.limited_by is not None:
+                    readback = None
+                    readback_failed = True
+                    partial_failure = True
+                    verification_error = "keywordbids.get readback was truncated after provider write"
+            except Exception:
+                readback_failed = True
+                partial_failure = True
+                verification_error = "keywordbids.get readback failed after provider write"
+
+        audit = self.append_audit(
+            "yandex_keyword_bids_set_auto_applied",
+            campaign_id,
+            dry_run=False,
+            details={
+                "mode": mode,
+                "scope": payload.scope,
+                "item_count": len(v5_items),
+                "partial_failure": partial_failure,
+                "readback_failed": readback_failed,
+            },
+        )
+        result = KeywordBidsSetAutoResult(
+            campaign_id=campaign_id,
+            mode=mode,
+            dry_run=False,
+            applied=not partial_failure,
+            source=source,
+            audit_id=audit.id,
+            affected_items=affected.items,
+            warnings=warnings + provider_warnings,
+            set_auto_results=set_auto_results,
+            partial_failure=partial_failure,
+            readback=readback,
+            readback_failed=readback_failed,
+            verification_error=verification_error,
+            yandex_units=_as_int_or_none(response.get("units")),
+            yandex_error=item_error,
+        )
+        if cache_key is not None and fingerprint is not None:
+            self._keyword_bids_set_auto_results_by_key[cache_key] = {
+                "result": result,
+                "request_fingerprint": fingerprint,
+            }
+        return result
 
     # --------------------------------------------------- keyword bids update
     #

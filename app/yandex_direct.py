@@ -319,6 +319,70 @@ class YandexDirectClient:
             {"method": "set", "params": {"KeywordBids": list(items)}},
         )
 
+    def keywordbids_get(
+        self,
+        campaign_id: int | str,
+        *,
+        ad_group_ids: list[int] | None = None,
+        keyword_ids: list[int] | None = None,
+        serving_statuses: list[str] | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+        include_auction_bids: bool = True,
+        include_coverage: bool = True,
+    ) -> dict[str, Any]:
+        """Read current v5 ``keywordbids.get`` rows with controlled fields.
+
+        This wrapper deliberately accepts only typed selector values and the
+        documented field lists.  It never accepts a caller-supplied raw v5
+        payload, and keeps the existing client base URL untouched.
+        """
+
+        selection: dict[str, Any] = {
+            "CampaignIds": [self._direct_id(campaign_id)],
+        }
+        if ad_group_ids:
+            selection["AdGroupIds"] = [self._direct_id(item) for item in ad_group_ids]
+        if keyword_ids:
+            selection["KeywordIds"] = [self._direct_id(item) for item in keyword_ids]
+        if serving_statuses:
+            selection["ServingStatuses"] = list(serving_statuses)
+
+        search_fields = ["Bid", "AutotargetingSearchBidIsAuto"]
+        if include_auction_bids:
+            search_fields.append("AuctionBids")
+        network_fields = ["Bid"]
+        if include_coverage:
+            network_fields.append("Coverage")
+
+        return self._call(
+            "keywordbids",
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": selection,
+                    "FieldNames": [
+                        "KeywordId",
+                        "AdGroupId",
+                        "CampaignId",
+                        "ServingStatus",
+                        "StrategyPriority",
+                    ],
+                    "SearchFieldNames": search_fields,
+                    "NetworkFieldNames": network_fields,
+                    "Page": {"Limit": limit, "Offset": offset},
+                },
+            },
+        )
+
+    def keywordbids_set_auto(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Apply an already validated v5 ``keywordbids.setAuto`` request."""
+
+        return self._call(
+            "keywordbids",
+            {"method": "setAuto", "params": {"KeywordBids": list(items)}},
+        )
+
     def changes_check(self) -> dict[str, Any]:
         return self._call("changes", {"method": "check", "params": {}})
 

@@ -52,6 +52,8 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/keywords`
    - `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
    - `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
+   - `GET /yandex/campaigns/{campaign_id}/keyword-bids` — canonical typed `keywordbids.get` read; legacy `GET .../bids` is deprecated raw `bids.get`
+   - `POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto` — `keywordbids.setAuto` bid calculation, dry-run default, gated apply; not autotargeting or strategy conversion
    - `GET /yandex/campaigns/{campaign_id}/bid-modifiers`
    - `POST /yandex/campaigns/{campaign_id}/bid-modifiers` (dry_run/apply)
    - `POST /yandex/campaigns/{campaign_id}/ad-groups`
@@ -215,6 +217,51 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Direct can return warning `10165` / `Параметр не будет применен`: one of the request fields was ignored by the API. The `details` field names the specific parameter. Check `provider_warnings` in the DirectPilot response to find which parameter was dropped.
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
+
+### KeywordBids.get / setAuto
+
+- Canonical read endpoint: `GET /yandex/campaigns/{campaign_id}/keyword-bids`
+  (`keywordbids.get`). It returns typed `KeywordBids` rows, strategy-safe
+  Search/Network fields, RUB + micros values, row classification
+  (`keyword` / `autotargeting` / `unknown`), and `LimitedBy` pagination
+  as `limited_by` / `next_offset`.
+- Legacy read endpoint: `GET /yandex/campaigns/{campaign_id}/bids` is
+  deprecated raw `bids.get` compatibility. Do not use it as the canonical
+  marketer/operator bid read.
+- Existing manual write endpoint: `POST /yandex/campaigns/{campaign_id}/bids`
+  remains `keywordbids.set` for fixed SearchBid/ContextBid updates and keeps the
+  standard gates and idempotency.
+- Automatic bid calculation endpoint:
+  `POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto` wraps
+  `keywordbids.setAuto`. It calculates bids; it does **not** configure
+  autotargeting categories, create/remove `---autotargeting`, convert campaign
+  strategy, change payment model, or silently enable Search/Network.
+- Request scopes are homogeneous: exactly one of `campaign`, `ad_group`, or
+  `keyword`. `ad_group` accepts unique `ad_group_ids` up to 1,000. `keyword`
+  accepts unique `keyword_ids` up to 10,000 and rejects autotargeting rows.
+- Rules: `search_by_traffic_volume` requires `target_traffic_volume=5..100` and
+  is compatible only with Search `HIGHEST_POSITION`; `network_by_coverage`
+  requires `target_coverage=0..100` and is compatible only with Network
+  `MAXIMUM_COVERAGE` or `MANUAL_CPM`. Both allow `increase_percent=0..1000` and
+  require positive DirectPilot `bid_ceiling_rub`, converted to Direct micros in
+  the preview (`RUB * 1,000,000`).
+- `dry_run=true` is the default. It returns the exact `setAuto`
+  `payload_preview`, affected items, warnings, and blockers without mutation.
+  Pydantic/schema errors may be HTTP 422.
+- Real apply requires the human approval contract plus `DIRECTPILOT_MODE=live_write`,
+  `approved=true`, valid `idempotency_key`, and `dry_run=false`. Idempotency is
+  based on the material `setAuto` payload; replay with a different payload/key
+  meaning must be rejected before mutation.
+- Fail closed before mutation on incompatible strategy, mixed selectors,
+  ownership mismatch, keyword-scope autotargeting, missing/unknown target reads,
+  sanitized provider errors, or pre-write `LimitedBy`. Never auto-switch strategy
+  to make `setAuto` compatible.
+- After provider apply, DirectPilot must read back the same scope via
+  `keywordbids.get` because `setAuto` does not return calculated bid values.
+  If per-item errors occur, return `applied=false`, `partial_failure=true`. If a
+  post-write large-scope readback is truncated or fails, return `applied=false`,
+  `partial_failure=true`, `readback_failed=true`, and sanitized verification
+  details; do not claim rollback or fabricate bid values.
 
 ### Existing and new bid modifiers (demographic, weather, etc.)
 
