@@ -18,8 +18,8 @@ Never commit `.env`, real OAuth tokens, authorization codes, API keys, cookies, 
 | `YANDEX_CLIENT_SECRET` | Yandex OAuth application | Secret; keep local only. |
 | `YANDEX_OAUTH_TOKEN` | Yandex Direct API v5 and Direct Live v4 | Direct advertising account token. |
 | `YANDEX_REDIRECT_URI` | OAuth redirect | Default: `https://oauth.yandex.ru/verification_code`. |
-| `YANDEX_SEARCH_API_KEY` | Yandex Search API v2 / Wordstat | API key, not an OAuth token. |
-| `YANDEX_SEARCH_FOLDER_ID` | Optional Search API folder | Optional folder ID for Search API v2. |
+| `YANDEX_SEARCH_API_KEY` | Yandex Search API v2 Wordstat and Web Search | API key, not a Direct OAuth token. |
+| `YANDEX_SEARCH_FOLDER_ID` | Search API folder | Required operational prerequisite for `/search/web`; Wordstat may omit it. |
 | `YANDEX_METRIKA_OAUTH_TOKEN` | Yandex Metrika read-only endpoints | Separate token from Direct OAuth. |
 
 ## Official docs
@@ -27,6 +27,8 @@ Never commit `.env`, real OAuth tokens, authorization codes, API keys, cookies, 
 - Yandex Direct API overview: https://yandex.ru/dev/direct/doc/en/concepts/overview
 - Yandex Direct OAuth token docs: https://yandex.ru/dev/direct/doc/en/concepts/auth-token
 - Yandex OAuth authorization code URL: https://yandex.ru/dev/id/doc/en/codes/code-url
+- Search API v2 protobuf contract: https://raw.githubusercontent.com/yandex-cloud/cloudapi/master/yandex/cloud/searchapi/v2/search_service.proto
+- Web Search IAM role: https://github.com/yandex-cloud/docs/blob/master/en/_roles/search-api/webSearch/user.md
 
 If Yandex changes the UI or OAuth flow, prefer the official docs above over this local guide.
 
@@ -87,18 +89,20 @@ Use this when you want the standard code exchange flow.
 
 Keep `YANDEX_AUTH_CODE` and the response private. Authorization codes are also secrets.
 
-## 3. Configure Wordstat / Search API
+## 3. Configure Search API v2 (Wordstat + Web Search)
 
-Wordstat in DirectPilot uses Yandex Search API v2 / AI Studio style credentials, not the Direct OAuth token.
+Wordstat and Web Search in DirectPilot use Yandex Search API v2 credentials, not the Direct OAuth token.
 
 Set:
 
 ```env
 YANDEX_SEARCH_API_KEY=your-search-api-key-here
-YANDEX_SEARCH_FOLDER_ID=optional_folder_id_here
+YANDEX_SEARCH_FOLDER_ID=your-cloud-folder-id-here
 ```
 
-Leave these blank if you only need Direct/Metrika routes and do not need `/wordstat/*` endpoints.
+The key supports both `/wordstat/*` and `/search/web`. The configured folder is an operational prerequisite for `/search/web`; DirectPilot never accepts it from HTTP query/body input. Web Search is read-only but consumes provider quota/billing and requires the IAM role `search-api.webSearch.user` (official role link above). There is no automatic upstream smoke call on startup. Never return or log the API key, folder ID, Authorization header, provider raw XML, or `rawData`.
+
+Leave these blank if you only need Direct/Metrika routes and do not need `/wordstat/*` or `/search/web`.
 
 ## 4. Configure Metrika
 

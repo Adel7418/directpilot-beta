@@ -97,6 +97,10 @@ GET /wordstat/regions-tree                              -> getRegionsTree
 
 Direct API v5 `keywordsresearch` supports only `hasSearchVolume` and `deduplicate`; legacy Wordstat report lifecycle methods are not sent to v5 and return `UNSUPPORTED_IN_V5` in the v5 client. For `dynamics`, date boundaries must match the requested period (`PERIOD_MONTHLY`: first day of month; `PERIOD_WEEKLY`: Monday→Sunday).
 
+## Yandex Search API v2 Web Search
+
+`GET /search/web?query=...&page=0&region=225&limit=10` is a separate read-only Web Search client, not Direct API or Wordstat. It requires both `YANDEX_SEARCH_API_KEY` and the configured `YANDEX_SEARCH_FOLDER_ID`; the folder is never accepted from a caller. The API key supports both Wordstat and Web Search. Web Search consumes provider quota/billing and requires IAM role `search-api.webSearch.user` (https://github.com/yandex-cloud/docs/blob/master/en/_roles/search-api/webSearch/user.md). No automatic upstream smoke call runs at startup; credentials, Authorization, folder ID, XML and `rawData` are never returned or logged.
+
 Limited write adapter implemented but not enabled in current mode:
 
 ```text

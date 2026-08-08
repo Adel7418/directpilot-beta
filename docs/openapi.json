@@ -7829,6 +7829,152 @@
         ],
         "title": "YandexVCardResult",
         "type": "object"
+      },
+      "YandexWebSearchData": {
+        "description": "Safe normalized Web Search data with no provider raw XML envelope.",
+        "properties": {
+          "found": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Found"
+          },
+          "query": {
+            "title": "Query",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/YandexWebSearchItem"
+            },
+            "title": "Results",
+            "type": "array"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "YandexWebSearchData",
+        "type": "object"
+      },
+      "YandexWebSearchErrorDetail": {
+        "description": "Stable, redacted error detail for the Web Search endpoint.",
+        "properties": {
+          "code": {
+            "enum": [
+              "yandex_search_web_not_configured",
+              "yandex_search_web_upstream_error"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "YandexWebSearchErrorDetail",
+        "type": "object"
+      },
+      "YandexWebSearchErrorResponse": {
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/YandexWebSearchErrorDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "YandexWebSearchErrorResponse",
+        "type": "object"
+      },
+      "YandexWebSearchItem": {
+        "description": "One normalized document from Yandex Search API v2 Web Search.",
+        "properties": {
+          "domain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Domain"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "passages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Passages",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "url"
+        ],
+        "title": "YandexWebSearchItem",
+        "type": "object"
+      },
+      "YandexWebSearchResponse": {
+        "description": "Read-only response envelope for ``GET /search/web``.",
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/YandexWebSearchData"
+          },
+          "live": {
+            "const": true,
+            "default": true,
+            "title": "Live",
+            "type": "boolean"
+          },
+          "ok": {
+            "const": true,
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "source": {
+            "const": "yandex_search_api",
+            "default": "yandex_search_api",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "YandexWebSearchResponse",
+        "type": "object"
       }
     }
   },
@@ -9272,6 +9418,103 @@
           }
         },
         "summary": "Report Summary"
+      }
+    },
+    "/search/web": {
+      "get": {
+        "description": "Read-only Yandex Search API v2 Web Search; provider quota may apply.",
+        "operationId": "yandex_web_search_search_web_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "required": true,
+            "schema": {
+              "maxLength": 400,
+              "minLength": 1,
+              "title": "Query",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "region",
+            "required": false,
+            "schema": {
+              "default": "225",
+              "maxLength": 100,
+              "minLength": 1,
+              "title": "Region",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 10,
+              "maximum": 20,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexWebSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexWebSearchErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Search API Web Search upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexWebSearchErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Search API Web Search is not configured"
+          }
+        },
+        "summary": "Yandex Web Search"
       }
     },
     "/semantic-changes/{package_id}/apply": {
