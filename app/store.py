@@ -151,6 +151,52 @@ def _keyword_bids_set_auto_read_limit(payload: KeywordBidsSetAutoRequest) -> int
     return _KEYWORD_BIDS_MAX_PAGE_LIMIT
 
 
+def _keyword_bids_set_auto_window_blockers(
+    campaign_id: str,
+    payload: KeywordBidsSetAutoRequest,
+    result: KeywordBidsGetResult,
+    *,
+    require_keyword_coverage: bool = False,
+) -> list[str]:
+    """Fail closed when a bounded KeywordBids result cannot verify setAuto scope."""
+
+    if payload.scope != "keyword":
+        return (
+            ["setAuto scope exceeds the safely verifiable KeywordBids result window; operation is blocked"]
+            if result.limited_by is not None
+            else []
+        )
+    if result.limited_by is None and not require_keyword_coverage:
+        return []
+
+    requested_keyword_ids = set(payload.keyword_ids or [])
+    items_by_keyword_id: dict[int, list[Any]] = {}
+    for item in result.items:
+        if item.keyword_id in requested_keyword_ids:
+            items_by_keyword_id.setdefault(item.keyword_id, []).append(item)
+
+    missing_keyword_ids = sorted(requested_keyword_ids - set(items_by_keyword_id))
+    if missing_keyword_ids:
+        return [f"setAuto readback does not contain requested keyword IDs: {missing_keyword_ids}"]
+
+    expected_campaign_id = _as_int_or_none(campaign_id)
+    if expected_campaign_id is None:
+        return [
+            f"setAuto ownership could not be verified for keyword IDs: {sorted(requested_keyword_ids)}"
+        ]
+
+    unverified_keyword_ids = sorted(
+        keyword_id
+        for keyword_id, matching_items in items_by_keyword_id.items()
+        if len(matching_items) != 1 or matching_items[0].campaign_id != expected_campaign_id
+    )
+    if unverified_keyword_ids:
+        return [
+            f"setAuto ownership could not be verified for keyword IDs: {unverified_keyword_ids}"
+        ]
+    return []
+
+
 def _as_int_or_none(value: Any) -> int | None:
     try:
         return int(value) if value is not None else None
@@ -6386,11 +6432,13 @@ class MockStore:
             keyword_ids=keyword_ids,
             limit=affected_limit,
         )
-        if affected.limited_by is not None:
-            blockers = [
-                "setAuto scope exceeds the safely verifiable KeywordBids result window; operation is blocked"
-            ]
-        else:
+        blockers = _keyword_bids_set_auto_window_blockers(
+            campaign_id,
+            payload,
+            affected,
+            require_keyword_coverage=True,
+        )
+        if not blockers:
             blockers = validate_keyword_bids_set_auto_strategy(campaign, payload.rule_type)
             blockers.extend(
                 self._set_auto_ownership_blockers(
@@ -6474,11 +6522,21 @@ class MockStore:
                     limit=affected_limit,
                     campaign_strategy=campaign,
                 )
-                if readback.limited_by is not None:
+                verification_blockers = _keyword_bids_set_auto_window_blockers(
+                    campaign_id,
+                    payload,
+                    readback,
+                    require_keyword_coverage=True,
+                )
+                if verification_blockers:
                     readback = None
                     readback_failed = True
                     partial_failure = True
-                    verification_error = "keywordbids.get readback was truncated after provider write"
+                    verification_error = (
+                        verification_blockers[0]
+                        if payload.scope == "keyword"
+                        else "keywordbids.get readback was truncated after provider write"
+                    )
             except Exception:
                 readback_failed = True
                 partial_failure = True

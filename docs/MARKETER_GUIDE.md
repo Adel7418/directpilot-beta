@@ -214,12 +214,19 @@ Fail-closed safety notes:
 
 - Schema validation can return HTTP 422 before business logic.
 - Incompatible strategy, mixed selectors, ownership mismatch, keyword-scope
-  autotargeting, missing targets, or pre-write `LimitedBy` returns a blocked
-  non-mutating response.
-- Large scopes are allowed up to 10,000 keyword IDs, but pre-write truncated
-  reads block before mutation. If truncation/failure appears only after a real
-  write, DirectPilot reports `applied=false`, `partial_failure=true`, and
-  `readback_failed=true` instead of pretending success.
+  autotargeting, or missing targets returns a blocked non-mutating response.
+- Pre-write `campaign` and `ad_group` scopes remain fail-closed on any
+  `LimitedBy`/truncation. A `keyword` scope is verifiable only when every
+  requested `KeywordId` appears exactly once and each row's `CampaignId` matches
+  the campaign in the URL; when those checks pass, `LimitedBy` alone does not
+  block. Missing IDs return `setAuto readback does not contain requested keyword
+  IDs: [...]`; duplicate, mismatched, or otherwise unverifiable IDs return
+  `setAuto ownership could not be verified for keyword IDs: [...]`.
+- Post-write keyword readback enforces the same complete, exactly-once ownership
+  check even without `LimitedBy`. A failed or unverifiable keyword readback, or
+  a truncated broad (`campaign`/`ad_group`) readback, returns `applied=false`,
+  `partial_failure=true`, and `readback_failed=true` with a concrete sanitized
+  verification error instead of pretending success.
 - Provider errors and warnings are sanitized; do not expect raw Yandex envelopes
   or token-bearing diagnostics in responses.
 

@@ -254,14 +254,22 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
   meaning must be rejected before mutation.
 - Fail closed before mutation on incompatible strategy, mixed selectors,
   ownership mismatch, keyword-scope autotargeting, missing/unknown target reads,
-  sanitized provider errors, or pre-write `LimitedBy`. Never auto-switch strategy
-  to make `setAuto` compatible.
-- After provider apply, DirectPilot must read back the same scope via
+  or sanitized provider errors. Never auto-switch strategy to make `setAuto`
+  compatible.
+- Pre-write `campaign` and `ad_group` scopes remain fail-closed on any
+  `LimitedBy`/truncation. A `keyword` scope is verifiable only when every
+  requested `KeywordId` appears exactly once and each row's `CampaignId` matches
+  the campaign in the URL; when those checks pass, `LimitedBy` alone does not
+  block. Missing IDs return `setAuto readback does not contain requested keyword
+  IDs: [...]`; duplicate, mismatched, or otherwise unverifiable IDs return
+  `setAuto ownership could not be verified for keyword IDs: [...]`.
+- After provider apply, DirectPilot reads back the same scope via
   `keywordbids.get` because `setAuto` does not return calculated bid values.
-  If per-item errors occur, return `applied=false`, `partial_failure=true`. If a
-  post-write large-scope readback is truncated or fails, return `applied=false`,
-  `partial_failure=true`, `readback_failed=true`, and sanitized verification
-  details; do not claim rollback or fabricate bid values.
+  Keyword readback enforces the same complete, exactly-once ownership check even
+  without `LimitedBy`. A failed or unverifiable keyword readback, or a truncated
+  broad (`campaign`/`ad_group`) readback, returns `applied=false`,
+  `partial_failure=true`, `readback_failed=true`, and a concrete sanitized
+  verification error; do not claim rollback or fabricate bid values.
 
 ### Existing and new bid modifiers (demographic, weather, etc.)
 

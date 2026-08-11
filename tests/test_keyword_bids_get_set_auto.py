@@ -311,6 +311,419 @@ def test_set_auto_preview_is_non_mutating_and_blocks_incompatible_strategy() -> 
         _reset_overrides()
 
 
+def test_set_auto_keyword_preview_allows_limited_by_when_requested_id_is_returned() -> None:
+    settings = _settings("live_readonly")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "get":
+                return httpx.Response(
+                    200,
+                    json=_keyword_bids_response(limited_by=1),
+                    request=request,
+                )
+            pytest.fail("setAuto must not be called for a dry-run preview")
+        if "/campaigns" in str(request.url):
+            assert body["method"] == "get"
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(200, json=_keywords_response(), request=request)
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 80,
+                    "increase_percent": 0,
+                    "bid_ceiling_rub": 2_000,
+                },
+                "dry_run": True,
+                "approved": False,
+                "idempotency_key": "limitedby-keyword-preview-1",
+                "reason": "Preview a single returned keyword.",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["blocked"] is False
+        assert data["applied"] is False
+        assert [item["keyword_id"] for item in data["affected_items"]] == [10, 11, 12]
+        assert calls["setAuto"] == 0
+    finally:
+        _reset_overrides()
+
+
+def test_set_auto_keyword_preview_allows_limited_by_when_all_requested_ids_are_returned() -> None:
+    settings = _settings("live_readonly")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "get":
+                assert body["params"]["SelectionCriteria"]["KeywordIds"] == [10, 11]
+                return httpx.Response(
+                    200,
+                    json=_keyword_bids_response(limited_by=2),
+                    request=request,
+                )
+            pytest.fail("setAuto must not be called for a dry-run preview")
+        if "/campaigns" in str(request.url):
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "Keywords": [
+                            {"Id": 10, "CampaignId": 123, "Keyword": "regular phrase"},
+                            {"Id": 11, "CampaignId": 123, "Keyword": "another regular phrase"},
+                        ]
+                    }
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10, 11],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 80,
+                    "bid_ceiling_rub": 2_000,
+                },
+                "dry_run": True,
+                "approved": False,
+                "idempotency_key": "limitedby-keyword-preview-many",
+                "reason": "Preview all returned keywords.",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["blocked"] is False
+        assert data["applied"] is False
+        assert calls["setAuto"] == 0
+    finally:
+        _reset_overrides()
+
+
+def test_set_auto_preview_blocks_missing_keyword_id_without_limited_by_before_provider_write() -> None:
+    settings = _settings("live_write")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "get":
+                assert body["params"]["SelectionCriteria"]["KeywordIds"] == [10, 11]
+                response = _keyword_bids_response()
+                response["result"]["KeywordBids"] = response["result"]["KeywordBids"][:1]
+                return httpx.Response(200, json=response, request=request)
+            pytest.fail("setAuto must not be called when a requested keyword is missing")
+        if "/campaigns" in str(request.url):
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "Keywords": [
+                            {"Id": 10, "CampaignId": 123, "Keyword": "regular phrase"},
+                            {"Id": 11, "CampaignId": 123, "Keyword": "another regular phrase"},
+                        ]
+                    }
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10, 11],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 80,
+                    "bid_ceiling_rub": 2_000,
+                },
+                "dry_run": True,
+                "approved": False,
+                "idempotency_key": "keyword-missing-no-limited-by-preview",
+                "reason": "Block an incomplete unbounded keyword result.",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["dry_run"] is True
+        assert data["blocked"] is True
+        assert data["applied"] is False
+        assert data["blockers"] == ["setAuto readback does not contain requested keyword IDs: [11]"]
+        assert calls["setAuto"] == 0
+    finally:
+        _reset_overrides()
+
+
+def test_set_auto_blocks_missing_keyword_id_from_limited_result_before_provider_write() -> None:
+    settings = _settings("live_write")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "get":
+                response = _keyword_bids_response(limited_by=2)
+                response["result"]["KeywordBids"] = response["result"]["KeywordBids"][:1]
+                return httpx.Response(200, json=response, request=request)
+            pytest.fail("setAuto must not be called when a requested keyword is missing")
+        if "/campaigns" in str(request.url):
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "Keywords": [
+                            {"Id": 10, "CampaignId": 123, "Keyword": "regular phrase"},
+                            {"Id": 11, "CampaignId": 123, "Keyword": "another regular phrase"},
+                        ]
+                    }
+                },
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10, 11],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 80,
+                    "bid_ceiling_rub": 2_000,
+                },
+                "dry_run": False,
+                "approved": True,
+                "idempotency_key": "limitedby-keyword-missing-prewrite",
+                "reason": "Block an incomplete keyword result.",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["blocked"] is True
+        assert data["blockers"] == ["setAuto readback does not contain requested keyword IDs: [11]"]
+        assert calls["setAuto"] == 0
+    finally:
+        _reset_overrides()
+
+
+def test_set_auto_blocks_limited_keyword_result_with_unverified_ownership_before_provider_write() -> None:
+    settings = _settings("live_write")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "get":
+                response = _keyword_bids_response(limited_by=1)
+                response["result"]["KeywordBids"] = response["result"]["KeywordBids"][:1]
+                response["result"]["KeywordBids"][0]["CampaignId"] = 999
+                return httpx.Response(200, json=response, request=request)
+            pytest.fail("setAuto must not be called when ownership is unverified")
+        if "/campaigns" in str(request.url):
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(200, json=_keywords_response(), request=request)
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 80,
+                    "bid_ceiling_rub": 2_000,
+                },
+                "dry_run": False,
+                "approved": True,
+                "idempotency_key": "limitedby-keyword-ownership-prewrite",
+                "reason": "Block unverified keyword ownership.",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["blocked"] is True
+        assert data["blockers"] == ["setAuto ownership could not be verified for keyword IDs: [10]"]
+        assert calls["setAuto"] == 0
+    finally:
+        _reset_overrides()
+
+
+def test_set_auto_apply_accepts_complete_limited_keyword_readback() -> None:
+    settings = _settings("live_write")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/campaigns" in str(request.url):
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(200, json=_keywords_response(), request=request)
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "setAuto":
+                return httpx.Response(
+                    200,
+                    json={"result": {"SetAutoResults": [{"KeywordId": 10}]}},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json=_keyword_bids_response(limited_by=1),
+                request=request,
+            )
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 75,
+                    "bid_ceiling_rub": 12.5,
+                },
+                "dry_run": False,
+                "approved": True,
+                "idempotency_key": "limitedby-keyword-complete-readback",
+                "reason": "Apply only after complete keyword readback.",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["applied"] is True
+        assert data["partial_failure"] is False
+        assert data["readback_failed"] is False
+        assert data["readback"]["items"][0]["keyword_id"] == 10
+        assert calls["setAuto"] == 1
+        assert calls["get"] == 2
+    finally:
+        _reset_overrides()
+
+
+def test_set_auto_reports_missing_keyword_from_post_write_readback() -> None:
+    settings = _settings("live_write")
+    calls: Counter[str] = Counter()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if "/campaigns" in str(request.url):
+            return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/keywords" in str(request.url):
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "Keywords": [
+                            {"Id": 10, "CampaignId": 123, "Keyword": "regular phrase"},
+                            {"Id": 11, "CampaignId": 123, "Keyword": "another regular phrase"},
+                        ]
+                    }
+                },
+                request=request,
+            )
+        if "/keywordbids" in str(request.url):
+            calls[body["method"]] += 1
+            if body["method"] == "setAuto":
+                return httpx.Response(
+                    200,
+                    json={
+                        "result": {
+                            "SetAutoResults": [{"KeywordId": 10}, {"KeywordId": 11}]
+                        }
+                    },
+                    request=request,
+                )
+            response = _keyword_bids_response()
+            if calls["get"] == 2:
+                response["result"]["KeywordBids"] = response["result"]["KeywordBids"][:1]
+            return httpx.Response(200, json=response, request=request)
+        raise AssertionError(f"Unexpected request {request.url}")
+
+    app.dependency_overrides[get_settings] = lambda: settings
+    app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
+    try:
+        response = client.post(
+            f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto",
+            json={
+                "scope": "keyword",
+                "keyword_ids": [10, 11],
+                "rule": {
+                    "type": "search_by_traffic_volume",
+                    "target_traffic_volume": 75,
+                    "bid_ceiling_rub": 12.5,
+                },
+                "dry_run": False,
+                "approved": True,
+                "idempotency_key": "keyword-missing-post-write-readback",
+                "reason": "Verify every requested keyword after provider write.",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["applied"] is False
+        assert data["partial_failure"] is True
+        assert data["readback_failed"] is True
+        assert data["readback"] is None
+        assert data["verification_error"] == "setAuto readback does not contain requested keyword IDs: [11]"
+        assert calls["setAuto"] == 1
+    finally:
+        _reset_overrides()
+
+
 def test_set_auto_apply_is_gated_idempotent_and_reads_back_keywordbids() -> None:
     settings = _settings("live_write")
     calls: Counter[str] = Counter()
@@ -465,7 +878,7 @@ def test_set_auto_keyword_preview_uses_one_page_for_more_than_1000_keyword_ids()
         response = client.post(f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto", json=body)
         assert response.status_code == 200, response.text
         data = response.json()
-        assert data["blocked"] is False
+        assert data["blocked"] is True
         assert data["applied"] is False
         assert pages == [{"Limit": len(keyword_ids), "Offset": 0}]
         assert calls["setAuto"] == 0
@@ -518,7 +931,7 @@ def test_set_auto_apply_blocks_truncated_campaign_preview_before_provider_write(
         _reset_overrides()
 
 
-def test_set_auto_reports_truncated_readback_as_unverified_after_provider_write() -> None:
+def test_set_auto_reports_truncated_ad_group_readback_as_unverified_after_provider_write() -> None:
     settings = _settings("live_write")
     calls: Counter[str] = Counter()
     pages: list[dict] = []
@@ -527,6 +940,12 @@ def test_set_auto_reports_truncated_readback_as_unverified_after_provider_write(
         body = json.loads(request.content)
         if "/campaigns" in str(request.url):
             return httpx.Response(200, json=_strategy_response(), request=request)
+        if "/adgroups" in str(request.url):
+            return httpx.Response(
+                200,
+                json={"result": {"AdGroups": [{"Id": 20, "CampaignId": 123}]}},
+                request=request,
+            )
         if "/keywords" in str(request.url):
             return httpx.Response(200, json=_keywords_response(), request=request)
         if "/keywordbids" in str(request.url):
@@ -534,7 +953,7 @@ def test_set_auto_reports_truncated_readback_as_unverified_after_provider_write(
             if body["method"] == "setAuto":
                 return httpx.Response(
                     200,
-                    json={"result": {"SetAutoResults": [{"KeywordId": 10}]}},
+                    json={"result": {"SetAutoResults": [{"AdGroupId": 20}]}},
                     request=request,
                 )
             pages.append(body["params"]["Page"])
@@ -550,12 +969,12 @@ def test_set_auto_reports_truncated_readback_as_unverified_after_provider_write(
     app.dependency_overrides[get_settings] = lambda: settings
     app.dependency_overrides[get_yandex_client] = lambda: _direct_client(settings, handler)
     body = {
-        "scope": "keyword",
-        "keyword_ids": [10],
+        "scope": "ad_group",
+        "ad_group_ids": [20],
         "rule": {"type": "search_by_traffic_volume", "target_traffic_volume": 75, "bid_ceiling_rub": 12.5},
         "dry_run": False,
         "approved": True,
-        "idempotency_key": "set-auto-truncated-readback-001",
+        "idempotency_key": "set-auto-truncated-ad-group-readback-001",
     }
     try:
         response = client.post(f"/yandex/campaigns/{CAMPAIGN_ID}/keyword-bids/set-auto", json=body)
@@ -566,7 +985,7 @@ def test_set_auto_reports_truncated_readback_as_unverified_after_provider_write(
         assert data["readback_failed"] is True
         assert data["readback"] is None
         assert data["verification_error"] == "keywordbids.get readback was truncated after provider write"
-        assert pages == [{"Limit": 1, "Offset": 0}, {"Limit": 1, "Offset": 0}]
+        assert pages == [{"Limit": 10_000, "Offset": 0}, {"Limit": 10_000, "Offset": 0}]
         assert calls["setAuto"] == 1
     finally:
         _reset_overrides()
