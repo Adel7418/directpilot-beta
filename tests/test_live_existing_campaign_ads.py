@@ -88,8 +88,8 @@ def test_ads_moderate_posts_to_v5_ads_with_method_moderate():
     assert "t-secret" not in str(result)
 
 
-def test_ads_get_by_ids_uses_ids_in_selection_criteria():
-    """``ads_get_by_ids`` uses ``SelectionCriteria.Ids`` for targeted read."""
+def test_ads_get_by_ids_preserves_shared_readback_payload():
+    """``ads_get_by_ids`` retains the shared non-migration readback contract."""
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -109,8 +109,54 @@ def test_ads_get_by_ids_uses_ids_in_selection_criteria():
     result = cl.ads_get_by_ids([101])
 
     assert result["ok"] is True
-    assert captured["body"]["params"]["SelectionCriteria"]["Ids"] == [101]
-    assert "TextAdFieldNames" in captured["body"]["params"]
+    assert captured["body"]["params"] == {
+        "SelectionCriteria": {"Ids": [101]},
+        "FieldNames": ["Id", "AdGroupId", "CampaignId", "Status", "State", "Type"],
+        "TextAdFieldNames": [
+            "Title",
+            "Title2",
+            "Text",
+            "Href",
+            "SitelinkSetId",
+            "BusinessId",
+            "PreferVCardOverBusiness",
+        ],
+    }
+
+
+def test_ads_get_by_campaign_and_ids_uses_expanded_migration_payload():
+    """Campaign-scoped URL-migration reads retain their expanded field set."""
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"result": {"Ads": []}})
+
+    cl = _client_with_handler(_settings("live_readonly"), handler)
+    result = cl.ads_get_by_campaign_and_ids(713397771, [101])
+
+    assert result["ok"] is True
+    assert captured["body"]["params"] == {
+        "SelectionCriteria": {
+            "CampaignIds": [713397771],
+            "Ids": [101],
+            "Types": ["TEXT_AD"],
+        },
+        "FieldNames": ["Id", "CampaignId", "AdGroupId", "Status", "State", "Type"],
+        "TextAdFieldNames": [
+            "Title",
+            "Title2",
+            "Text",
+            "Href",
+            "DisplayUrlPath",
+            "AdImageHash",
+            "SitelinkSetId",
+            "VCardId",
+            "BusinessId",
+            "PreferVCardOverBusiness",
+            "AdExtensions",
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -3217,3 +3217,128 @@ class BidModifiersUpdateResult(BaseModel):
     )
     yandex_units: int | None = None
     yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Existing-campaign landing URL / sitelink URL migrations
+# ---------------------------------------------------------------------------
+
+
+class _UrlMigrationModel(BaseModel):
+    """Strict request/result base for the live URL-migration surface."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LandingUrlMigrationItem(_UrlMigrationModel):
+    ad_id: int = Field(..., ge=1)
+    expected_href: str = Field(..., min_length=1, max_length=1024)
+    target_href: str = Field(..., min_length=1, max_length=1024)
+
+
+class LandingUrlMigrationRequest(_UrlMigrationModel):
+    """Preview/apply body for existing TEXT_AD landing URL replacements."""
+
+    items: list[LandingUrlMigrationItem] = Field(..., min_length=1, max_length=1000)
+    dry_run: bool = True
+    approved: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=6, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _require_unique_ad_ids(self) -> "LandingUrlMigrationRequest":
+        ad_ids = [item.ad_id for item in self.items]
+        if len(ad_ids) != len(set(ad_ids)):
+            raise ValueError("items must not contain duplicate ad_id values")
+        return self
+
+
+class SitelinkUrlMigrationItem(_UrlMigrationModel):
+    title: str = Field(..., min_length=1, max_length=30)
+    href: str = Field(..., min_length=1, max_length=1024)
+    description: str | None = Field(default=None, max_length=60)
+
+
+class SitelinkUrlMigrationSpec(_UrlMigrationModel):
+    source_sitelink_set_id: int = Field(..., ge=1)
+    expected_items: list[SitelinkUrlMigrationItem] = Field(..., min_length=1, max_length=8)
+    target_items: list[SitelinkUrlMigrationItem] = Field(..., min_length=1, max_length=8)
+
+    @model_validator(mode="after")
+    def _require_one_to_one_target_items(self) -> "SitelinkUrlMigrationSpec":
+        if len(self.expected_items) != len(self.target_items):
+            raise ValueError("expected_items and target_items must have the same length")
+        return self
+
+
+class SitelinkUrlMigrationRequest(SitelinkUrlMigrationSpec):
+    """Clone-only migration body for one existing sitelink set."""
+
+    dry_run: bool = True
+    approved: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=6, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class LandingUrlMigrationsRequest(_UrlMigrationModel):
+    """Unified, non-transactional landing URL plus sitelink migration body."""
+
+    ad_items: list[LandingUrlMigrationItem] = Field(..., min_length=1, max_length=1000)
+    sitelink_migration: SitelinkUrlMigrationSpec
+    dry_run: bool = True
+    approved: bool = False
+    idempotency_key: str | None = Field(default=None, min_length=6, max_length=200)
+    reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def _require_unique_ad_ids(self) -> "LandingUrlMigrationsRequest":
+        ad_ids = [item.ad_id for item in self.ad_items]
+        if len(ad_ids) != len(set(ad_ids)):
+            raise ValueError("ad_items must not contain duplicate ad_id values")
+        return self
+
+
+class UrlMigrationProviderIssue(_UrlMigrationModel):
+    code: int | str | None = None
+    message: str
+
+
+class UrlMigrationProviderItemResult(_UrlMigrationModel):
+    input_id: int | str | None = None
+    success: bool = False
+    warnings: list[UrlMigrationProviderIssue] = Field(default_factory=list)
+    errors: list[UrlMigrationProviderIssue] = Field(default_factory=list)
+
+
+class UrlMigrationStage(_UrlMigrationModel):
+    name: str
+    state: Literal["preview", "completed", "failed", "partial"]
+    message: str | None = None
+
+
+class UrlMigrationChange(_UrlMigrationModel):
+    entity_type: Literal["ad", "sitelink"]
+    entity_id: str
+    before_href: str
+    after_href: str
+
+
+class UrlMigrationResult(_UrlMigrationModel):
+    campaign_id: str
+    source: Literal["yandex"] = "yandex"
+    mode: str
+    dry_run: bool
+    applied: bool
+    completed: bool
+    partial_failure: bool = False
+    audit_id: str
+    stage: str
+    stages: list[UrlMigrationStage] = Field(default_factory=list)
+    changes: list[UrlMigrationChange] = Field(default_factory=list)
+    payload_preview: dict[str, Any] = Field(default_factory=dict)
+    provider_results: dict[str, list[UrlMigrationProviderItemResult]] = Field(default_factory=dict)
+    readback: list[dict[str, Any]] = Field(default_factory=list)
+    reference_scan: dict[str, Any] | None = None
+    new_sitelink_set_id: int | None = None
+    recovery_note: str | None = None
+    yandex_units: int | None = None

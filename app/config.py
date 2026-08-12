@@ -20,6 +20,9 @@ class Settings(BaseSettings):
         default="live_readonly",
         pattern="^(mock|sandbox|live_readonly|live_write)$",
     )
+    # Comma-separated hostname allowlist for existing-campaign landing URL
+    # migrations. An empty list intentionally fails closed before URL fetches.
+    url_migration_allowed_hosts: str = ""
     yandex_client_id: str | None = None
     yandex_client_secret: str | None = None
     yandex_oauth_token: str | None = None

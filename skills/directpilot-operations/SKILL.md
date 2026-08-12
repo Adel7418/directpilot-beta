@@ -364,6 +364,30 @@ Safety:
 - Custom params supported but never override core five UTM params.
 - Sitelink apply uses `sitelinks.update` through DirectPilot gates; fail closed on provider errors and do not report success without readback.
 
+### Existing-campaign landing URL migration
+
+Use the dedicated DirectPilot routes; do not issue raw Direct writes:
+
+- `POST /yandex/campaigns/{campaign_id}/ads/landing-urls` — migrate existing `TEXT_AD` hrefs using per-ad `expected_href` and `target_href`.
+- `POST /yandex/campaigns/{campaign_id}/sitelinks/migrate-urls` — migrate one source sitelink set using exact `expected_items` and `target_items`.
+- `POST /yandex/campaigns/{campaign_id}/landing-url-migrations` — combined ad + sitelink migration. It is non-transactional.
+
+Required sequence:
+1. Read current state and send `dry_run=true` (the default). No provider write is allowed in preview.
+2. Inspect `changes`, `payload_preview`, and the account-wide `reference_scan`; show the exact diff to the user.
+3. Obtain explicit user approval for that diff.
+4. Operator applies only with `DIRECTPILOT_MODE=live_write`, `approved=true`, `dry_run=false`, and a non-empty `idempotency_key` (minimum 6 characters).
+5. Require successful per-item `provider_results` and `readback`; treat `partial_failure=true` or `completed=false` as not applied.
+
+Safety invariants:
+- `expected_href`/`expected_items` are optimistic-concurrency snapshots; mismatch fails closed before provider writes.
+- Only route-owned `TEXT_AD` rows are updated.
+- Every target must be HTTPS, use a host in `DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS`, resolve only to public addresses, survive bounded same-host redirects, return 2xx, and contain a requested fragment anchor. An empty allowlist fails closed.
+- Sitelinks are cloned with documented `sitelinks.add`, verified, then reattached with `ads.update`. Never use `sitelinks.update` or delete the source set in this workflow.
+- The full account is scanned for references. Only references in the route campaign are reattached; other campaigns stay on the source set.
+- Provider item errors or readback mismatch produce `partial_failure`; do a new read/preflight and never blind-retry or blind-rollback.
+- URL-migration idempotency is currently process-local and does not survive a restart.
+
 ## Verification checklist
 
 - [ ] Tests pass.

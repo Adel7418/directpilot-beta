@@ -56,6 +56,8 @@ confirmation.  No agent self-approves.
 
 Write-style operations must use idempotency keys so repeated submissions do not duplicate campaign actions. Tests should cover replay behavior when practical.
 
+URL-migration idempotency is currently process-local. After a process restart, treat a repeat as a new operation: run a fresh preflight and obtain fresh explicit approval before applying it.
+
 ## Audit and error handling
 
 Audit logs should record enough context to understand the action without exposing secrets. Error responses must not include OAuth tokens, client secrets, API keys, raw authorization headers, or private account exports.
