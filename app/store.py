@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import ipaddress
 import json
+import socket
 import uuid as _uuid
+from html.parser import HTMLParser
 from itertools import count
 from typing import Any, Iterable, Literal
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
+
+import httpx
 
 from app.config import Settings
 from app.models import (
@@ -93,6 +99,18 @@ from app.models import (
     UtmConfig,
     UtmPlanRequest,
     UtmPlanResult,
+    # Existing-campaign URL migrations
+    LandingUrlMigrationItem,
+    LandingUrlMigrationRequest,
+    LandingUrlMigrationsRequest,
+    SitelinkUrlMigrationItem,
+    SitelinkUrlMigrationRequest,
+    SitelinkUrlMigrationSpec,
+    UrlMigrationChange,
+    UrlMigrationProviderIssue,
+    UrlMigrationProviderItemResult,
+    UrlMigrationResult,
+    UrlMigrationStage,
 )
 from app.utm_builder import (
     DEFAULT_UTM_PARAMS,
@@ -106,6 +124,80 @@ from app.yandex_facade import mock_yandex
 
 
 _KEYWORD_BIDS_MAX_PAGE_LIMIT = 10_000
+_URL_MIGRATION_MAX_REDIRECTS = 3
+_URL_MIGRATION_BATCH_SIZE = 1_000
+_URL_MIGRATION_AUDIT_FIELDS = (
+    "Title",
+    "Title2",
+    "Text",
+    "DisplayUrlPath",
+    "AdImageHash",
+    "VCardId",
+    "BusinessId",
+    "PreferVCardOverBusiness",
+    "AdExtensions",
+)
+
+
+class _MigrationAnchorParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.ids: set[str] = set()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        _ = tag
+        for name, value in attrs:
+            if name.lower() == "id" and value:
+                self.ids.add(str(value))
+
+
+def _url_migration_normalize_host(value: str) -> str:
+    host = value.strip().rstrip(".")
+    if not host:
+        raise ValueError("URL host is required")
+    try:
+        return host.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError("URL host cannot be normalized safely") from exc
+
+
+def _url_migration_is_public_ip(value: str) -> bool:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return not any(
+        (
+            address.is_private,
+            address.is_loopback,
+            address.is_link_local,
+            address.is_reserved,
+            address.is_multicast,
+            address.is_unspecified,
+        )
+    )
+
+
+def _url_migration_chunks(items: list[int]) -> Iterable[list[int]]:
+    for index in range(0, len(items), _URL_MIGRATION_BATCH_SIZE):
+        yield items[index : index + _URL_MIGRATION_BATCH_SIZE]
+
+
+def _url_migration_safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _url_migration_redacted_issue(raw: Any, *, kind: str) -> UrlMigrationProviderIssue:
+    code = raw.get("Code") if isinstance(raw, dict) else None
+    if not isinstance(code, (int, str)):
+        code = None
+    return UrlMigrationProviderIssue(code=code, message=f"Provider {kind}")
 
 
 def _normalize_phrase(value: str) -> str:
@@ -4808,6 +4900,858 @@ class MockStore:
         )
         self.semantic_apply_results_by_key[cache_key] = result
         return result
+
+    # ------------------------------------------------------------------
+    # Existing-campaign landing URL / sitelink URL migrations
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _url_migration_allowed_hosts(settings: Settings) -> set[str]:
+        configured = [
+            item.strip()
+            for item in settings.url_migration_allowed_hosts.split(",")
+            if item.strip()
+        ]
+        if not configured:
+            raise ValueError(
+                "DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS is empty; target URL validation fails closed"
+            )
+        return {_url_migration_normalize_host(item) for item in configured}
+
+    def _url_migration_resolve_public_host(self, host: str, port: int | None) -> None:
+        resolver = getattr(self, "_url_migration_dns_resolver", None)
+        if resolver is None:
+            try:
+                resolved: Any = socket.getaddrinfo(host, port or 443, type=socket.SOCK_STREAM)
+            except OSError as exc:
+                raise ValueError("Target URL host could not be resolved") from exc
+        else:
+            resolved = resolver(host, port or 443)
+
+        addresses: list[str] = []
+        for entry in resolved or []:
+            if isinstance(entry, str):
+                addresses.append(entry)
+            elif isinstance(entry, tuple) and len(entry) >= 5 and isinstance(entry[4], tuple):
+                addresses.append(str(entry[4][0]))
+            elif isinstance(entry, dict) and isinstance(entry.get("address"), str):
+                addresses.append(entry["address"])
+        if not addresses or any(not _url_migration_is_public_ip(value) for value in addresses):
+            raise ValueError("Target URL host must resolve only to public IP addresses")
+
+    def _url_migration_fetch(self, url: str) -> httpx.Response:
+        getter = getattr(self, "_url_migration_http_fetcher", None)
+        try:
+            if getter is not None:
+                return getter(url)
+            with httpx.Client(timeout=5.0, follow_redirects=False, trust_env=False) as http_client:
+                return http_client.get(url, headers={"User-Agent": "DirectPilot-URL-Validator/1.0"})
+        except httpx.HTTPError as exc:
+            raise ValueError("Target URL could not be fetched safely") from exc
+
+    @staticmethod
+    def _url_migration_parse_url(url: str, allowed_hosts: set[str]) -> tuple[Any, str, int | None]:
+        if not url or len(url) > 1024 or any(ord(char) < 32 or ord(char) == 127 for char in url):
+            raise ValueError("Target URL is malformed")
+        try:
+            parts = urlsplit(url)
+            port = parts.port
+        except ValueError as exc:
+            raise ValueError("Target URL is malformed") from exc
+        if parts.scheme.lower() != "https" or not parts.hostname:
+            raise ValueError("Target URL must use HTTPS and include a host")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("Target URL must not include credentials")
+        if "?" in parts.fragment:
+            raise ValueError("Target URL query parameters must precede fragment")
+        normalized_host = _url_migration_normalize_host(parts.hostname)
+        if normalized_host not in allowed_hosts:
+            raise ValueError(
+                "Target URL host is not in the configured allowlist "
+                "(DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS)"
+            )
+        return parts, normalized_host, port
+
+    def _validate_url_migration_target(
+        self,
+        url: str,
+        *,
+        settings: Settings,
+        require_anchor: bool,
+    ) -> dict[str, str]:
+        """Validate one public HTTPS target without serializing it differently."""
+        allowed_hosts = self._url_migration_allowed_hosts(settings)
+        initial_parts, expected_host, _ = self._url_migration_parse_url(url, allowed_hosts)
+        requested_anchor = unquote(initial_parts.fragment)
+        current_url = url
+
+        for redirect_index in range(_URL_MIGRATION_MAX_REDIRECTS + 1):
+            parts, current_host, port = self._url_migration_parse_url(current_url, allowed_hosts)
+            if current_host != expected_host:
+                raise ValueError("Target URL redirect changed to an unexpected host")
+            self._url_migration_resolve_public_host(current_host, port)
+            request_url = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+            response = self._url_migration_fetch(request_url)
+            status_code = int(response.status_code)
+            if 300 <= status_code < 400:
+                location = response.headers.get("location")
+                if not location or redirect_index >= _URL_MIGRATION_MAX_REDIRECTS:
+                    raise ValueError("Target URL redirect chain is unsafe or exceeds the limit")
+                current_url = urljoin(request_url, location)
+                continue
+            if not 200 <= status_code < 300:
+                raise ValueError("Target URL did not return a successful public HTTP response")
+            if require_anchor and requested_anchor:
+                parser = _MigrationAnchorParser()
+                parser.feed(response.text)
+                if requested_anchor not in parser.ids:
+                    raise ValueError("Target URL does not contain the requested fragment anchor")
+            return {
+                "submitted_href": url,
+                "normalized_host": expected_host,
+                "final_href": current_url,
+            }
+        raise ValueError("Target URL redirect chain is unsafe")
+
+    @staticmethod
+    def _url_migration_provider_results(
+        response: dict[str, Any],
+        *,
+        result_name: str,
+        input_ids: Iterable[int | str],
+    ) -> list[UrlMigrationProviderItemResult]:
+        item_ids = list(input_ids)
+        if not response.get("ok"):
+            raw_error = response.get("error") or {}
+            code = raw_error.get("error_code") if isinstance(raw_error, dict) else None
+            return [
+                UrlMigrationProviderItemResult(
+                    input_id=input_id,
+                    errors=[UrlMigrationProviderIssue(code=code, message="Provider request failed")],
+                )
+                for input_id in item_ids
+            ]
+        result = response.get("result") or {}
+        raw_items = result.get(result_name) if isinstance(result, dict) else None
+        if not isinstance(raw_items, list):
+            raw_items = []
+        parsed: list[UrlMigrationProviderItemResult] = []
+        for index, input_id in enumerate(item_ids):
+            raw_item = raw_items[index] if index < len(raw_items) and isinstance(raw_items[index], dict) else None
+            if raw_item is None:
+                parsed.append(
+                    UrlMigrationProviderItemResult(
+                        input_id=input_id,
+                        errors=[UrlMigrationProviderIssue(message="Provider item result is missing")],
+                    )
+                )
+                continue
+            warnings = [
+                _url_migration_redacted_issue(item, kind="warning")
+                for item in (raw_item.get("Warnings") or [])
+            ]
+            errors = [
+                _url_migration_redacted_issue(item, kind="error")
+                for item in (raw_item.get("Errors") or [])
+            ]
+            returned_id = _url_migration_safe_int(raw_item.get("Id"))
+            id_matches = returned_id is not None if input_id == "clone" else str(returned_id) == str(input_id)
+            if not errors and not id_matches:
+                errors.append(UrlMigrationProviderIssue(message="Provider item result has an unexpected ID"))
+            parsed.append(
+                UrlMigrationProviderItemResult(
+                    input_id=input_id,
+                    success=not errors,
+                    warnings=warnings,
+                    errors=errors,
+                )
+            )
+        for index in range(len(item_ids), len(raw_items)):
+            parsed.append(
+                UrlMigrationProviderItemResult(
+                    input_id=f"unexpected:{index}",
+                    errors=[UrlMigrationProviderIssue(message="Provider returned an unexpected item result")],
+                )
+            )
+        return parsed
+
+    @staticmethod
+    def _url_migration_sitelink_payload(items: list[SitelinkUrlMigrationItem]) -> list[dict[str, Any]]:
+        payload: list[dict[str, Any]] = []
+        for item in items:
+            link = {"Title": item.title, "Href": item.href}
+            if item.description is not None:
+                link["Description"] = item.description
+            payload.append(link)
+        return payload
+
+    @staticmethod
+    def _url_migration_sitelink_signature(items: list[dict[str, Any]]) -> list[dict[str, str | None]]:
+        signature: list[dict[str, str | None]] = []
+        for item in items:
+            title = item.get("Title")
+            href = item.get("Href")
+            description = item.get("Description")
+            if not isinstance(title, str) or not isinstance(href, str):
+                raise ValueError("Sitelink set has an invalid documented item shape")
+            if description is not None and not isinstance(description, str):
+                raise ValueError("Sitelink set has an invalid documented item shape")
+            signature.append({"title": title, "href": href, "description": description})
+        return signature
+
+    def _url_migration_read_sitelink_set(
+        self,
+        client: YandexDirectClient,
+        source_sitelink_set_id: int,
+    ) -> dict[str, Any]:
+        response = client.sitelinks_get(ids=[source_sitelink_set_id])
+        if not response.get("ok"):
+            raise YandexDirectError("Yandex Direct rejected sitelinks.get during URL migration preflight")
+        result = response.get("result") or {}
+        if not isinstance(result, dict) or result.get("LimitedBy") is not None:
+            raise YandexDirectError("Sitelinks preflight result is limited or malformed")
+        sets = result.get("SitelinksSets") or []
+        matching = [
+            item
+            for item in sets
+            if isinstance(item, dict) and str(item.get("Id")) == str(source_sitelink_set_id)
+        ]
+        if len(matching) != 1:
+            raise YandexDirectError("Sitelink source set was not returned exactly once")
+        return matching[0]
+
+    def _url_migration_scan_sitelink_references(
+        self,
+        client: YandexDirectClient,
+        source_sitelink_set_id: int,
+    ) -> list[dict[str, Any]]:
+        campaigns_response = client.campaigns_get()
+        if not isinstance(campaigns_response, dict):
+            raise YandexDirectError("Sitelink reference campaign inventory returned an invalid result")
+        if not campaigns_response.get("ok"):
+            error = campaigns_response.get("error")
+            if not isinstance(error, dict):
+                error = {}
+            diagnostics: dict[str, Any] = {
+                "provider": "yandex_direct",
+                "service": "campaigns",
+                "method": "get",
+                "operation": "sitelink_reference_campaign_inventory",
+            }
+            for key in ("error_code", "error_string", "error_detail"):
+                if error.get(key) is not None:
+                    diagnostics[key] = error[key]
+            if campaigns_response.get("units") is not None:
+                diagnostics["units"] = campaigns_response["units"]
+            raise YandexDirectError(
+                "Yandex Direct rejected sitelink reference campaign inventory",
+                diagnostics=diagnostics,
+            )
+        campaigns_result = campaigns_response.get("result")
+        if not isinstance(campaigns_result, dict) or campaigns_result.get("LimitedBy") is not None:
+            raise YandexDirectError("Sitelink reference campaign inventory is limited or malformed")
+        campaigns = campaigns_result.get("Campaigns")
+        if not isinstance(campaigns, list) or not campaigns:
+            raise YandexDirectError("Sitelink reference campaign inventory is empty or malformed")
+        campaign_ids: list[int] = []
+        seen_campaign_ids: set[int] = set()
+        for campaign in campaigns:
+            if not isinstance(campaign, dict):
+                raise YandexDirectError("Sitelink reference campaign inventory is malformed")
+            campaign_id = _url_migration_safe_int(campaign.get("Id"))
+            if campaign_id is None or campaign_id <= 0 or campaign_id in seen_campaign_ids:
+                raise YandexDirectError("Sitelink reference campaign inventory has invalid or duplicate IDs")
+            seen_campaign_ids.add(campaign_id)
+            campaign_ids.append(campaign_id)
+
+        offset = 0
+        cursors: set[int] = set()
+        seen_ids: set[int] = set()
+        references: list[dict[str, Any]] = []
+        while True:
+            response = client.ads_get_by_campaign_ids(
+                campaign_ids,
+                limit=10_000,
+                offset=offset,
+            )
+            if not isinstance(response, dict):
+                raise YandexDirectError("Sitelink reference scan returned an invalid result")
+            if not response.get("ok"):
+                error = response.get("error")
+                if not isinstance(error, dict):
+                    error = {}
+                diagnostics: dict[str, Any] = {
+                    "provider": "yandex_direct",
+                    "service": "ads",
+                    "method": "get",
+                    "operation": "sitelink_reference_scan",
+                }
+                for key in ("error_code", "error_string", "error_detail"):
+                    if error.get(key) is not None:
+                        diagnostics[key] = error[key]
+                if response.get("units") is not None:
+                    diagnostics["units"] = response["units"]
+                raise YandexDirectError(
+                    "Yandex Direct rejected sitelink reference scan",
+                    diagnostics=diagnostics,
+                )
+            result = response.get("result")
+            if not isinstance(result, dict):
+                raise YandexDirectError("Sitelink reference scan returned an invalid result")
+            rows = result.get("Ads")
+            if not isinstance(rows, list):
+                raise YandexDirectError("Sitelink reference scan returned an invalid page")
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise YandexDirectError("Sitelink reference scan returned an invalid ad")
+                text_ad = row.get("TextAd")
+                if not isinstance(text_ad, dict) or str(text_ad.get("SitelinkSetId")) != str(source_sitelink_set_id):
+                    continue
+                ad_id = _url_migration_safe_int(row.get("Id"))
+                if ad_id is None or ad_id in seen_ids:
+                    raise YandexDirectError("Sitelink reference scan is incomplete or contains duplicates")
+                seen_ids.add(ad_id)
+                references.append(
+                    {
+                        "ad_id": ad_id,
+                        "campaign_id": str(row.get("CampaignId") or ""),
+                        "ad_group_id": str(row.get("AdGroupId") or ""),
+                        "type": str(row.get("Type") or ""),
+                        "href": str(text_ad.get("Href") or ""),
+                    }
+                )
+            limited_by = result.get("LimitedBy")
+            if limited_by is None:
+                return references
+            cursor = _url_migration_safe_int(limited_by)
+            if cursor is None or cursor <= offset or cursor in cursors or not rows:
+                raise YandexDirectError("Sitelink reference scan pagination did not make progress")
+            cursors.add(cursor)
+            offset = cursor
+
+    def _url_migration_read_ads(
+        self,
+        client: YandexDirectClient,
+        campaign_id: str,
+        ad_ids: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        observed: dict[int, dict[str, Any]] = {}
+        for batch in _url_migration_chunks(ad_ids):
+            response = client.ads_get_by_campaign_and_ids(campaign_id, batch)
+            if not response.get("ok"):
+                raise YandexDirectError("Yandex Direct rejected campaign-scoped ads.get during URL migration")
+            result = response.get("result") or {}
+            if not isinstance(result, dict) or result.get("LimitedBy") is not None:
+                raise YandexDirectError("Campaign-scoped ads.get result is limited or malformed")
+            rows = result.get("Ads") or []
+            if not isinstance(rows, list):
+                raise YandexDirectError("Campaign-scoped ads.get returned an invalid Ads page")
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                ad_id = _url_migration_safe_int(row.get("Id"))
+                if ad_id is None or ad_id in observed:
+                    raise YandexDirectError("Campaign-scoped ads.get returned duplicate or invalid ad IDs")
+                observed[ad_id] = row
+        if set(observed) != set(ad_ids):
+            raise YandexDirectError("Campaign-scoped ads.get did not return every requested ad")
+        for ad_id in ad_ids:
+            row = observed[ad_id]
+            text_ad = row.get("TextAd")
+            if (
+                str(row.get("CampaignId")) != str(campaign_id)
+                or row.get("Type") != "TEXT_AD"
+                or not isinstance(text_ad, dict)
+                or not isinstance(text_ad.get("Href"), str)
+                or not text_ad.get("Href")
+            ):
+                raise YandexDirectError("Campaign-scoped ad preflight failed ownership, type, or Href checks")
+        return observed
+
+    @staticmethod
+    def _url_migration_update_items(
+        ordered_ad_ids: list[int],
+        live_ads: dict[int, dict[str, Any]],
+        target_hrefs: dict[int, str],
+        attach_ad_ids: set[int],
+        sitelink_set_id: int | str | None,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for ad_id in ordered_ad_ids:
+            text_ad_raw = live_ads[ad_id].get("TextAd")
+            text_ad: dict[str, Any] = text_ad_raw if isinstance(text_ad_raw, dict) else {}
+            update: dict[str, Any] = {"Href": target_hrefs.get(ad_id, str(text_ad.get("Href") or ""))}
+            if ad_id in attach_ad_ids:
+                if sitelink_set_id is None:
+                    raise ValueError("Sitelink attach payload needs a created SitelinkSetId")
+                update["SitelinkSetId"] = sitelink_set_id
+            items.append({"Id": ad_id, "TextAd": update})
+        return items
+
+    @staticmethod
+    def _url_migration_observed_ad(row: dict[str, Any]) -> dict[str, Any]:
+        text_ad_raw = row.get("TextAd")
+        text_ad: dict[str, Any] = text_ad_raw if isinstance(text_ad_raw, dict) else {}
+        return {
+            "ad_id": _url_migration_safe_int(row.get("Id")),
+            "campaign_id": str(row.get("CampaignId") or ""),
+            "type": str(row.get("Type") or ""),
+            "href": text_ad.get("Href"),
+            "sitelink_set_id": _url_migration_safe_int(text_ad.get("SitelinkSetId")),
+        }
+
+    def _url_migration_readback(
+        self,
+        client: YandexDirectClient,
+        campaign_id: str,
+        expectations: dict[int, dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], bool]:
+        try:
+            readback_ads = self._url_migration_read_ads(client, campaign_id, list(expectations))
+        except (YandexDirectError, ValueError):
+            return [], False
+        observed = [self._url_migration_observed_ad(readback_ads[ad_id]) for ad_id in expectations]
+        for ad_id, expectation in expectations.items():
+            before = expectation["before"]
+            after = readback_ads[ad_id]
+            before_text_raw = before.get("TextAd")
+            after_text_raw = after.get("TextAd")
+            before_text: dict[str, Any] = before_text_raw if isinstance(before_text_raw, dict) else {}
+            after_text: dict[str, Any] = after_text_raw if isinstance(after_text_raw, dict) else {}
+            if (
+                str(after.get("CampaignId")) != str(campaign_id)
+                or after.get("Type") != "TEXT_AD"
+                or after_text.get("Href") != expectation["href"]
+                or _url_migration_safe_int(after_text.get("SitelinkSetId"))
+                != expectation["sitelink_set_id"]
+            ):
+                return observed, False
+            if any(before_text.get(field) != after_text.get(field) for field in _URL_MIGRATION_AUDIT_FIELDS):
+                return observed, False
+        return observed, True
+
+    def _url_migration_idempotency(
+        self,
+        *,
+        namespace: str,
+        campaign_id: str,
+        key: str,
+        fingerprint: str,
+    ) -> UrlMigrationResult | None:
+        registry = getattr(self, "_url_migration_results_by_key", None)
+        if registry is None:
+            registry = {}
+            self._url_migration_results_by_key = registry
+        existing = registry.get(key)
+        if existing is None:
+            return None
+        if existing["namespace"] != namespace:
+            raise ValueError("URL migration idempotency key cannot be reused across migration namespaces")
+        if existing["campaign_id"] != campaign_id or existing["fingerprint"] != fingerprint:
+            raise ValueError("URL migration idempotency key was already used with a different payload")
+        return existing["result"]
+
+    def _store_url_migration_idempotency(
+        self,
+        *,
+        namespace: str,
+        campaign_id: str,
+        key: str,
+        fingerprint: str,
+        result: UrlMigrationResult,
+    ) -> None:
+        self._url_migration_results_by_key[key] = {
+            "namespace": namespace,
+            "campaign_id": campaign_id,
+            "fingerprint": fingerprint,
+            "result": result,
+        }
+
+    def yandex_ads_landing_urls(
+        self,
+        campaign_id: str,
+        payload: LandingUrlMigrationRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> UrlMigrationResult:
+        return self._execute_url_migration(
+            campaign_id,
+            namespace="landing_urls",
+            payload=payload,
+            ad_items=payload.items,
+            sitelink_spec=None,
+            settings=settings,
+            client=client,
+        )
+
+    def yandex_sitelinks_migrate_urls(
+        self,
+        campaign_id: str,
+        payload: SitelinkUrlMigrationRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> UrlMigrationResult:
+        return self._execute_url_migration(
+            campaign_id,
+            namespace="sitelink_urls",
+            payload=payload,
+            ad_items=[],
+            sitelink_spec=SitelinkUrlMigrationSpec(
+                source_sitelink_set_id=payload.source_sitelink_set_id,
+                expected_items=payload.expected_items,
+                target_items=payload.target_items,
+            ),
+            settings=settings,
+            client=client,
+        )
+
+    def yandex_landing_url_migrations(
+        self,
+        campaign_id: str,
+        payload: LandingUrlMigrationsRequest,
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> UrlMigrationResult:
+        return self._execute_url_migration(
+            campaign_id,
+            namespace="unified_landing_url_migrations",
+            payload=payload,
+            ad_items=payload.ad_items,
+            sitelink_spec=payload.sitelink_migration,
+            settings=settings,
+            client=client,
+        )
+
+    def _execute_url_migration(
+        self,
+        campaign_id: str,
+        *,
+        namespace: str,
+        payload: Any,
+        ad_items: list[LandingUrlMigrationItem],
+        sitelink_spec: SitelinkUrlMigrationSpec | None,
+        settings: Settings | None,
+        client: YandexDirectClient | None,
+    ) -> UrlMigrationResult:
+        """Run the documented, non-transactional URL migration state machine."""
+        if settings is None:
+            raise YandexDirectError("Settings are required for URL migration safety checks")
+        mode = settings.directpilot_mode
+        if not payload.dry_run:
+            if not payload.approved:
+                raise ValueError("URL migration apply requires explicit approval")
+            if not payload.idempotency_key or not payload.idempotency_key.strip():
+                raise ValueError("URL migration apply requires a non-empty idempotency_key")
+            if mode != "live_write":
+                raise YandexDirectError(
+                    f"Live writes require DIRECTPILOT_MODE=live_write; current mode is {mode!r}"
+                )
+        if client is None:
+            raise YandexDirectError("YandexDirectClient is required for URL migration preflight")
+
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"campaign_id": str(campaign_id), "payload": payload.model_dump(mode="json")},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if not payload.dry_run:
+            cached = self._url_migration_idempotency(
+                namespace=namespace,
+                campaign_id=str(campaign_id),
+                key=payload.idempotency_key,
+                fingerprint=fingerprint,
+            )
+            if cached is not None:
+                return cached
+
+        stages: list[UrlMigrationStage] = []
+        provider_results: dict[str, list[UrlMigrationProviderItemResult]] = {}
+        changes: list[UrlMigrationChange] = []
+        reference_scan: dict[str, Any] | None = None
+        new_sitelink_set_id: int | None = None
+        recovery_note: str | None = None
+
+        def finalize(
+            *,
+            stage: str,
+            completed: bool,
+            partial_failure: bool,
+            readback: list[dict[str, Any]] | None = None,
+            yandex_units: int | None = None,
+        ) -> UrlMigrationResult:
+            audit = self.append_audit(
+                "yandex_url_migration_preview" if payload.dry_run else "yandex_url_migration_apply",
+                str(campaign_id),
+                dry_run=payload.dry_run,
+                details={
+                    "namespace": namespace,
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "mode": mode,
+                    "reason": payload.reason,
+                    "ad_count": len(ad_items),
+                    "source_sitelink_set_id": (
+                        sitelink_spec.source_sitelink_set_id if sitelink_spec is not None else None
+                    ),
+                    "completed": completed,
+                    "partial_failure": partial_failure,
+                    "stage": stage,
+                },
+            )
+            result = UrlMigrationResult(
+                campaign_id=str(campaign_id),
+                mode=mode,
+                dry_run=payload.dry_run,
+                applied=completed if not payload.dry_run else False,
+                completed=completed,
+                partial_failure=partial_failure,
+                audit_id=audit.id,
+                stage=stage,
+                stages=stages,
+                changes=changes,
+                payload_preview=payload_preview,
+                provider_results=provider_results,
+                readback=readback or [],
+                reference_scan=reference_scan,
+                new_sitelink_set_id=new_sitelink_set_id,
+                recovery_note=recovery_note,
+                yandex_units=yandex_units,
+            )
+            if not payload.dry_run:
+                self._store_url_migration_idempotency(
+                    namespace=namespace,
+                    campaign_id=str(campaign_id),
+                    key=payload.idempotency_key,
+                    fingerprint=fingerprint,
+                    result=result,
+                )
+            return result
+
+        # Product URL policy is enforced before any provider write, including preview.
+        for item in ad_items:
+            self._validate_url_migration_target(
+                item.target_href,
+                settings=settings,
+                require_anchor=bool(urlsplit(item.target_href).fragment),
+            )
+        stages.append(UrlMigrationStage(name="target_url_validation", state="completed"))
+
+        main_ad_ids = [item.ad_id for item in ad_items]
+        live_ads: dict[int, dict[str, Any]] = {}
+        if main_ad_ids:
+            live_ads = self._url_migration_read_ads(client, str(campaign_id), main_ad_ids)
+            for item in ad_items:
+                current_href = (live_ads[item.ad_id].get("TextAd") or {}).get("Href")
+                if current_href != item.expected_href:
+                    raise ValueError("Current ad Href does not match expected_href")
+                changes.append(
+                    UrlMigrationChange(
+                        entity_type="ad",
+                        entity_id=str(item.ad_id),
+                        before_href=item.expected_href,
+                        after_href=item.target_href,
+                    )
+                )
+            stages.append(UrlMigrationStage(name="campaign_ad_preflight", state="completed"))
+
+        target_hrefs = {item.ad_id: item.target_href for item in ad_items}
+        ordered_ad_ids = list(main_ad_ids)
+        attach_ad_ids: set[int] = set()
+        sitelinks_add_payload: dict[str, Any] | None = None
+
+        if sitelink_spec is not None:
+            for item in sitelink_spec.target_items:
+                self._validate_url_migration_target(
+                    item.href,
+                    settings=settings,
+                    require_anchor=bool(urlsplit(item.href).fragment),
+                )
+            source_set = self._url_migration_read_sitelink_set(
+                client, sitelink_spec.source_sitelink_set_id
+            )
+            source_links = source_set.get("Sitelinks") or []
+            if not isinstance(source_links, list):
+                raise YandexDirectError("Sitelink source set is malformed")
+            expected_signature = [item.model_dump() for item in sitelink_spec.expected_items]
+            if self._url_migration_sitelink_signature(source_links) != expected_signature:
+                raise ValueError("Source sitelink set does not exactly match expected_items")
+            stages.append(UrlMigrationStage(name="source_sitelink_preflight", state="completed"))
+
+            references = self._url_migration_scan_sitelink_references(
+                client, sitelink_spec.source_sitelink_set_id
+            )
+            route_reference_ids = [
+                ref["ad_id"]
+                for ref in references
+                if ref["campaign_id"] == str(campaign_id) and ref["type"] == "TEXT_AD"
+            ]
+            if not route_reference_ids:
+                raise ValueError("No route-owned TEXT_AD currently references the source sitelink set")
+            route_ads = self._url_migration_read_ads(client, str(campaign_id), route_reference_ids)
+            for ad_id, row in route_ads.items():
+                if str((row.get("TextAd") or {}).get("SitelinkSetId")) != str(
+                    sitelink_spec.source_sitelink_set_id
+                ):
+                    raise YandexDirectError("Fresh route ad read no longer references the source sitelink set")
+                live_ads[ad_id] = row
+                if ad_id not in ordered_ad_ids:
+                    ordered_ad_ids.append(ad_id)
+                attach_ad_ids.add(ad_id)
+            for item in ad_items:
+                current_href = (live_ads[item.ad_id].get("TextAd") or {}).get("Href")
+                if current_href != item.expected_href:
+                    raise ValueError("Fresh ad Href does not match expected_href")
+            reference_scan = {
+                "complete": True,
+                "source_sitelink_set_id": sitelink_spec.source_sitelink_set_id,
+                "reference_count": len(references),
+                "route_reference_ad_ids": route_reference_ids,
+                "outside_route_reference_count": len(references) - len(route_reference_ids),
+                "references": references,
+            }
+            stages.append(UrlMigrationStage(name="sitelink_reference_scan", state="completed"))
+            for expected, target in zip(sitelink_spec.expected_items, sitelink_spec.target_items, strict=True):
+                changes.append(
+                    UrlMigrationChange(
+                        entity_type="sitelink",
+                        entity_id=f"{sitelink_spec.source_sitelink_set_id}/{expected.title}",
+                        before_href=expected.href,
+                        after_href=target.href,
+                    )
+                )
+            sitelinks_add_payload = {
+                "method": "add",
+                "params": {
+                    "SitelinksSets": [
+                        {"Sitelinks": self._url_migration_sitelink_payload(sitelink_spec.target_items)}
+                    ]
+                },
+            }
+
+        preview_sitelink_set_id: int | str | None = (
+            "$new_sitelink_set_id" if sitelink_spec is not None else None
+        )
+        preview_update_items = self._url_migration_update_items(
+            ordered_ad_ids,
+            live_ads,
+            target_hrefs,
+            attach_ad_ids,
+            preview_sitelink_set_id,
+        )
+        payload_preview: dict[str, Any] = {
+            "ads.update": {"method": "update", "params": {"Ads": preview_update_items}}
+        }
+        if sitelinks_add_payload is not None:
+            payload_preview = {"sitelinks.add": sitelinks_add_payload, **payload_preview}
+
+        if payload.dry_run:
+            for index, stage_item in enumerate(stages):
+                stages[index] = UrlMigrationStage(name=stage_item.name, state="preview")
+            stages.append(UrlMigrationStage(name="provider_writes", state="preview"))
+            return finalize(stage="preview", completed=False, partial_failure=False)
+
+        if sitelink_spec is not None and sitelinks_add_payload is not None:
+            try:
+                add_response = client.sitelinks_add(sitelinks_add_payload["params"]["SitelinksSets"])
+            except YandexDirectError:
+                add_response = {"ok": False, "error": {"error_code": "transport_failure"}}
+            provider_results["sitelinks.add"] = self._url_migration_provider_results(
+                add_response,
+                result_name="AddResults",
+                input_ids=["clone"],
+            )
+            add_results = provider_results["sitelinks.add"]
+            if not all(item.success for item in add_results):
+                stages.append(UrlMigrationStage(name="sitelinks.add", state="partial"))
+                recovery_note = "No ads.update was sent; inspect whether Direct created an unreferenced clone before retrying."
+                return finalize(stage="sitelinks.add", completed=False, partial_failure=True)
+            new_sitelink_set_id = _url_migration_safe_int(
+                ((add_response.get("result") or {}).get("AddResults") or [{}])[0].get("Id")
+            )
+            if new_sitelink_set_id is None or new_sitelink_set_id < 1:
+                stages.append(UrlMigrationStage(name="sitelinks.add", state="partial"))
+                recovery_note = "Clone creation outcome is unknown; do not retry without a fresh preflight."
+                return finalize(stage="sitelinks.add", completed=False, partial_failure=True)
+            stages.append(UrlMigrationStage(name="sitelinks.add", state="completed"))
+            try:
+                clone_set = self._url_migration_read_sitelink_set(client, new_sitelink_set_id)
+                clone_links = clone_set.get("Sitelinks") or []
+                target_signature = self._url_migration_sitelink_signature(
+                    self._url_migration_sitelink_payload(sitelink_spec.target_items)
+                )
+                if not isinstance(clone_links, list) or self._url_migration_sitelink_signature(clone_links) != target_signature:
+                    raise YandexDirectError("Created sitelink clone readback does not match requested target items")
+            except (YandexDirectError, ValueError):
+                stages.append(UrlMigrationStage(name="sitelinks.readback", state="failed"))
+                recovery_note = "A clone may exist but was not safely verified; no ads.update was sent."
+                return finalize(stage="sitelinks.readback", completed=False, partial_failure=True)
+            stages.append(UrlMigrationStage(name="sitelinks.readback", state="completed"))
+
+        actual_update_items = self._url_migration_update_items(
+            ordered_ad_ids,
+            live_ads,
+            target_hrefs,
+            attach_ad_ids,
+            new_sitelink_set_id,
+        )
+        try:
+            update_response = client.ads_update(actual_update_items)
+        except YandexDirectError:
+            update_response = {"ok": False, "error": {"error_code": "transport_failure"}}
+        provider_results["ads.update"] = self._url_migration_provider_results(
+            update_response,
+            result_name="UpdateResults",
+            input_ids=ordered_ad_ids,
+        )
+        all_update_items_succeeded = all(item.success for item in provider_results["ads.update"])
+        stages.append(
+            UrlMigrationStage(
+                name="ads.update",
+                state="completed" if all_update_items_succeeded else "partial",
+            )
+        )
+        expectations: dict[int, dict[str, Any]] = {}
+        for ad_id in ordered_ad_ids:
+            before = live_ads[ad_id]
+            before_text = before.get("TextAd") or {}
+            expectations[ad_id] = {
+                "before": before,
+                "href": target_hrefs.get(ad_id, before_text.get("Href")),
+                "sitelink_set_id": (
+                    new_sitelink_set_id
+                    if ad_id in attach_ad_ids
+                    else _url_migration_safe_int(before_text.get("SitelinkSetId"))
+                ),
+            }
+        readback, readback_matches = self._url_migration_readback(
+            client, str(campaign_id), expectations
+        )
+        stages.append(
+            UrlMigrationStage(
+                name="ads.readback",
+                state="completed" if readback_matches else "failed",
+            )
+        )
+        completed = all_update_items_succeeded and readback_matches
+        if not completed:
+            recovery_note = (
+                "Provider operations are non-transactional. Use the returned readback, then run a new preflight "
+                "before any corrective action; do not attempt blind rollback."
+            )
+        units = _safe_units(update_response.get("units")) if isinstance(update_response, dict) else None
+        return finalize(
+            stage="completed" if completed else "partial_failure",
+            completed=completed,
+            partial_failure=not completed,
+            readback=readback,
+            yandex_units=units,
+        )
 
     # ------------------------------------------------- yandex ads business attach
     #

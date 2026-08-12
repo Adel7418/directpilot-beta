@@ -480,3 +480,25 @@ UTM-метки — это параметры в URL, которые позвол
 - `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` сохраняются при обновлении.
 - Токены и секреты **никогда** не появляются в ответах, логах и preview.
 - `live_readonly` блокирует реальные записи **до** любого сетевого вызова (HTTP 409).
+
+## Миграция URL существующих объявлений
+
+Для переезда посадочной страницы используйте специальный preview/apply workflow, а не ручной raw `ads.update`:
+
+- `POST /yandex/campaigns/{campaign_id}/ads/landing-urls` — URL основных `TEXT_AD`;
+- `POST /yandex/campaigns/{campaign_id}/sitelinks/migrate-urls` — clone-and-reattach быстрых ссылок;
+- `POST /yandex/campaigns/{campaign_id}/landing-url-migrations` — единый non-transactional workflow.
+
+Порядок работы маркетолога:
+1. Получить текущие объявления и набор быстрых ссылок; подготовить точные `expected_href`/`expected_items` и целевые URL.
+2. Проверить, что целевые HTTPS-host входят в `DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS` и URL реально отдают 2xx; fragment должен существовать на странице.
+3. Выполнить `dry_run=true` (default) и показать пользователю `changes`, `payload_preview`, `reference_scan` и риски.
+4. Получить явное подтверждение именно показанного diff. Маркетолог сам live apply не выполняет.
+5. Оператор применяет с `DIRECTPILOT_MODE=live_write`, `approved=true`, `dry_run=false`, новым `idempotency_key`.
+6. Проверить `provider_results`, `readback`, `completed` и `partial_failure`.
+
+`expected_href` и `expected_items` защищают от устаревшего preview: несовпадение текущих данных блокирует write. Для быстрых ссылок DirectPilot создаёт clone через `sitelinks.add`, проверяет его и привязывает через `ads.update`; исходный набор не изменяется и не удаляется, `sitelinks.update` в этом workflow не используется. Перед привязкой выполняется fail-closed account-wide reference scan: `campaigns.get` формирует inventory, `ads.get` постранично читает объявления по допустимому `SelectionCriteria.CampaignIds`, а нужный `TextAd.SitelinkSetId` фильтруется локально. Фильтр `SelectionCriteria.SitelinkSetIds` не используется; объявления без быстрых ссылок и с другим набором игнорируются, ссылки из других кампаний не перепривязываются. Некорректный или ограниченный inventory, provider error и повторяющиеся ID блокируют операцию.
+
+Timeout/transport error при проверке целевого URL возвращается как безопасный HTTP 409. В provider-диагностике доступны только разрешённые поля (`provider`, `service`, `method`, `operation`, `http_status`, `error_code`, `error_string`, `error_detail`, если они есть); OAuth, токены, request body и `units` не показываются. Сначала всегда выполняйте `dry_run=true`; live apply остаётся отдельным операторским действием после явного подтверждения пользователя.
+
+Операции не транзакционные. При `partial_failure=true` или несовпадении readback запрещён слепой повтор/rollback: сначала новый read-only preflight. Idempotency URL-миграций хранится process-local и после рестарта не гарантирует дедупликацию.

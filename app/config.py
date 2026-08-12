@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,12 +13,26 @@ def mask_secret(value: str | None) -> str | None:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
 
     app_env: str = "local"
     directpilot_mode: str = Field(
         default="live_readonly",
         pattern="^(mock|sandbox|live_readonly|live_write)$",
+    )
+    # Comma-separated hostname allowlist for existing-campaign landing URL
+    # migrations. An empty list intentionally fails closed before URL fetches.
+    url_migration_allowed_hosts: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS",
+            "url_migration_allowed_hosts",
+        ),
     )
     yandex_client_id: str | None = None
     yandex_client_secret: str | None = None

@@ -497,6 +497,19 @@ class YandexDirectClient:
             params["Page"] = page
         return self._call("sitelinks", {"method": "get", "params": params})
 
+    def sitelinks_add(self, sitelink_sets: list[dict[str, Any]]) -> dict[str, Any]:
+        """Create documented Direct v5 sitelink sets with ``sitelinks.add``.
+
+        The caller supplies only ``SitelinksSets`` entries, each containing a
+        ``Sitelinks`` list of ``Title`` / ``Href`` and optional ``Description``.
+        Per-item ``AddResults`` remain in the standard result envelope so the
+        safety layer can verify every requested set before it attaches one.
+        """
+        return self._call(
+            "sitelinks",
+            {"method": "add", "params": {"SitelinksSets": list(sitelink_sets)}},
+        )
+
     def sitelinks_update(self, items: list[dict[str, Any]]) -> dict[str, Any]:
         """Update existing sitelinks sets via v5 ``sitelinks.update``.
 
@@ -573,6 +586,73 @@ class YandexDirectClient:
             },
         )
 
+    _URL_MIGRATION_AD_FIELDS = [
+        "Id",
+        "CampaignId",
+        "AdGroupId",
+        "Status",
+        "State",
+        "Type",
+    ]
+    _URL_MIGRATION_TEXT_AD_FIELDS = [
+        "Title",
+        "Title2",
+        "Text",
+        "Href",
+        "DisplayUrlPath",
+        "AdImageHash",
+        "SitelinkSetId",
+        "VCardId",
+        "BusinessId",
+        "PreferVCardOverBusiness",
+        "AdExtensions",
+    ]
+
+    def ads_get_by_campaign_and_ids(
+        self,
+        campaign_id: int | str,
+        ad_ids: list[int],
+    ) -> dict[str, Any]:
+        """Read precise route-owned ``TEXT_AD`` objects for URL migration."""
+        return self._call(
+            "ads",
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": {
+                        "CampaignIds": [self._direct_id(campaign_id)],
+                        "Ids": [self._direct_id(item) for item in ad_ids],
+                        "Types": ["TEXT_AD"],
+                    },
+                    "FieldNames": list(self._URL_MIGRATION_AD_FIELDS),
+                    "TextAdFieldNames": list(self._URL_MIGRATION_TEXT_AD_FIELDS),
+                },
+            },
+        )
+
+    def ads_get_by_campaign_ids(
+        self,
+        campaign_ids: list[int],
+        *,
+        limit: int = 10_000,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Read a bounded page of account ``TEXT_AD`` rows by campaign IDs."""
+        return self._call(
+            "ads",
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": {
+                        "CampaignIds": [self._direct_id(item) for item in campaign_ids],
+                    },
+                    "FieldNames": ["Id", "CampaignId", "AdGroupId", "Type"],
+                    "TextAdFieldNames": ["Href", "SitelinkSetId"],
+                    "Page": {"Limit": limit, "Offset": offset},
+                },
+            },
+        )
+
     def ads_get_by_ids(self, ad_ids: list[int]) -> dict[str, Any]:
         """Read specific ads by id via v5 ``ads.get``.
 
@@ -585,14 +665,7 @@ class YandexDirectClient:
                 "method": "get",
                 "params": {
                     "SelectionCriteria": {"Ids": list(ad_ids)},
-                    "FieldNames": [
-                        "Id",
-                        "AdGroupId",
-                        "CampaignId",
-                        "Status",
-                        "State",
-                        "Type",
-                    ],
+                    "FieldNames": ["Id", "AdGroupId", "CampaignId", "Status", "State", "Type"],
                     "TextAdFieldNames": [
                         "Title",
                         "Title2",
@@ -1488,6 +1561,11 @@ class YandexDirectClient:
         return {"ok": True, "result": response.text, "units": response.headers.get("Units")}
 
     def _call(self, service: str, payload: dict[str, Any]) -> dict[str, Any]:
+        diagnostics = {
+            "provider": "yandex_direct",
+            "service": service,
+            "method": str(payload.get("method") or ""),
+        }
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
 
@@ -1508,8 +1586,18 @@ class YandexDirectClient:
         if response.status_code >= 400:
             # Do not include headers or body — body may echo the token back
             # depending on proxy behavior. Surface a redacted message only.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            error = body.get("error") if isinstance(body, dict) else None
+            if isinstance(error, dict):
+                for key in ("error_code", "error_string", "error_detail"):
+                    if key in error:
+                        diagnostics[key] = error[key]
+            diagnostics["http_status"] = response.status_code
             raise YandexDirectError(
-                f"Yandex Direct HTTP {response.status_code}"
+                f"Yandex Direct HTTP {response.status_code}", diagnostics=diagnostics
             )
 
         units = response.headers.get("Units")

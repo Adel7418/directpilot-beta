@@ -2994,6 +2994,149 @@
         "title": "KeywordBidsSetAutoResult",
         "type": "object"
       },
+      "LandingUrlMigrationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "ad_id": {
+            "minimum": 1.0,
+            "title": "Ad Id",
+            "type": "integer"
+          },
+          "expected_href": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Expected Href",
+            "type": "string"
+          },
+          "target_href": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Target Href",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ad_id",
+          "expected_href",
+          "target_href"
+        ],
+        "title": "LandingUrlMigrationItem",
+        "type": "object"
+      },
+      "LandingUrlMigrationRequest": {
+        "additionalProperties": false,
+        "description": "Preview/apply body for existing TEXT_AD landing URL replacements.",
+        "properties": {
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LandingUrlMigrationItem"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "LandingUrlMigrationRequest",
+        "type": "object"
+      },
+      "LandingUrlMigrationsRequest": {
+        "additionalProperties": false,
+        "description": "Unified, non-transactional landing URL plus sitelink migration body.",
+        "properties": {
+          "ad_items": {
+            "items": {
+              "$ref": "#/components/schemas/LandingUrlMigrationItem"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Ad Items",
+            "type": "array"
+          },
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "sitelink_migration": {
+            "$ref": "#/components/schemas/SitelinkUrlMigrationSpec"
+          }
+        },
+        "required": [
+          "ad_items",
+          "sitelink_migration"
+        ],
+        "title": "LandingUrlMigrationsRequest",
+        "type": "object"
+      },
       "LiveAdCreateItem": {
         "description": "One ad to add to an existing ad group.\n\n``title``, ``text``, ``href`` are required (Direct v5 TextAd contract).\n``title2`` — optional second headline.\n``sitelink_set_id`` — optional quick-link set id.\n``business_id`` — optional Yandex Business organization id.\n``prefer_vcard_over_business`` — ``\"YES\"`` / ``\"NO\"``, optional.",
         "properties": {
@@ -4229,6 +4372,421 @@
           }
         },
         "title": "SemanticChangeRequest",
+        "type": "object"
+      },
+      "SitelinkUrlMigrationItem": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 60,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "href": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "title": "Href",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "href"
+        ],
+        "title": "SitelinkUrlMigrationItem",
+        "type": "object"
+      },
+      "SitelinkUrlMigrationRequest": {
+        "additionalProperties": false,
+        "description": "Clone-only migration body for one existing sitelink set.",
+        "properties": {
+          "approved": {
+            "default": false,
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "expected_items": {
+            "items": {
+              "$ref": "#/components/schemas/SitelinkUrlMigrationItem"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Expected Items",
+            "type": "array"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 6,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "source_sitelink_set_id": {
+            "minimum": 1.0,
+            "title": "Source Sitelink Set Id",
+            "type": "integer"
+          },
+          "target_items": {
+            "items": {
+              "$ref": "#/components/schemas/SitelinkUrlMigrationItem"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Target Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_sitelink_set_id",
+          "expected_items",
+          "target_items"
+        ],
+        "title": "SitelinkUrlMigrationRequest",
+        "type": "object"
+      },
+      "SitelinkUrlMigrationSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_items": {
+            "items": {
+              "$ref": "#/components/schemas/SitelinkUrlMigrationItem"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Expected Items",
+            "type": "array"
+          },
+          "source_sitelink_set_id": {
+            "minimum": 1.0,
+            "title": "Source Sitelink Set Id",
+            "type": "integer"
+          },
+          "target_items": {
+            "items": {
+              "$ref": "#/components/schemas/SitelinkUrlMigrationItem"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Target Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source_sitelink_set_id",
+          "expected_items",
+          "target_items"
+        ],
+        "title": "SitelinkUrlMigrationSpec",
+        "type": "object"
+      },
+      "UrlMigrationChange": {
+        "additionalProperties": false,
+        "properties": {
+          "after_href": {
+            "title": "After Href",
+            "type": "string"
+          },
+          "before_href": {
+            "title": "Before Href",
+            "type": "string"
+          },
+          "entity_id": {
+            "title": "Entity Id",
+            "type": "string"
+          },
+          "entity_type": {
+            "enum": [
+              "ad",
+              "sitelink"
+            ],
+            "title": "Entity Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entity_type",
+          "entity_id",
+          "before_href",
+          "after_href"
+        ],
+        "title": "UrlMigrationChange",
+        "type": "object"
+      },
+      "UrlMigrationProviderIssue": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "UrlMigrationProviderIssue",
+        "type": "object"
+      },
+      "UrlMigrationProviderItemResult": {
+        "additionalProperties": false,
+        "properties": {
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/UrlMigrationProviderIssue"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "input_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Id"
+          },
+          "success": {
+            "default": false,
+            "title": "Success",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/UrlMigrationProviderIssue"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "title": "UrlMigrationProviderItemResult",
+        "type": "object"
+      },
+      "UrlMigrationResult": {
+        "additionalProperties": false,
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/UrlMigrationChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "completed": {
+            "title": "Completed",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "new_sitelink_set_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Sitelink Set Id"
+          },
+          "partial_failure": {
+            "default": false,
+            "title": "Partial Failure",
+            "type": "boolean"
+          },
+          "payload_preview": {
+            "additionalProperties": true,
+            "title": "Payload Preview",
+            "type": "object"
+          },
+          "provider_results": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/UrlMigrationProviderItemResult"
+              },
+              "type": "array"
+            },
+            "title": "Provider Results",
+            "type": "object"
+          },
+          "readback": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Readback",
+            "type": "array"
+          },
+          "recovery_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Note"
+          },
+          "reference_scan": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Scan"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/UrlMigrationStage"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "completed",
+          "audit_id",
+          "stage"
+        ],
+        "title": "UrlMigrationResult",
+        "type": "object"
+      },
+      "UrlMigrationStage": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "preview",
+              "completed",
+              "failed",
+              "partial"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "state"
+        ],
+        "title": "UrlMigrationStage",
         "type": "object"
       },
       "UtmApplyRequest": {
@@ -10379,6 +10937,61 @@
         "summary": "Yandex Ads"
       }
     },
+    "/yandex/campaigns/{campaign_id}/ads/landing-urls": {
+      "post": {
+        "operationId": "yandex_ads_landing_urls_yandex_campaigns__campaign_id__ads_landing_urls_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LandingUrlMigrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UrlMigrationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate, optimistic-concurrency, or idempotency conflict."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Redacted Yandex Direct preflight failure."
+          }
+        },
+        "summary": "Yandex Ads Landing Urls"
+      }
+    },
     "/yandex/campaigns/{campaign_id}/audience-targets": {
       "get": {
         "operationId": "yandex_audience_targets_yandex_campaigns__campaign_id__audience_targets_get",
@@ -10980,6 +11593,61 @@
         "summary": "Yandex Keywords"
       }
     },
+    "/yandex/campaigns/{campaign_id}/landing-url-migrations": {
+      "post": {
+        "operationId": "yandex_landing_url_migrations_yandex_campaigns__campaign_id__landing_url_migrations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LandingUrlMigrationsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UrlMigrationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate, optimistic-concurrency, or idempotency conflict."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Redacted Yandex Direct preflight failure."
+          }
+        },
+        "summary": "Yandex Landing Url Migrations"
+      }
+    },
     "/yandex/campaigns/{campaign_id}/negative-keywords": {
       "get": {
         "operationId": "yandex_negative_keywords_yandex_campaigns__campaign_id__negative_keywords_get",
@@ -11124,6 +11792,61 @@
           }
         },
         "summary": "Yandex Resume"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/sitelinks/migrate-urls": {
+      "post": {
+        "operationId": "yandex_sitelinks_migrate_urls_yandex_campaigns__campaign_id__sitelinks_migrate_urls_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SitelinkUrlMigrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UrlMigrationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate, source mismatch, or idempotency conflict."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Redacted Yandex Direct preflight failure."
+          }
+        },
+        "summary": "Yandex Sitelinks Migrate Urls"
       }
     },
     "/yandex/campaigns/{campaign_id}/strategy": {

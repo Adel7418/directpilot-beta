@@ -54,6 +54,10 @@ from app.models import (
     YandexAccountBalanceResult,
     YandexAdsBusinessAttachRequest,
     YandexAdsBusinessAttachResult,
+    LandingUrlMigrationRequest,
+    LandingUrlMigrationsRequest,
+    SitelinkUrlMigrationRequest,
+    UrlMigrationResult,
     YandexAd,
     YandexAdGroup,
     YandexAdGroupList,
@@ -588,12 +592,26 @@ def audit_log() -> AuditLog:
 
 def _yandex_error_to_502(exc: YandexDirectError) -> HTTPException:
     """Translate a YandexDirectError into an HTTP 502 with no token in detail."""
+    detail: dict[str, Any] = {
+        "error_type": "YandexDirectError",
+        "message": str(exc),
+    }
+    for key in (
+        "provider",
+        "service",
+        "method",
+        "operation",
+        "http_status",
+        "error_code",
+        "error_string",
+        "error_detail",
+    ):
+        value = exc.diagnostics.get(key)
+        if value is not None:
+            detail[key] = value
     return HTTPException(
         status_code=502,
-        detail={
-            "error_type": "YandexDirectError",
-            "message": str(exc),
-        },
+        detail=detail,
     )
 
 
@@ -1553,6 +1571,84 @@ def yandex_vcards_add(
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/ads/landing-urls",
+    response_model=UrlMigrationResult,
+    responses={
+        409: {"description": "Safety gate, optimistic-concurrency, or idempotency conflict."},
+        502: {"description": "Redacted Yandex Direct preflight failure."},
+    },
+)
+def yandex_ads_landing_urls(
+    campaign_id: str,
+    payload: LandingUrlMigrationRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> UrlMigrationResult:
+    try:
+        return store.yandex_ads_landing_urls(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        if "Live writes require" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/sitelinks/migrate-urls",
+    response_model=UrlMigrationResult,
+    responses={
+        409: {"description": "Safety gate, source mismatch, or idempotency conflict."},
+        502: {"description": "Redacted Yandex Direct preflight failure."},
+    },
+)
+def yandex_sitelinks_migrate_urls(
+    campaign_id: str,
+    payload: SitelinkUrlMigrationRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> UrlMigrationResult:
+    try:
+        return store.yandex_sitelinks_migrate_urls(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        if "Live writes require" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _yandex_error_to_502(exc) from exc
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/landing-url-migrations",
+    response_model=UrlMigrationResult,
+    responses={
+        409: {"description": "Safety gate, optimistic-concurrency, or idempotency conflict."},
+        502: {"description": "Redacted Yandex Direct preflight failure."},
+    },
+)
+def yandex_landing_url_migrations(
+    campaign_id: str,
+    payload: LandingUrlMigrationsRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> UrlMigrationResult:
+    try:
+        return store.yandex_landing_url_migrations(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        if "Live writes require" in str(exc):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise _yandex_error_to_502(exc) from exc
 
 

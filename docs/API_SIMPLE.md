@@ -2222,3 +2222,64 @@ Write-gated:
 ### Не реализовано (not_implemented)
 
 - **utm_term автоподстановка:** параметр `utm_term={keyword}` пока не заполняется автоматически — требуется keyword-level mapping.
+
+---
+
+## 21. Миграция landing URL существующих объявлений и быстрых ссылок
+
+Эти endpoint предназначены для безопасной замены URL уже существующих `TEXT_AD`. По умолчанию запросы выполняют только preflight/preview (`dry_run=true`) и не вызывают write-методы Яндекс Директа.
+
+### URL основных объявлений
+
+```http
+POST /yandex/campaigns/{campaign_id}/ads/landing-urls
+```
+
+Тело содержит непустой список `items` с `ad_id`, `expected_href` и `target_href`. `expected_href` — optimistic-concurrency guard: если фактический `TextAd.Href` уже отличается, запрос завершается с HTTP 409 и ничего не записывает. Endpoint принимает только объявления указанной кампании и типа `TEXT_AD`.
+
+### URL быстрых ссылок
+
+```http
+POST /yandex/campaigns/{campaign_id}/sitelinks/migrate-urls
+```
+
+Тело содержит `source_sitelink_set_id`, точный снимок `expected_items` и новый список `target_items`; у списков должно быть одинаковое число элементов (1–8). DirectPilot требует полного совпадения текущего source set с `expected_items`, затем выполняет fail-closed account-wide reference scan: получает inventory через `campaigns.get`, постранично читает `ads.get` с допустимым `SelectionCriteria.CampaignIds` и локально оставляет только объявления с нужным `TextAd.SitelinkSetId`. Недопустимый фильтр `SelectionCriteria.SitelinkSetIds` не используется. Объявления без быстрых ссылок и с другим набором игнорируются.
+
+Миграция является clone-and-reattach:
+1. новый набор создаётся через документированный `sitelinks.add`;
+2. к объявлениям выбранной кампании, которые ссылались на исходный набор, привязывается новый `SitelinkSetId` через `ads.update`;
+3. исходный набор не изменяется и не удаляется.
+
+Этот workflow не вызывает `sitelinks.update` и не перепривязывает объявления других кампаний. Все найденные связи видны в `reference_scan`. Ограниченный или некорректный campaign inventory, нечисловые/повторяющиеся campaign ID, provider error, а также некорректные или повторяющиеся ID совпавших объявлений блокируют операцию до любой записи.
+
+### Единая миграция
+
+```http
+POST /yandex/campaigns/{campaign_id}/landing-url-migrations
+```
+
+Тело объединяет `ad_items` и `sitelink_migration`. Операция не транзакционная: сначала при необходимости создаётся и проверяется clone быстрых ссылок, затем выполняется `ads.update` для URL и/или нового `SitelinkSetId`.
+
+### URL preflight и защита
+
+Перед preview/apply каждый `target_href` проверяется:
+- только HTTPS и hostname из `DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS`;
+- запрещены credentials в URL, private/non-public DNS addresses и уход redirect на другой host;
+- не более трёх redirect; конечный ответ должен быть 2xx (404 и другие ошибки блокируют операцию);
+- fragment проверяется по реальному `id`/`name` anchor на странице;
+- query-параметры должны стоять до fragment.
+
+Пустой allowlist блокирует операцию fail-closed.
+
+Timeout или transport error при проверке целевой страницы возвращается как безопасный HTTP 409 без raw network/provider details. Если Яндекс Директ отклоняет preflight/reference scan, API передаёт только доступные поля из allowlist диагностического envelope: `provider`, `service`, `method`, `operation`, `http_status`, `error_code`, `error_string`, `error_detail`. OAuth, токены, request body и `units` не возвращаются.
+
+### Apply gates и результат
+
+Реальная запись разрешена только при одновременном выполнении всех условий:
+1. `DIRECTPILOT_MODE=live_write`;
+2. `approved=true`;
+3. `dry_run=false`;
+4. непустой `idempotency_key` длиной не менее 6 символов;
+5. пользователь увидел точный preview/diff и явно подтвердил именно этот apply.
+
+Ответ `UrlMigrationResult` содержит `changes`, `payload_preview`, стадии, per-item `provider_results`, `readback`, `reference_scan`, `new_sitelink_set_id` и `recovery_note`. Ошибка хотя бы одного provider item или несовпадение readback даёт `applied=false`, `completed=false`, `partial_failure=true`; слепой rollback запрещён — сначала нужен новый read/preflight. Idempotency cache сейчас process-local и теряется после рестарта, поэтому ключ не является межпроцессной гарантией.
