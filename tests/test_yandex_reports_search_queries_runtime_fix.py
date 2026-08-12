@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_mod
@@ -217,6 +218,42 @@ def test_runtime_fix_missing_query_header_is_a_safe_parse_502() -> None:
         "error_string": "Search query report parse contract violation",
         "error_detail": "Required Query column is missing",
     }
+
+
+@pytest.mark.parametrize("blank_query", ["", "   "])
+def test_runtime_fix_blank_query_value_is_a_safe_parse_502(blank_query: str) -> None:
+    query_tsv = _query_tsv(
+        [[blank_query, "710691939", "1001", "12", "2", "16.67", "2914.37"]]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/campaigns"):
+            return httpx.Response(200, json={"result": {"Campaigns": []}})
+        report_type = json.loads(request.content.decode())["params"]["ReportType"]
+        if report_type == "CAMPAIGN_PERFORMANCE_REPORT":
+            return httpx.Response(200, content=_campaign_tsv(clicks="2", cost="2914.37"))
+        return httpx.Response(200, content=query_tsv)
+
+    client, _ = _install(handler)
+    try:
+        response = client.get("/yandex/reports/search-queries")
+    finally:
+        _clear_overrides()
+
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"] == {
+        "provider": "yandex_direct",
+        "service": "reports",
+        "method": "POST",
+        "report_type": "SEARCH_QUERY_PERFORMANCE_REPORT",
+        "error_code": "empty_query_value",
+        "error_string": "Search query report parse contract violation",
+        "error_detail": "Required Query value is empty",
+    }
+    assert "TEST-SECRET" not in response.text
+    assert "CampaignId" not in response.text
+    assert "710691939" not in response.text
+    assert query_tsv not in response.text
 
 
 def test_runtime_fix_empty_body_and_valid_header_only_remain_empty_yandex_results() -> None:

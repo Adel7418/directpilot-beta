@@ -2394,8 +2394,10 @@ def _parse_search_query_tsv(
         if len(cols) <= required_max_index:
             continue
         query = cols[header_map["Query"]]
+        if not query.strip():
+            raise _SearchQueryReportParseError("empty_query_value", "Required Query value is empty")
         row_campaign_id = _normalize_direct_id(cols[header_map["CampaignId"]])
-        if not query or not row_campaign_id:
+        if not row_campaign_id:
             continue
         if normalized_filter is not None and row_campaign_id != normalized_filter:
             continue

@@ -99,7 +99,7 @@ Scope rule for operators/agents:
    - read `clicks_match`, `cost_delta`, `cost_tolerance`, `cost_within_tolerance`, `status` together. A per-row Cost rounding allowance is `ceil(0.005 ₽ × query rows)` in kopecks, at least `0.01 ₽`: 51 rows / Query `2914.39 ₽` vs campaign `2914.37 ₽` is delta `0.02 ₽`, within `0.26 ₽`; 11 clicks remain exact.
    - a mismatch is diagnostic, not a reason to discard valid Query rows. If the campaign reconciliation read fails, use returned Query `items` with `reconciliation=null`, `partial_failure=true`, and the safe warning `code`/`provider_error`; raw TSV, provider body, headers, and tokens are never exposed.
    - an empty account-wide Query report triggers a bounded per-campaign **read-only** fallback and dedupe; explicit `campaign_id` never fan-outs. Per-campaign fallback errors remain `partial_failure=true` warnings, never invented empty success.
-   - missing/malformed Query report contract returns structured HTTP 502. An otherwise valid empty report is not mock fallback.
+   - a missing `Query` column or a blank/whitespace-only `Query` data value returns structured HTTP 502. Other malformed data rows may still be dropped; an otherwise valid empty report is not mock fallback.
    - Use `/yandex/reports/search-queries-live?date_from=...&date_to=...` only for technical raw TSV diagnostics; it uses the same search-query field set `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`, not generic campaign-summary defaults.
    - `source="mock"` is reserved for `DIRECTPILOT_MODE=mock` only — never silent in live modes
    - HTTP 409 in `sandbox`/`live_readonly`/`live_write` if the Yandex client/token is unavailable
