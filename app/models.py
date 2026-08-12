@@ -574,14 +574,29 @@ class YandexKeywordList(BaseModel):
 
 
 class YandexSearchQuery(BaseModel):
+    date: str | None = None
     query: str
     campaign_id: str
     campaign_name: str | None = None
-    ad_group_id: str
+    ad_group_id: str | None = None
     impressions: int
     clicks: int
-    ctr: float
+    ctr: float | None = None
     cost: float | None = None
+
+
+class YandexSearchQueryReconciliation(BaseModel):
+    """Comparison of typed query rows to the matching campaign report scope."""
+
+    search_query_clicks: int
+    campaign_clicks: int
+    clicks_match: bool
+    search_query_cost: float
+    campaign_cost: float
+    cost_delta: float
+    cost_tolerance: float
+    cost_within_tolerance: bool
+    status: Literal["matched", "mismatch"]
 
 
 class YandexSearchQueriesReport(BaseModel):
@@ -589,6 +604,14 @@ class YandexSearchQueriesReport(BaseModel):
     items: list[YandexSearchQuery]
     source: Literal["mock", "yandex"] = "mock"
     read_only: bool = True
+    report_type: Literal["SEARCH_QUERY_PERFORMANCE_REPORT"] = "SEARCH_QUERY_PERFORMANCE_REPORT"
+    query_fields: list[str] = Field(default_factory=list)
+    total_count: int = Field(default=0, ge=0)
+    limit: int = Field(default=1000, ge=1, le=5000)
+    offset: int = Field(default=0, ge=0)
+    reconciliation: YandexSearchQueryReconciliation | None = None
+    partial_failure: bool = False
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class YandexRawResult(BaseModel):

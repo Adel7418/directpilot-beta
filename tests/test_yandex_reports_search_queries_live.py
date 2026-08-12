@@ -162,12 +162,26 @@ def test_search_queries_in_mock_mode_uses_mock_payload(client_with_client: TestC
 def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_tsv(
     client_with_client: TestClient,
 ):
-    captured: dict[str, Any] = {}
+    captured: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["url"] = str(request.url)
-        captured["authorization"] = request.headers.get("Authorization")
-        captured["body"] = json.loads(request.content.decode())
+        payload = json.loads(request.content.decode())
+        captured.append(
+            {
+                "url": str(request.url),
+                "authorization": request.headers.get("Authorization"),
+                "body": payload,
+            }
+        )
+        if payload["params"]["ReportType"] == "CAMPAIGN_PERFORMANCE_REPORT":
+            return httpx.Response(
+                200,
+                content=(
+                    "Date\tCampaignId\tCampaignName\tImpressions\tClicks\tCost\tCtr\n"
+                    "2026-08-11\t710691939\tЛокальный сервис\t860\t33\t980.00\t3.84\n"
+                ),
+                headers={"Units": "RUB", "Content-Type": "text/tab-separated-values"},
+            )
         return httpx.Response(
             200,
             content=_search_query_tsv(),
@@ -212,17 +226,19 @@ def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_ts
     # Period reflects the default 7-day range
     assert body["period"] != "last_7_days"
     assert ".." in body["period"]
-    # The report endpoint was hit
-    assert captured["url"].endswith("/reports")
-    assert captured["body"]["params"]["ReportType"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
-    assert captured["body"]["params"]["DateRangeType"] == "CUSTOM_DATE"
-    assert "DateFrom" in captured["body"]["params"]["SelectionCriteria"]
-    assert "DateTo" in captured["body"]["params"]["SelectionCriteria"]
+    # The typed query report runs before one read-only campaign reconciliation.
+    assert [entry["url"].endswith("/reports") for entry in captured] == [True, True]
+    query_request, campaign_request = captured
+    assert query_request["body"]["params"]["ReportType"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
+    assert campaign_request["body"]["params"]["ReportType"] == "CAMPAIGN_PERFORMANCE_REPORT"
+    assert query_request["body"]["params"]["DateRangeType"] == "CUSTOM_DATE"
+    assert "DateFrom" in query_request["body"]["params"]["SelectionCriteria"]
+    assert "DateTo" in query_request["body"]["params"]["SelectionCriteria"]
     # Token must not leak into the response or the captured Authorization.
     assert "LRO-SECRET" not in response.text
-    assert captured["authorization"] == "Bearer LRO-SECRET"
-    # FieldNames should match the live contract.
-    fields = captured["body"]["params"]["FieldNames"]
+    assert all(entry["authorization"] == "Bearer LRO-SECRET" for entry in captured)
+    # FieldNames should match the live query contract.
+    fields = query_request["body"]["params"]["FieldNames"]
     assert fields == [
         "Query",
         "CampaignId",

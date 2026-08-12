@@ -39,7 +39,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть минус-слова по группам | `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords` | текущие `negative_keywords` и `has_negative_keywords` по `ad_group_id` |
 | Обновить минус-слова группы | `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords` | `operation=add|replace`, `approved=true`, `idempotency_key`, `dry_run`; `dry_run=false` только в `live_write`; preview/readback через ответ endpoint |
 | Сводка по рекламе | `GET /yandex/reports/summary` | показы, клики, расходы, CTR/CPC; **live** в `sandbox`/`live_readonly`/`live_write` (источник `CAMPAIGN_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock` |
-| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные поисковые запросы с разрезом на `campaign_id` / `campaign_name` / `ad_group_id`; `cost` в ₽, `impressions`, `clicks`, `ctr` — для fast breakdown; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; пустой live-отчёт = `items=[]` с `source="yandex"` (не mock-fallback) | Data shape: `query`, `campaign_id`, `campaign_name` (nullable), `ad_group_id`, `impressions`, `clicks`, `ctr`, `cost` |
+| Поисковые запросы | `GET /yandex/reports/search-queries` | реальные поисковые запросы с разрезом на `campaign_id` / `campaign_name` / `ad_group_id`; `cost` в ₽, `impressions`, `clicks`, `ctr`; **live** в `sandbox`/`live_readonly`/`live_write` (источник `SEARCH_QUERY_PERFORMANCE_REPORT`); mock — только при `DIRECTPILOT_MODE=mock`; валидно пустой account-wide report запускает bounded read-only per-campaign fallback, explicit `campaign_id` не fan-out | Data shape: item fields + pagination `total_count`/`limit`/`offset`, typed `reconciliation`, `partial_failure`, safe `warnings` |
 
 | Опубликовать черновик в live-direct | `POST /yandex/campaigns/live-create` | Используйте `approved=true`, `idempotency_key`, `dry_run`; проверяйте `stages_executed`, `not_implemented`, `ad_group_ids`/`ad_ids`/`keyword_ids` |
 | Добавить объявления в существующую группу | `POST /yandex/ad-groups/{ad_group_id}/ads` | `dry_run=true` для preview; в ответе смотрите `warnings` — наследование BusinessId/SitelinkSetId; ключи/минуса отдельно; также проверяйте `provider_warnings` для нефатальных отклонений Яндекса (напр. `code: 10165` — параметр проигнорирован) — `details` покажет какой именно параметр не был применён; `dry_run=false` только в `live_write` с `approved=true` + `idempotency_key` |
@@ -79,18 +79,45 @@ DirectPilot — единая прослойка для маркетолога:
 Важно по `GET /yandex/reports/search-queries`:
 
 - В `sandbox` / `live_readonly` / `live_write` с настроенной интеграцией endpoint
-  возвращает `source="yandex"` и реальный результат `SEARCH_QUERY_PERFORMANCE_REPORT` (`Query / CampaignId / CampaignName / AdGroupId /
-  Impressions / Clicks / Ctr / Cost`). В ответе API-контрактные поля:
-  `query`, `campaign_id`, `campaign_name`, `ad_group_id`, `impressions`, `clicks`, `ctr`, `cost` (где `cost` может быть `null`/`0`, `campaign_name` — nullable).
-  Если `CampaignName` отсутствует, endpoint дополняет имя через
-  `campaigns.get` по `CampaignId`.
-  Источник: `SEARCH_QUERY_PERFORMANCE_REPORT`.
+  возвращает `source="yandex"` и типизированные строки
+  `SEARCH_QUERY_PERFORMANCE_REPORT` (`Query / CampaignId / CampaignName /
+  AdGroupId / Impressions / Clicks / Ctr / Cost`). Прежние поля item остаются:
+  `query`, `campaign_id`, `campaign_name`, `ad_group_id`, `impressions`,
+  `clicks`, `ctr`, `cost`; `campaign_name`, `ad_group_id`, `ctr`, `cost` могут
+  быть `null`. Если `CampaignName` отсутствует, endpoint дополняет имя через
+  read-only `campaigns.get` по `CampaignId`.
+- Query params: `date_from`, `date_to`, optional `campaign_id`,
+  `include_zero_clicks=true`, `limit=1000` (`1..5000`) и `offset=0` (`>=0`).
+  При `include_zero_clicks=false` строки с `clicks == 0` исключаются до pagination;
+  `total_count` — число после этого filter и до slice, а `items` — запрошенная
+  страница. `limit` и `offset` возвращаются в typed response.
+- Response содержит `reconciliation` для полного запрошенного scope, до filter и
+  pagination: сверка Query totals с read-only `CAMPAIGN_PERFORMANCE_REPORT` за
+  тот же date range и тот же scope (`campaign_id` — если задан, иначе account-wide).
+  Смотрите вместе `search_query_clicks`, `campaign_clicks`, `clicks_match`,
+  `search_query_cost`, `campaign_cost`, `cost_delta`, `cost_tolerance`,
+  `cost_within_tolerance`, `status`. Несовпадение — диагностический сигнал, не
+  причина удалять валидные Query items.
+- Сумма `Cost` может быть округлена на уровне каждой Query-строки. Допуск
+  детерминирован: `ceil(0.005 ₽ × число строк)` до копеек, минимум `0.01 ₽`.
+  Пример: 51 Query rows с суммой `2914.39 ₽` и campaign total `2914.37 ₽`
+  дают `cost_delta=0.02 ₽`, `cost_tolerance=0.26 ₽`,
+  `cost_within_tolerance=true`; 11 clicks совпадают точно.
+- Если reconciliation campaign report недоступен, Query items не скрываются:
+  `reconciliation=null`, `partial_failure=true`, в `warnings` находится только
+  безопасный allowlisted `code`/`provider_error`. Raw TSV/body/headers, OAuth
+  token и request payload не выдаются. Этот endpoint, fallback и reconciliation
+  выполняют только read-only вызовы; они не пишут в Yandex Direct.
+- Валидный пустой account-wide Query report запускает bounded read-only
+  per-campaign fallback с dedupe. Для explicit `campaign_id` fan-out не
+  выполняется. Ошибка отдельной campaign fallback остаётся
+  `partial_failure=true` + safe warning, а не притворным пустым успехом.
+  Missing/malformed Query report contract возвращает structured HTTP 502;
+  корректный пустой report — не 502 и не mock fallback.
 - `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`; если в
   live-режимах вы видите старые mock-фразы (`сантехник на дом казань`,
   `вызов электрика недорого`, `ремонт квартир под ключ`) — это баг
   конфигурации, а не ожидаемое поведение.
-- Пустой live-отчёт (нет строк за период) — **валидный** ответ:
-  `items=[]`, `source="yandex"`, `read_only=true`. Не 502, не mock-fallback.
 - Фильтр `campaign_id` уходит в Reports API как
   `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN",
   Values: ["..."]}]`, **не** `SelectionCriteria.CampaignIds` (эта форма

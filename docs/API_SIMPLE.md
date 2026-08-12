@@ -939,13 +939,19 @@ Endpoint использует источник `SEARCH_QUERY_PERFORMANCE_REPORT`
 
 Поведение для маркетинговой декомпозиции:
 
-- `ad_group_id` есть всегда при валидной строке отчёта; если его нет в строке TSV — строка отбрасывается.
+- `ad_group_id`, `ctr`, `cost`, `date` могут быть `null`, если соответствующая
+  колонка отсутствует или значение недоступно в валидной строке отчёта.
 - `campaign_id` после парсинга нормализуется в строковый id (например `710691939`).
 - `campaign_name` fallback может быть `null`, если не удалось собрать имя по `CampaignId`.
-- Неудалённые/битые строки TSV (не число в `Impressions/Clicks/Ctr` или короткая строка)
-  отбрасываются, но endpoint всё равно возвращает 200.
-- Если для периода реально нет показов — валидный ответ `items=[]`, `source="yandex"`,
-  `read_only=true` (не 502 и не mock-fallback).
+- Битые data-строки TSV (короткая строка или нечисловые `Impressions/Clicks/Ctr`)
+  отбрасываются, но endpoint всё равно возвращает 200. Отсутствие обязательной
+  колонки `Query` или другого обязательного контрактного столбца — безопасная
+  structured HTTP 502, а не ложный пустой отчёт.
+- Если account-wide Query-отчёт валидно пуст, DirectPilot делает bounded
+  read-only fallback: читает список кампаний и последовательно запрашивает
+  Query-отчёт по каждой кампании, дедуплицируя строки. Для явного
+  `campaign_id` fan-out запрещён. Ошибка отдельной кампании возвращается как
+  `partial_failure=true` и safe warning, а не как притворное `items=[]`.
 
 Опциональные query-параметры:
 
@@ -955,13 +961,44 @@ Endpoint использует источник `SEARCH_QUERY_PERFORMANCE_REPORT`
   передаётся через `SelectionCriteria.Filter = [{Field: "CampaignId",
   Operator: "IN", Values: ["..."]}]`, **не** через `SelectionCriteria.CampaignIds`
   (эта форма возвращает HTTP 400 на reports endpoint).
-- `ReportName` должен быть уникальным для набора параметров отчёта. Live Direct
-  вернул HTTP 400 `error_code=4000`, когда один и тот же `ReportName`
-  использовался с разными fields/date/filter: `Отчет с таким названием, но с
-  отличающимися параметрами уже сформирован или находится в очереди. Измените
-  значение в параметре ReportName`. DirectPilot добавляет стабильный hash от
-  `ReportType + SelectionCriteria + FieldNames`, чтобы внешний агент не
-  повторял эту ошибку.
+- `include_zero_clicks: bool = true` — сохраняет backward-compatible полный
+  список. При `false` строки с `clicks == 0` отбрасываются **до** pagination.
+- `limit: int = 1000` — размер страницы, допустимый диапазон `1..5000`.
+- `offset: int = 0` — число строк для пропуска после filter, должно быть `>= 0`.
+
+Типизированный ответ сохраняет все прежние поля и добавляет:
+
+- `total_count` — число строк после `include_zero_clicks` filter, но до slice;
+- `limit`, `offset`; `items` — ровно slice указанной страницы;
+- `reconciliation` — typed сопоставление полного Query scope с
+  `CAMPAIGN_PERFORMANCE_REPORT` за тот же date range и тот же campaign scope:
+  `search_query_clicks`, `campaign_clicks`, `clicks_match`,
+  `search_query_cost`, `campaign_cost`, `cost_delta`, `cost_tolerance`,
+  `cost_within_tolerance`, `status` (`matched`/`mismatch`). Оно вычисляется до
+  filter/pagination, чтобы страница не искажала диагностику;
+- `partial_failure`, `warnings` — только безопасные allowlisted diagnostics.
+
+`Cost` каждой Query-строки может быть округлён до копеек отдельно от агрегата
+campaign report. Допуск детерминированный: `ceil(0.005 ₽ × число строк)` до
+копейки, минимум `0.01 ₽`. Например, при 51 строке суммы Query `2914.39 ₽` и
+campaign `2914.37 ₽` дают `cost_delta=0.02 ₽`, `cost_tolerance=0.26 ₽`,
+`cost_within_tolerance=true`; 11 clicks совпадают точно. Такое округление не
+превращает валидные Query items в ошибку.
+
+Если отдельный `CAMPAIGN_PERFORMANCE_REPORT` для reconciliation недоступен,
+Query items всё равно возвращаются: `reconciliation=null`,
+`partial_failure=true`, warning с безопасными `code`/`provider_error`.
+Сырые TSV/provider body, headers, OAuth token, cookies и request payload в этом
+warning не возвращаются. Этот endpoint и reconciliation выполняют только
+read-only Reports API calls; они не создают и не изменяют данные в Yandex Direct.
+
+`ReportName` должен быть уникальным для набора параметров отчёта. Live Direct
+вернул HTTP 400 `error_code=4000`, когда один и тот же `ReportName`
+использовался с разными fields/date/filter: `Отчет с таким названием, но с
+отличающимися параметрами уже сформирован или находится в очереди. Измените
+значение в параметре ReportName`. DirectPilot добавляет стабильный hash от
+`ReportType + SelectionCriteria + FieldNames`, чтобы внешний агент не
+повторял эту ошибку.
 
 Практический разбор для маркетинга (campaign breakdown):
 
