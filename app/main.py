@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+import io
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -79,6 +82,7 @@ from app.models import (
     YandexSearchApiResult,
     YandexSearchQueriesReport,
     YandexSearchQuery,
+    YandexSearchQueryReconciliation,
     YandexSitelinkItem,
     YandexSitelinkSetItem,
     YandexTimeTargetingRequest,
@@ -2190,9 +2194,9 @@ def _aggregate_campaign_performance_tsv(
     return {"impressions": impressions, "clicks": clicks, "spend": spend}
 
 
-# Default field set for SEARCH_QUERY_PERFORMANCE_REPORT. The order matches
-# what we request from Yandex and what the parser expects by default:
-# Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost.
+# Typed field set for SEARCH_QUERY_PERFORMANCE_REPORT. It is deliberately
+# separate from the campaign-performance default set: Query is required for
+# this endpoint and campaign-summary fields must not silently replace it.
 _SEARCH_QUERY_REPORT_FIELDS: tuple[str, ...] = (
     "Query",
     "CampaignId",
@@ -2202,6 +2206,39 @@ _SEARCH_QUERY_REPORT_FIELDS: tuple[str, ...] = (
     "Ctr",
     "Cost",
 )
+_SEARCH_QUERY_REPORT_TYPE = "SEARCH_QUERY_PERFORMANCE_REPORT"
+_SEARCH_QUERY_FALLBACK_CAMPAIGN_LIMIT = 100
+_SEARCH_QUERY_REQUIRED_COLUMNS = ("Query", "CampaignId", "Impressions", "Clicks", "Cost")
+_SEARCH_QUERY_PUBLIC_ERROR_KEYS = (
+    "provider",
+    "service",
+    "method",
+    "report_type",
+    "http_status",
+    "error_code",
+    "error_string",
+    "error_detail",
+)
+
+
+class _SearchQueryReportParseError(ValueError):
+    def __init__(self, error_code: str, error_detail: str) -> None:
+        super().__init__(error_detail)
+        self.diagnostics = {
+            "provider": "yandex_direct",
+            "service": "reports",
+            "method": "POST",
+            "report_type": _SEARCH_QUERY_REPORT_TYPE,
+            "error_code": error_code,
+            "error_string": "Search query report parse contract violation",
+            "error_detail": error_detail,
+        }
+
+
+class _SearchQueryTsvParseResult:
+    def __init__(self, items: list[YandexSearchQuery], *, valid_empty: bool) -> None:
+        self.items = items
+        self.valid_empty = valid_empty
 
 
 def _normalize_direct_id(value: str | None) -> str | None:
@@ -2214,32 +2251,72 @@ def _normalize_direct_id(value: str | None) -> str | None:
         return normalized
 
 
-def _find_search_query_column(
-    column_name: str,
-    header_map: dict[str, int] | None,
-    fallback_index: int,
-) -> int:
-    if header_map and column_name in header_map:
-        return header_map[column_name]
-    return fallback_index
-
-
 _DIRECT_REPORT_DOT_DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
+_DIRECT_REPORT_LOCALIZED_DECIMAL = re.compile(r"[0-9]+(?:[.,][0-9]+)?")
+_DIRECT_REPORT_LOCALIZED_INTEGER = re.compile(r"[0-9]+")
 
 
 def _parse_yandex_report_number(
     value: str,
     *,
     max_fractional_digits: int | None = None,
+    allow_localized: bool = False,
 ) -> float:
-    """Parse a Direct-owned ASCII dot-decimal report token."""
-    if _DIRECT_REPORT_DOT_DECIMAL.fullmatch(value) is None:
-        raise ValueError("Direct report number must be an ASCII dot-decimal token")
-    if max_fractional_digits is not None and "." in value:
-        fractional_digits = len(value.rsplit(".", maxsplit=1)[1])
+    """Parse a report numeric token without accepting arbitrary locale input.
+
+    Legacy callers retain strict Direct ASCII-dot parsing. The parsed endpoint
+    additionally accepts the documented human-readable form with grouping
+    spaces/NBSP and a comma decimal separator.
+    """
+    normalized = value
+    if allow_localized:
+        normalized = normalized.strip().replace("\u00a0", "").replace("\u202f", "").replace(" ", "")
+        if "," in normalized:
+            normalized = normalized.replace(",", ".")
+        valid = _DIRECT_REPORT_LOCALIZED_DECIMAL.fullmatch(normalized) is not None
+    else:
+        valid = _DIRECT_REPORT_DOT_DECIMAL.fullmatch(normalized) is not None
+    if not valid:
+        raise ValueError("Direct report number has an unsupported format")
+    if max_fractional_digits is not None and "." in normalized:
+        fractional_digits = len(normalized.rsplit(".", maxsplit=1)[1])
         if fractional_digits > max_fractional_digits:
             raise ValueError("Direct report number has too many fractional digits")
-    return float(value)
+    return float(normalized)
+
+
+def _parse_yandex_report_int(value: str, *, allow_localized: bool) -> int:
+    normalized = value
+    if allow_localized:
+        normalized = normalized.strip().replace("\u00a0", "").replace("\u202f", "").replace(" ", "")
+    if _DIRECT_REPORT_LOCALIZED_INTEGER.fullmatch(normalized) is None:
+        raise ValueError("Direct report integer has an unsupported format")
+    return int(normalized)
+
+
+def _search_query_error_detail(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    """Return the Reports endpoint's fixed, redacted public error envelope."""
+    return {
+        key: diagnostics[key]
+        for key in _SEARCH_QUERY_PUBLIC_ERROR_KEYS
+        if key in diagnostics and diagnostics[key] is not None
+    }
+
+
+def _is_search_query_provider_error(diagnostics: Any) -> bool:
+    return (
+        isinstance(diagnostics, dict)
+        and diagnostics.get("service") == "reports"
+        and diagnostics.get("method") == "POST"
+        and diagnostics.get("report_type") == _SEARCH_QUERY_REPORT_TYPE
+        and any(key in diagnostics for key in ("error_code", "error_string", "error_detail"))
+    )
+
+
+def _search_query_report_error_to_502(
+    diagnostics: dict[str, Any],
+) -> HTTPException:
+    return HTTPException(status_code=502, detail=_search_query_error_detail(diagnostics))
 
 
 def _lookup_search_query_campaign_names(
@@ -2248,8 +2325,8 @@ def _lookup_search_query_campaign_names(
 ) -> dict[str, str]:
     """Map requested campaign ids to names using ``campaigns.get``.
 
-    Network failures here must never fail report parsing in the happy path,
-    so callers should treat an empty mapping as a non-blocking fallback.
+    This optional enrichment must not invalidate a successfully parsed report;
+    empty mapping simply leaves ``campaign_name`` null.
     """
     try:
         campaigns_result = client.campaigns_get()
@@ -2273,86 +2350,327 @@ def _lookup_search_query_campaign_names(
     return names_by_id
 
 
+def _parse_search_query_tsv(
+    tsv_text: str,
+    *,
+    campaign_id: str | None = None,
+    campaign_name_map: dict[str, str] | None = None,
+    allow_localized_numbers: bool = True,
+) -> _SearchQueryTsvParseResult:
+    """Header-drive a SEARCH_QUERY_PERFORMANCE_REPORT TSV into typed rows.
+
+    Empty body and header-only body with the required Query contract are valid
+    empty provider successes. A non-empty body that violates the column
+    contract raises a redacted parse error instead of becoming ``items=[]``.
+    """
+    normalized_filter = _normalize_direct_id(campaign_id)
+    rows = [row for row in csv.reader(io.StringIO(tsv_text.lstrip("\ufeff")), delimiter="\t") if any(cell.strip() for cell in row)]
+    if not rows:
+        return _SearchQueryTsvParseResult([], valid_empty=True)
+
+    header = [column.lstrip("\ufeff") for column in rows[0]]
+    header_map = {name: index for index, name in enumerate(header) if name}
+    if "Query" not in header_map:
+        raise _SearchQueryReportParseError("missing_query_column", "Required Query column is missing")
+    missing_columns = [column for column in _SEARCH_QUERY_REQUIRED_COLUMNS if column not in header_map]
+    if missing_columns:
+        raise _SearchQueryReportParseError(
+            "missing_required_column",
+            f"Required report column is missing: {missing_columns[0]}",
+        )
+
+    data_rows = rows[1:]
+    if not data_rows:
+        return _SearchQueryTsvParseResult([], valid_empty=True)
+
+    required_max_index = max(header_map[column] for column in _SEARCH_QUERY_REQUIRED_COLUMNS)
+    optional_indexes = {
+        column: header_map[column]
+        for column in ("CampaignName", "AdGroupId", "Ctr", "Date")
+        if column in header_map
+    }
+    items: list[YandexSearchQuery] = []
+    for cols in data_rows:
+        if len(cols) <= required_max_index:
+            continue
+        query = cols[header_map["Query"]]
+        if not query.strip():
+            raise _SearchQueryReportParseError("empty_query_value", "Required Query value is empty")
+        row_campaign_id = _normalize_direct_id(cols[header_map["CampaignId"]])
+        if not row_campaign_id:
+            continue
+        if normalized_filter is not None and row_campaign_id != normalized_filter:
+            continue
+        try:
+            impressions = _parse_yandex_report_int(
+                cols[header_map["Impressions"]], allow_localized=allow_localized_numbers
+            )
+            clicks = _parse_yandex_report_int(
+                cols[header_map["Clicks"]], allow_localized=allow_localized_numbers
+            )
+        except ValueError:
+            continue
+
+        def optional_value(column: str) -> str | None:
+            index = optional_indexes.get(column)
+            return cols[index] if index is not None and len(cols) > index and cols[index] else None
+
+        ctr: float | None = None
+        ctr_text = optional_value("Ctr")
+        if ctr_text is not None:
+            try:
+                ctr = round(
+                    _parse_yandex_report_number(ctr_text, allow_localized=allow_localized_numbers),
+                    4,
+                )
+            except ValueError:
+                continue
+
+        cost: float | None = None
+        cost_text = cols[header_map["Cost"]]
+        if cost_text:
+            try:
+                cost = _parse_yandex_report_number(
+                    cost_text,
+                    max_fractional_digits=2,
+                    allow_localized=allow_localized_numbers,
+                )
+            except ValueError:
+                cost = None
+
+        campaign_name = optional_value("CampaignName")
+        if not campaign_name and campaign_name_map is not None:
+            campaign_name = campaign_name_map.get(row_campaign_id)
+        items.append(
+            YandexSearchQuery(
+                date=optional_value("Date"),
+                query=query,
+                campaign_id=row_campaign_id,
+                campaign_name=campaign_name,
+                ad_group_id=optional_value("AdGroupId"),
+                impressions=impressions,
+                clicks=clicks,
+                ctr=ctr,
+                cost=cost,
+            )
+        )
+    return _SearchQueryTsvParseResult(items, valid_empty=False)
+
+
 def _aggregate_search_query_tsv(
     tsv_text: str,
     campaign_id: str | None = None,
     campaign_name_map: dict[str, str] | None = None,
 ) -> list[YandexSearchQuery]:
-    """Parse a SEARCH_QUERY_PERFORMANCE_REPORT TSV into YandexSearchQuery items.
+    """Compatibility wrapper retaining strict numeric parsing for callers.
 
-    Expected input is the default field order requested from Yandex
-    (Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost),
-    but the parser is tolerant of legacy payloads that include CampaignName.
-
-    Rows whose ``CampaignId`` does not match the optional ``campaign_id`` filter
-    are dropped. Numeric parse errors on metric columns do not fail the endpoint;
-    malformed rows are skipped silently, while empty input remains a valid
-    response with ``items=[]``.
+    The endpoint uses ``_parse_search_query_tsv`` directly with localized
+    report-number normalization enabled. Existing unit callers retain the
+    previous strict Direct decimal contract.
     """
-    normalized_filter = _normalize_direct_id(campaign_id)
-
-    rows = [line for line in tsv_text.splitlines() if line.strip()]
-    if not rows:
+    try:
+        return _parse_search_query_tsv(
+            tsv_text,
+            campaign_id=campaign_id,
+            campaign_name_map=campaign_name_map,
+            allow_localized_numbers=False,
+        ).items
+    except _SearchQueryReportParseError:
         return []
 
-    header_map: dict[str, int] | None = None
-    first_columns = rows[0].split("\t")
-    if first_columns and first_columns[0].lower() == "query":
-        header_map = {name: idx for idx, name in enumerate(first_columns) if name}
-        rows = rows[1:]
+
+def _deduplicate_search_query_items(items: list[YandexSearchQuery]) -> list[YandexSearchQuery]:
+    seen: set[tuple[str | None, str, str, str | None]] = set()
+    deduplicated: list[YandexSearchQuery] = []
+    for item in items:
+        key = (item.date, item.query, item.campaign_id, item.ad_group_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(item)
+    return deduplicated
+
+
+def _search_query_provider_error(diagnostics: Any, *, report_type: str) -> dict[str, Any]:
+    """Return the fixed public provider envelope, never raw response material."""
+    if isinstance(diagnostics, dict) and diagnostics.get("service") == "reports":
+        return _search_query_error_detail(diagnostics)
+    return {
+        "provider": "yandex_direct",
+        "service": "reports",
+        "method": "POST",
+        "report_type": report_type,
+    }
+
+
+def _search_query_reconciliation(
+    items: list[YandexSearchQuery],
+    campaign_totals: dict[str, float | int],
+) -> YandexSearchQueryReconciliation:
+    """Compare full typed query rows to CAMPAIGN_PERFORMANCE_REPORT totals.
+
+    Direct may round each query-row Cost to kopecks while its campaign report
+    uses an aggregate amount. The maximum deterministic rounding drift is
+    0.005 RUB per row, rounded up to kopecks, with a 0.01 RUB minimum.
+    """
+    query_clicks = sum(item.clicks for item in items)
+    query_cost = sum((Decimal(str(item.cost)) for item in items if item.cost is not None), Decimal("0"))
+    campaign_clicks = int(campaign_totals["clicks"])
+    campaign_cost = Decimal(str(campaign_totals["spend"]))
+    cost_delta = query_cost - campaign_cost
+    tolerance = max(
+        Decimal("0.01"),
+        (Decimal(len(items)) * Decimal("0.005")).quantize(Decimal("0.01"), rounding=ROUND_CEILING),
+    )
+    clicks_match = query_clicks == campaign_clicks
+    cost_within_tolerance = abs(cost_delta) <= tolerance
+    return YandexSearchQueryReconciliation(
+        search_query_clicks=query_clicks,
+        campaign_clicks=campaign_clicks,
+        clicks_match=clicks_match,
+        search_query_cost=float(query_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        campaign_cost=float(campaign_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        cost_delta=float(cost_delta.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
+        cost_tolerance=float(tolerance),
+        cost_within_tolerance=cost_within_tolerance,
+        status="matched" if clicks_match and cost_within_tolerance else "mismatch",
+    )
+
+
+def _reconcile_search_query_report(
+    client: YandexDirectClient,
+    *,
+    items: list[YandexSearchQuery],
+    date_from: str,
+    date_to: str,
+    campaign_id: str | None,
+) -> tuple[YandexSearchQueryReconciliation | None, dict[str, Any] | None]:
+    """Read matching campaign totals; preserve valid query rows on failure."""
+    report_kwargs: dict[str, Any] = {"date_from": date_from, "date_to": date_to}
+    if campaign_id is not None:
+        report_kwargs["campaign_ids"] = [campaign_id]
+    try:
+        response = client.report("CAMPAIGN_PERFORMANCE_REPORT", **report_kwargs)
+    except YandexDirectError as exc:
+        return None, {
+            "code": "search_query_reconciliation_failure",
+            "provider_error": _search_query_provider_error(
+                exc.diagnostics, report_type="CAMPAIGN_PERFORMANCE_REPORT"
+            ),
+        }
+    if not response.get("ok"):
+        return None, {
+            "code": "search_query_reconciliation_failure",
+            "provider_error": _search_query_provider_error(
+                response.get("diagnostics"), report_type="CAMPAIGN_PERFORMANCE_REPORT"
+            ),
+        }
+    totals = _aggregate_campaign_performance_tsv(
+        str(response.get("result") or ""), campaign_id=campaign_id
+    )
+    return _search_query_reconciliation(items, totals), None
+
+
+def _fallback_search_query_reports(
+    client: YandexDirectClient,
+    *,
+    date_from: str,
+    date_to: str,
+) -> tuple[list[YandexSearchQuery], list[dict[str, Any]], bool]:
+    """Bounded account-wide fallback after one valid empty report success."""
+    try:
+        campaigns_response = client.campaigns_get()
+    except YandexDirectError:
+        return [], [{"code": "search_query_fallback_campaign_list_failure"}], True
+    if not campaigns_response.get("ok"):
+        return [], [{"code": "search_query_fallback_campaign_list_failure"}], True
+
+    result = campaigns_response.get("result")
+    campaign_rows = _extract_campaigns(result if isinstance(result, dict) else None)
+    campaign_name_map = {
+        campaign_id: campaign_name
+        for campaign in campaign_rows
+        if isinstance((campaign_id := campaign.get("id")), str)
+        and campaign_id
+        and isinstance((campaign_name := campaign.get("name")), str)
+        and campaign_name
+    }
+    campaign_ids = list(campaign_name_map)
+    warnings: list[dict[str, Any]] = []
+    partial_failure = False
+    if len(campaign_ids) > _SEARCH_QUERY_FALLBACK_CAMPAIGN_LIMIT:
+        campaign_ids = campaign_ids[:_SEARCH_QUERY_FALLBACK_CAMPAIGN_LIMIT]
+        partial_failure = True
+        warnings.append(
+            {
+                "code": "search_query_fallback_campaign_limit",
+                "campaign_limit": _SEARCH_QUERY_FALLBACK_CAMPAIGN_LIMIT,
+            }
+        )
 
     items: list[YandexSearchQuery] = []
-    for cols in [row.split("\t") for row in rows]:
-        query_idx = _find_search_query_column("Query", header_map, 0)
-        campaign_id_idx = _find_search_query_column("CampaignId", header_map, 1)
-        ad_group_id_idx = _find_search_query_column("AdGroupId", header_map, 2)
-        impressions_idx = _find_search_query_column("Impressions", header_map, 3)
-        clicks_idx = _find_search_query_column("Clicks", header_map, 4)
-        ctr_idx = _find_search_query_column("Ctr", header_map, 5)
-        cost_idx = _find_search_query_column("Cost", header_map, 6)
-        campaign_name_idx = _find_search_query_column("CampaignName", header_map, -1)
-
-        if len(cols) <= max(campaign_id_idx, ad_group_id_idx, impressions_idx, clicks_idx, ctr_idx):
-            continue
-        row_campaign_id = _normalize_direct_id(cols[campaign_id_idx])
-        if row_campaign_id is None:
-            row_campaign_id = cols[campaign_id_idx]
-        if normalized_filter is not None and row_campaign_id != normalized_filter:
-            continue
-
+    for scoped_campaign_id in campaign_ids:
         try:
-            impressions = int(cols[impressions_idx])
-            clicks = int(cols[clicks_idx])
-            ctr = _parse_yandex_report_number(cols[ctr_idx])
-        except (IndexError, ValueError):
-            continue
-
-        campaign_name = cols[campaign_name_idx] if campaign_name_idx >= 0 and len(cols) > campaign_name_idx else None
-        if not campaign_name and campaign_name_map is not None:
-            campaign_name = campaign_name_map.get(_normalize_direct_id(row_campaign_id) or row_campaign_id)
-
-        cost: float | None = None
-        if len(cols) > cost_idx:
-            cost_text = cols[cost_idx]
-            if cost_text:
-                try:
-                    cost = _parse_yandex_report_number(cost_text, max_fractional_digits=2)
-                except ValueError:
-                    cost = None
-
-        items.append(
-            YandexSearchQuery(
-                query=cols[query_idx],
-                campaign_id=row_campaign_id,
-                campaign_name=campaign_name,
-                ad_group_id=cols[ad_group_id_idx],
-                impressions=impressions,
-                clicks=clicks,
-                ctr=round(ctr, 4),
-                cost=cost,
+            report_response = client.report(
+                _SEARCH_QUERY_REPORT_TYPE,
+                date_from=date_from,
+                date_to=date_to,
+                field_names=list(_SEARCH_QUERY_REPORT_FIELDS),
+                campaign_ids=[scoped_campaign_id],
             )
-        )
-    return items
+        except YandexDirectError as exc:
+            diagnostics = exc.diagnostics
+            provider_error = _search_query_error_detail(diagnostics) if _is_search_query_provider_error(diagnostics) else {
+                "provider": "yandex_direct",
+                "service": "reports",
+                "method": "POST",
+                "report_type": _SEARCH_QUERY_REPORT_TYPE,
+            }
+            warnings.append(
+                {
+                    "code": "search_query_fallback_campaign_failure",
+                    "campaign_id": scoped_campaign_id,
+                    "provider_error": provider_error,
+                }
+            )
+            partial_failure = True
+            continue
+        if not report_response.get("ok"):
+            diagnostics = report_response.get("diagnostics")
+            provider_error = _search_query_error_detail(diagnostics) if _is_search_query_provider_error(diagnostics) else {
+                "provider": "yandex_direct",
+                "service": "reports",
+                "method": "POST",
+                "report_type": _SEARCH_QUERY_REPORT_TYPE,
+            }
+            warnings.append(
+                {
+                    "code": "search_query_fallback_campaign_failure",
+                    "campaign_id": scoped_campaign_id,
+                    "provider_error": provider_error,
+                }
+            )
+            partial_failure = True
+            continue
+        try:
+            parsed = _parse_search_query_tsv(
+                str(report_response.get("result") or ""),
+                campaign_id=scoped_campaign_id,
+                campaign_name_map=campaign_name_map,
+            )
+        except _SearchQueryReportParseError as exc:
+            warnings.append(
+                {
+                    "code": "search_query_fallback_campaign_failure",
+                    "campaign_id": scoped_campaign_id,
+                    "provider_error": _search_query_error_detail(exc.diagnostics),
+                }
+            )
+            partial_failure = True
+            continue
+        items.extend(parsed.items)
+
+    return _deduplicate_search_query_items(items), warnings, partial_failure
 
 
 @app.get(
@@ -2360,38 +2678,25 @@ def _aggregate_search_query_tsv(
     response_model=YandexSearchQueriesReport,
     responses={
         409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
-        502: {"description": "Redacted Yandex Direct Reports API error."},
+        502: {"description": "Redacted Yandex Direct Reports API or TSV contract error."},
     },
 )
 def yandex_search_queries(
     date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to 7 days ago."),
     date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to today."),
     campaign_id: str | None = Query(default=None, description="Optional Yandex Direct campaign id filter."),
+    include_zero_clicks: bool = Query(
+        default=True,
+        description="Include rows with zero clicks. false filters them before pagination.",
+    ),
+    limit: int = Query(default=1000, ge=1, le=5000, description="Maximum typed rows to return."),
+    offset: int = Query(default=0, ge=0, description="Rows to skip after click filtering."),
     settings: Settings = Depends(get_settings),
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> YandexSearchQueriesReport:
-    """Search query performance for the requested period.
-
-    In ``DIRECTPILOT_MODE=mock`` the deterministic mock payload is returned
-    (with ``source="mock"``). In any non-mock mode (``sandbox`` /
-    ``live_readonly`` / ``live_write``) with a configured Yandex Direct
-    client, the live ``SEARCH_QUERY_PERFORMANCE_REPORT`` v5 reports
-    endpoint is called and the TSV is parsed into YandexSearchQuery items
-    with ``source="yandex"``, ``read_only=True``. An empty live report is
-    a valid response — it returns ``items=[]`` and ``source="yandex"``,
-    not a mock fallback and not a 502.
-
-    When the live mode is selected but no client/token is available the
-    endpoint surfaces HTTP 409 (same contract as
-    ``/yandex/reports/summary`` and the other read-only endpoints), not
-    a silent mock — marketing must not mistake mock numbers for live
-    numbers.
-    """
-    # Fallback path: mock mode, or live mode but no client/token.
+    """Read typed search-query rows with full-scope reconciliation diagnostics."""
     if settings.directpilot_mode == "mock" or client is None:
         if settings.directpilot_mode != "mock":
-            # Live read mode without a usable client — be explicit
-            # rather than silently returning mock data.
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -2399,21 +2704,24 @@ def yandex_search_queries(
                     "mode with Yandex credentials"
                 ),
             )
-        items = [YandexSearchQuery(**q) for q in mock_yandex.search_queries()]
+        all_items = [YandexSearchQuery(**query) for query in mock_yandex.search_queries()]
+        filtered_items = all_items if include_zero_clicks else [item for item in all_items if item.clicks != 0]
         return YandexSearchQueriesReport(
             period="last_7_days",
-            items=items,
+            items=filtered_items[offset : offset + limit],
             source="mock",
             read_only=True,
+            query_fields=list(_SEARCH_QUERY_REPORT_FIELDS),
+            total_count=len(filtered_items),
+            limit=limit,
+            offset=offset,
         )
 
-    # Live read-only path: real SEARCH_QUERY_PERFORMANCE_REPORT, parsed.
     today = date.today()
     if date_to is None:
         date_to = today.isoformat()
     if date_from is None:
         date_from = (today - timedelta(days=6)).isoformat()
-
     period = f"{date_from}..{date_to}"
 
     try:
@@ -2424,52 +2732,85 @@ def yandex_search_queries(
         }
         if campaign_id is not None:
             report_kwargs["campaign_ids"] = [campaign_id]
-        response = client.report(
-            "SEARCH_QUERY_PERFORMANCE_REPORT", **report_kwargs
-        )
+        response = client.report(_SEARCH_QUERY_REPORT_TYPE, **report_kwargs)
     except YandexDirectError as exc:
+        if _is_search_query_provider_error(exc.diagnostics):
+            raise _search_query_report_error_to_502(exc.diagnostics) from exc
         raise _yandex_error_to_502(exc) from exc
 
     if not response.get("ok"):
+        diagnostics = response.get("diagnostics")
+        if _is_search_query_provider_error(diagnostics):
+            raise _search_query_report_error_to_502(diagnostics)
         err = response.get("error") or {}
         raise HTTPException(
             status_code=502,
             detail={
                 "error_type": "YandexDirectError",
-                "message": (
-                    f"Yandex Direct rejected reports: error_code="
-                    f"{err.get('error_code')!r}"
-                ),
+                "message": f"Yandex Direct rejected reports: error_code={err.get('error_code')!r}",
             },
         )
 
-    # The client returns the raw TSV text in ``result``. NEVER log it
-    # (it contains customer search query data); parse and aggregate.
-    tsv_text = response.get("result") or ""
-    items = _aggregate_search_query_tsv(tsv_text, campaign_id=campaign_id)
-    missing_campaign_name_ids = {
-        item.campaign_id for item in items if not item.campaign_name
-    }
-    if missing_campaign_name_ids:
-        campaign_name_map = _lookup_search_query_campaign_names(
-            client, missing_campaign_name_ids
+    # Never log raw TSV: it carries customer search phrases. Its header is the
+    # contract boundary; rows are parsed only into the typed response model.
+    try:
+        parsed = _parse_search_query_tsv(
+            str(response.get("result") or ""), campaign_id=campaign_id
         )
-        if campaign_name_map:
-            enriched_items: list[YandexSearchQuery] = []
-            for item in items:
-                if not item.campaign_name and item.campaign_id in campaign_name_map:
-                    enriched_items.append(
-                        item.model_copy(update={"campaign_name": campaign_name_map[item.campaign_id]})
-                    )
-                else:
-                    enriched_items.append(item)
-            items = enriched_items
+    except _SearchQueryReportParseError as exc:
+        raise _search_query_report_error_to_502(exc.diagnostics) from exc
 
+    warnings: list[dict[str, Any]] = []
+    partial_failure = False
+    all_items = parsed.items
+    # A valid empty account-wide report can disagree with campaign performance,
+    # so resolve it through the bounded per-campaign read-only fallback. An
+    # explicit campaign filter stays isolated and never fans out.
+    if campaign_id is None and parsed.valid_empty:
+        all_items, warnings, partial_failure = _fallback_search_query_reports(
+            client,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    elif all_items:
+        missing_campaign_name_ids = {item.campaign_id for item in all_items if not item.campaign_name}
+        if missing_campaign_name_ids:
+            campaign_name_map = _lookup_search_query_campaign_names(client, missing_campaign_name_ids)
+            if campaign_name_map:
+                all_items = [
+                    item.model_copy(update={"campaign_name": campaign_name_map[item.campaign_id]})
+                    if not item.campaign_name and item.campaign_id in campaign_name_map
+                    else item
+                    for item in all_items
+                ]
+
+    # Reconcile the complete requested scope, not a page or a client-side
+    # click-filtered subset. Valid query items always remain usable if this
+    # separate CAMPAIGN_PERFORMANCE_REPORT read is unavailable.
+    reconciliation, reconciliation_warning = _reconcile_search_query_report(
+        client,
+        items=all_items,
+        date_from=date_from,
+        date_to=date_to,
+        campaign_id=campaign_id,
+    )
+    if reconciliation_warning is not None:
+        warnings.append(reconciliation_warning)
+        partial_failure = True
+
+    filtered_items = all_items if include_zero_clicks else [item for item in all_items if item.clicks != 0]
     return YandexSearchQueriesReport(
         period=period,
-        items=items,
+        items=filtered_items[offset : offset + limit],
         source="yandex",
         read_only=True,
+        query_fields=list(_SEARCH_QUERY_REPORT_FIELDS),
+        total_count=len(filtered_items),
+        limit=limit,
+        offset=offset,
+        reconciliation=reconciliation,
+        partial_failure=partial_failure,
+        warnings=warnings,
     )
 
 

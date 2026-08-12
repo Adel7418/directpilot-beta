@@ -93,11 +93,17 @@ Scope rule for operators/agents:
    - `source="yandex"`, `read_only=true` in `sandbox`/`live_readonly`/`live_write` with a configured `YANDEX_OAUTH_TOKEN` and available Yandex client
    - source: `SEARCH_QUERY_PERFORMANCE_REPORT` v5 reports, fields `Query / CampaignId / CampaignName / AdGroupId / Impressions / Clicks / Ctr / Cost`
    - if CampaignName is missing in report rows, resolve name via `campaigns.get` by CampaignId
-   - optional query params: `date_from`, `date_to` (YYYY-MM-DD), `campaign_id`
-   - an empty live report is a valid response: `items=[]` with `source="yandex"`, NOT a mock fallback and NOT a 502
-   - Use `/yandex/reports/search-queries-live?date_from=...&date_to=...` for raw TSV diagnostics; it must use the same search-query field set `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`, not the generic campaign-summary defaults.
+   - query params: `date_from`, `date_to` (YYYY-MM-DD), optional `campaign_id`, `include_zero_clicks=true`, `limit=1000` (`1..5000`), `offset=0` (`>=0`)
+   - `include_zero_clicks=false` filters `clicks == 0` rows before pagination; `total_count` is after that filter and before the `items` slice. `limit` and `offset` echo the page request.
+   - response retains typed items and adds typed `reconciliation`: full requested query scope vs. `CAMPAIGN_PERFORMANCE_REPORT` for the same dates and same campaign scope. Never judge reconciliation from a page/filter subset.
+   - read `clicks_match`, `cost_delta`, `cost_tolerance`, `cost_within_tolerance`, `status` together. A per-row Cost rounding allowance is `ceil(0.005 ₽ × query rows)` in kopecks, at least `0.01 ₽`: 51 rows / Query `2914.39 ₽` vs campaign `2914.37 ₽` is delta `0.02 ₽`, within `0.26 ₽`; 11 clicks remain exact.
+   - a mismatch is diagnostic, not a reason to discard valid Query rows. If the campaign reconciliation read fails, use returned Query `items` with `reconciliation=null`, `partial_failure=true`, and the safe warning `code`/`provider_error`; raw TSV, provider body, headers, and tokens are never exposed.
+   - an empty account-wide Query report triggers a bounded per-campaign **read-only** fallback and dedupe; explicit `campaign_id` never fan-outs. Per-campaign fallback errors remain `partial_failure=true` warnings, never invented empty success.
+   - a missing `Query` column or a blank/whitespace-only `Query` data value returns structured HTTP 502. Other malformed data rows may still be dropped; an otherwise valid empty report is not mock fallback.
+   - Use `/yandex/reports/search-queries-live?date_from=...&date_to=...` only for technical raw TSV diagnostics; it uses the same search-query field set `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`, not generic campaign-summary defaults.
    - `source="mock"` is reserved for `DIRECTPILOT_MODE=mock` only — never silent in live modes
    - HTTP 409 in `sandbox`/`live_readonly`/`live_write` if the Yandex client/token is unavailable
+   - This reporting/fallback/reconciliation path is read-only; it never writes Yandex Direct data or applies minuses/keywords.
    - Reports API pitfalls:
      - campaign filter MUST be sent as
        `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`,

@@ -7326,14 +7326,55 @@
             "title": "Items",
             "type": "array"
           },
+          "limit": {
+            "default": 1000,
+            "maximum": 5000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "type": "integer"
+          },
+          "offset": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "partial_failure": {
+            "default": false,
+            "title": "Partial Failure",
+            "type": "boolean"
+          },
           "period": {
             "title": "Period",
             "type": "string"
+          },
+          "query_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Query Fields",
+            "type": "array"
           },
           "read_only": {
             "default": true,
             "title": "Read Only",
             "type": "boolean"
+          },
+          "reconciliation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/YandexSearchQueryReconciliation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report_type": {
+            "const": "SEARCH_QUERY_PERFORMANCE_REPORT",
+            "default": "SEARCH_QUERY_PERFORMANCE_REPORT",
+            "title": "Report Type",
+            "type": "string"
           },
           "source": {
             "default": "mock",
@@ -7343,6 +7384,20 @@
             ],
             "title": "Source",
             "type": "string"
+          },
+          "total_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Count",
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -7355,8 +7410,15 @@
       "YandexSearchQuery": {
         "properties": {
           "ad_group_id": {
-            "title": "Ad Group Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
           },
           "campaign_id": {
             "title": "Campaign Id",
@@ -7389,8 +7451,26 @@
             "title": "Cost"
           },
           "ctr": {
-            "title": "Ctr",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ctr"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
           },
           "impressions": {
             "title": "Impressions",
@@ -7404,12 +7484,68 @@
         "required": [
           "query",
           "campaign_id",
-          "ad_group_id",
           "impressions",
-          "clicks",
-          "ctr"
+          "clicks"
         ],
         "title": "YandexSearchQuery",
+        "type": "object"
+      },
+      "YandexSearchQueryReconciliation": {
+        "description": "Comparison of typed query rows to the matching campaign report scope.",
+        "properties": {
+          "campaign_clicks": {
+            "title": "Campaign Clicks",
+            "type": "integer"
+          },
+          "campaign_cost": {
+            "title": "Campaign Cost",
+            "type": "number"
+          },
+          "clicks_match": {
+            "title": "Clicks Match",
+            "type": "boolean"
+          },
+          "cost_delta": {
+            "title": "Cost Delta",
+            "type": "number"
+          },
+          "cost_tolerance": {
+            "title": "Cost Tolerance",
+            "type": "number"
+          },
+          "cost_within_tolerance": {
+            "title": "Cost Within Tolerance",
+            "type": "boolean"
+          },
+          "search_query_clicks": {
+            "title": "Search Query Clicks",
+            "type": "integer"
+          },
+          "search_query_cost": {
+            "title": "Search Query Cost",
+            "type": "number"
+          },
+          "status": {
+            "enum": [
+              "matched",
+              "mismatch"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_query_clicks",
+          "campaign_clicks",
+          "clicks_match",
+          "search_query_cost",
+          "campaign_cost",
+          "cost_delta",
+          "cost_tolerance",
+          "cost_within_tolerance",
+          "status"
+        ],
+        "title": "YandexSearchQueryReconciliation",
         "type": "object"
       },
       "YandexSitelinkItem": {
@@ -12580,7 +12716,7 @@
     },
     "/yandex/reports/search-queries": {
       "get": {
-        "description": "Search query performance for the requested period.\n\nIn ``DIRECTPILOT_MODE=mock`` the deterministic mock payload is returned\n(with ``source=\"mock\"``). In any non-mock mode (``sandbox`` /\n``live_readonly`` / ``live_write``) with a configured Yandex Direct\nclient, the live ``SEARCH_QUERY_PERFORMANCE_REPORT`` v5 reports\nendpoint is called and the TSV is parsed into YandexSearchQuery items\nwith ``source=\"yandex\"``, ``read_only=True``. An empty live report is\na valid response — it returns ``items=[]`` and ``source=\"yandex\"``,\nnot a mock fallback and not a 502.\n\nWhen the live mode is selected but no client/token is available the\nendpoint surfaces HTTP 409 (same contract as\n``/yandex/reports/summary`` and the other read-only endpoints), not\na silent mock — marketing must not mistake mock numbers for live\nnumbers.",
+        "description": "Read typed search-query rows with full-scope reconciliation diagnostics.",
         "operationId": "yandex_search_queries_yandex_reports_search_queries_get",
         "parameters": [
           {
@@ -12636,6 +12772,45 @@
               "description": "Optional Yandex Direct campaign id filter.",
               "title": "Campaign Id"
             }
+          },
+          {
+            "description": "Include rows with zero clicks. false filters them before pagination.",
+            "in": "query",
+            "name": "include_zero_clicks",
+            "required": false,
+            "schema": {
+              "default": true,
+              "description": "Include rows with zero clicks. false filters them before pagination.",
+              "title": "Include Zero Clicks",
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Maximum typed rows to return.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 1000,
+              "description": "Maximum typed rows to return.",
+              "maximum": 5000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Rows to skip after click filtering.",
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "description": "Rows to skip after click filtering.",
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -12663,7 +12838,7 @@
             "description": "Validation Error"
           },
           "502": {
-            "description": "Redacted Yandex Direct Reports API error."
+            "description": "Redacted Yandex Direct Reports API or TSV contract error."
           }
         },
         "summary": "Yandex Search Queries"

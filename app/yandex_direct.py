@@ -1507,6 +1507,41 @@ class YandexDirectClient:
         }
         return self._call("campaigns", payload)
 
+    @staticmethod
+    def _report_error_diagnostics(
+        payload: dict[str, Any],
+        *,
+        http_status: int,
+        body: Any,
+    ) -> dict[str, Any]:
+        """Build the only public diagnostic shape allowed for ``/reports``.
+
+        Reports responses can echo credentials, request bodies, or customer
+        data.  Keep the error boundary deliberately narrow: only the report
+        identity and the three documented provider error fields may leave this
+        client.  The caller must never receive headers, units, or raw bodies.
+        """
+        params = payload.get("params")
+        report_type = params.get("ReportType") if isinstance(params, dict) else None
+        diagnostics: dict[str, Any] = {
+            "provider": "yandex_direct",
+            "service": "reports",
+            "method": "POST",
+            "http_status": http_status,
+        }
+        if isinstance(report_type, str):
+            diagnostics["report_type"] = report_type
+
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            for key in ("error_code", "error_string", "error_detail"):
+                value = error.get(key)
+                # Do not recursively serialize arbitrary provider objects. The
+                # allowlisted fields are scalar diagnostics only.
+                if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                    diagnostics[key] = value
+        return diagnostics
+
     def _call_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
@@ -1530,31 +1565,41 @@ class YandexDirectClient:
                 f"Yandex Direct report transport error: {type(exc).__name__}"
             ) from exc
 
-        if response.status_code >= 400:
-            raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
-
-        # Reports usually return TSV, but Direct can still return a JSON error
-        # envelope with HTTP 200. Do not let that masquerade as an empty TSV
-        # report in parsed endpoints.
         try:
             body = response.json()
         except ValueError:
             body = None
+
+        if response.status_code >= 400:
+            raise YandexDirectError(
+                f"Yandex Direct reports HTTP {response.status_code}",
+                diagnostics=self._report_error_diagnostics(
+                    payload,
+                    http_status=response.status_code,
+                    body=body,
+                ),
+            )
+
+        # Reports usually return TSV, but Direct can still return a JSON error
+        # envelope with HTTP 200. Preserve the client ok=False convention while
+        # attaching the same redacted diagnostics so parsed endpoints cannot
+        # misinterpret it as an empty TSV report.
         if isinstance(body, dict) and "error" in body:
             error = body.get("error")
+            safe_error: dict[str, Any] = {}
             if isinstance(error, dict):
-                return {
-                    "ok": False,
-                    "error": {
-                        "error_code": error.get("error_code"),
-                        "error_detail": error.get("error_detail"),
-                        "error_string": error.get("error_string"),
-                    },
-                    "units": response.headers.get("Units"),
-                }
+                for key in ("error_code", "error_string", "error_detail"):
+                    value = error.get(key)
+                    if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                        safe_error[key] = value
             return {
                 "ok": False,
-                "error": {"error_code": None},
+                "error": safe_error,
+                "diagnostics": self._report_error_diagnostics(
+                    payload,
+                    http_status=response.status_code,
+                    body=body,
+                ),
                 "units": response.headers.get("Units"),
             }
 
