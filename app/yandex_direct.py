@@ -630,21 +630,21 @@ class YandexDirectClient:
             },
         )
 
-    def ads_get_by_sitelink_set_ids(
+    def ads_get_by_campaign_ids(
         self,
-        sitelink_set_ids: list[int],
+        campaign_ids: list[int],
         *,
         limit: int = 10_000,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Read a bounded page of documented ``SitelinkSetIds`` references."""
+        """Read a bounded page of account ``TEXT_AD`` rows by campaign IDs."""
         return self._call(
             "ads",
             {
                 "method": "get",
                 "params": {
                     "SelectionCriteria": {
-                        "SitelinkSetIds": [self._direct_id(item) for item in sitelink_set_ids],
+                        "CampaignIds": [self._direct_id(item) for item in campaign_ids],
                     },
                     "FieldNames": ["Id", "CampaignId", "AdGroupId", "Type"],
                     "TextAdFieldNames": ["Href", "SitelinkSetId"],
@@ -1561,6 +1561,11 @@ class YandexDirectClient:
         return {"ok": True, "result": response.text, "units": response.headers.get("Units")}
 
     def _call(self, service: str, payload: dict[str, Any]) -> dict[str, Any]:
+        diagnostics = {
+            "provider": "yandex_direct",
+            "service": service,
+            "method": str(payload.get("method") or ""),
+        }
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
 
@@ -1581,8 +1586,18 @@ class YandexDirectClient:
         if response.status_code >= 400:
             # Do not include headers or body — body may echo the token back
             # depending on proxy behavior. Surface a redacted message only.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            error = body.get("error") if isinstance(body, dict) else None
+            if isinstance(error, dict):
+                for key in ("error_code", "error_string", "error_detail"):
+                    if key in error:
+                        diagnostics[key] = error[key]
+            diagnostics["http_status"] = response.status_code
             raise YandexDirectError(
-                f"Yandex Direct HTTP {response.status_code}"
+                f"Yandex Direct HTTP {response.status_code}", diagnostics=diagnostics
             )
 
         units = response.headers.get("Units")

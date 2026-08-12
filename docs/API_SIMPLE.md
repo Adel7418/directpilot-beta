@@ -2243,14 +2243,14 @@ POST /yandex/campaigns/{campaign_id}/ads/landing-urls
 POST /yandex/campaigns/{campaign_id}/sitelinks/migrate-urls
 ```
 
-Тело содержит `source_sitelink_set_id`, точный снимок `expected_items` и новый список `target_items`; у списков должно быть одинаковое число элементов (1–8). DirectPilot требует полного совпадения текущего source set с `expected_items`, затем сканирует все ссылки на набор в аккаунте с пагинацией.
+Тело содержит `source_sitelink_set_id`, точный снимок `expected_items` и новый список `target_items`; у списков должно быть одинаковое число элементов (1–8). DirectPilot требует полного совпадения текущего source set с `expected_items`, затем выполняет fail-closed account-wide reference scan: получает inventory через `campaigns.get`, постранично читает `ads.get` с допустимым `SelectionCriteria.CampaignIds` и локально оставляет только объявления с нужным `TextAd.SitelinkSetId`. Недопустимый фильтр `SelectionCriteria.SitelinkSetIds` не используется. Объявления без быстрых ссылок и с другим набором игнорируются.
 
 Миграция является clone-and-reattach:
 1. новый набор создаётся через документированный `sitelinks.add`;
 2. к объявлениям выбранной кампании, которые ссылались на исходный набор, привязывается новый `SitelinkSetId` через `ads.update`;
 3. исходный набор не изменяется и не удаляется.
 
-Этот workflow не вызывает `sitelinks.update` и не перепривязывает объявления других кампаний. Все найденные связи видны в `reference_scan`.
+Этот workflow не вызывает `sitelinks.update` и не перепривязывает объявления других кампаний. Все найденные связи видны в `reference_scan`. Ограниченный или некорректный campaign inventory, нечисловые/повторяющиеся campaign ID, provider error, а также некорректные или повторяющиеся ID совпавших объявлений блокируют операцию до любой записи.
 
 ### Единая миграция
 
@@ -2270,6 +2270,8 @@ POST /yandex/campaigns/{campaign_id}/landing-url-migrations
 - query-параметры должны стоять до fragment.
 
 Пустой allowlist блокирует операцию fail-closed.
+
+Timeout или transport error при проверке целевой страницы возвращается как безопасный HTTP 409 без raw network/provider details. Если Яндекс Директ отклоняет preflight/reference scan, API передаёт только доступные поля из allowlist диагностического envelope: `provider`, `service`, `method`, `operation`, `http_status`, `error_code`, `error_string`, `error_detail`. OAuth, токены, request body и `units` не возвращаются.
 
 ### Apply gates и результат
 

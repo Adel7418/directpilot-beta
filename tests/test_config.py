@@ -1,4 +1,6 @@
-from app.config import Settings, mask_secret
+import pytest
+
+from app.config import Settings, get_settings, mask_secret
 
 
 def test_settings_default_to_live_readonly_mode():
@@ -33,3 +35,14 @@ def test_mask_secret_never_exposes_full_value():
 
     assert masked == "abcd…wxyz(len=26)"
     assert "abcdefghijkl" not in masked
+
+
+def test_settings_reads_canonical_url_migration_allowed_hosts_env(monkeypatch: pytest.MonkeyPatch):
+    allowed_hosts = "example.com,www.example.com"
+    monkeypatch.delenv("URL_MIGRATION_ALLOWED_HOSTS", raising=False)
+    monkeypatch.setenv("DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS", allowed_hosts)
+    get_settings.cache_clear()
+    try:
+        assert get_settings().url_migration_allowed_hosts == allowed_hosts
+    finally:
+        get_settings.cache_clear()

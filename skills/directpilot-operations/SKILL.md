@@ -384,7 +384,9 @@ Safety invariants:
 - Only route-owned `TEXT_AD` rows are updated.
 - Every target must be HTTPS, use a host in `DIRECTPILOT_URL_MIGRATION_ALLOWED_HOSTS`, resolve only to public addresses, survive bounded same-host redirects, return 2xx, and contain a requested fragment anchor. An empty allowlist fails closed.
 - Sitelinks are cloned with documented `sitelinks.add`, verified, then reattached with `ads.update`. Never use `sitelinks.update` or delete the source set in this workflow.
-- The full account is scanned for references. Only references in the route campaign are reattached; other campaigns stay on the source set.
+- The full account is scanned fail-closed: `campaigns.get` supplies the inventory, paginated `ads.get` uses supported `SelectionCriteria.CampaignIds`, and `TextAd.SitelinkSetId` is filtered locally. Never use `SelectionCriteria.SitelinkSetIds`. Ignore unrelated/no-sitelink ads; only references in the route campaign are reattached, while other campaigns stay on the source set.
+- Limited or malformed campaign inventory, invalid/duplicate campaign IDs, provider errors, or malformed/duplicate matching ad IDs block the operation before writes.
+- Target fetch timeouts/transport failures return a controlled HTTP 409. Provider diagnostics expose only available allowlisted fields (`provider`, `service`, `method`, `operation`, `http_status`, `error_code`, `error_string`, `error_detail`), never OAuth, tokens, request bodies, or `units`.
 - Provider item errors or readback mismatch produce `partial_failure`; do a new read/preflight and never blind-retry or blind-rollback.
 - URL-migration idempotency is currently process-local and does not survive a restart.
 

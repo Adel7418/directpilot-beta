@@ -4941,10 +4941,13 @@ class MockStore:
 
     def _url_migration_fetch(self, url: str) -> httpx.Response:
         getter = getattr(self, "_url_migration_http_fetcher", None)
-        if getter is not None:
-            return getter(url)
-        with httpx.Client(timeout=5.0, follow_redirects=False, trust_env=False) as http_client:
-            return http_client.get(url, headers={"User-Agent": "DirectPilot-URL-Validator/1.0"})
+        try:
+            if getter is not None:
+                return getter(url)
+            with httpx.Client(timeout=5.0, follow_redirects=False, trust_env=False) as http_client:
+                return http_client.get(url, headers={"User-Agent": "DirectPilot-URL-Validator/1.0"})
+        except httpx.HTTPError as exc:
+            raise ValueError("Target URL could not be fetched safely") from exc
 
     @staticmethod
     def _url_migration_parse_url(url: str, allowed_hosts: set[str]) -> tuple[Any, str, int | None]:
@@ -5122,33 +5125,91 @@ class MockStore:
         client: YandexDirectClient,
         source_sitelink_set_id: int,
     ) -> list[dict[str, Any]]:
+        campaigns_response = client.campaigns_get()
+        if not isinstance(campaigns_response, dict):
+            raise YandexDirectError("Sitelink reference campaign inventory returned an invalid result")
+        if not campaigns_response.get("ok"):
+            error = campaigns_response.get("error")
+            if not isinstance(error, dict):
+                error = {}
+            diagnostics: dict[str, Any] = {
+                "provider": "yandex_direct",
+                "service": "campaigns",
+                "method": "get",
+                "operation": "sitelink_reference_campaign_inventory",
+            }
+            for key in ("error_code", "error_string", "error_detail"):
+                if error.get(key) is not None:
+                    diagnostics[key] = error[key]
+            if campaigns_response.get("units") is not None:
+                diagnostics["units"] = campaigns_response["units"]
+            raise YandexDirectError(
+                "Yandex Direct rejected sitelink reference campaign inventory",
+                diagnostics=diagnostics,
+            )
+        campaigns_result = campaigns_response.get("result")
+        if not isinstance(campaigns_result, dict) or campaigns_result.get("LimitedBy") is not None:
+            raise YandexDirectError("Sitelink reference campaign inventory is limited or malformed")
+        campaigns = campaigns_result.get("Campaigns")
+        if not isinstance(campaigns, list) or not campaigns:
+            raise YandexDirectError("Sitelink reference campaign inventory is empty or malformed")
+        campaign_ids: list[int] = []
+        seen_campaign_ids: set[int] = set()
+        for campaign in campaigns:
+            if not isinstance(campaign, dict):
+                raise YandexDirectError("Sitelink reference campaign inventory is malformed")
+            campaign_id = _url_migration_safe_int(campaign.get("Id"))
+            if campaign_id is None or campaign_id <= 0 or campaign_id in seen_campaign_ids:
+                raise YandexDirectError("Sitelink reference campaign inventory has invalid or duplicate IDs")
+            seen_campaign_ids.add(campaign_id)
+            campaign_ids.append(campaign_id)
+
         offset = 0
         cursors: set[int] = set()
         seen_ids: set[int] = set()
         references: list[dict[str, Any]] = []
         while True:
-            response = client.ads_get_by_sitelink_set_ids(
-                [source_sitelink_set_id],
+            response = client.ads_get_by_campaign_ids(
+                campaign_ids,
                 limit=10_000,
                 offset=offset,
             )
+            if not isinstance(response, dict):
+                raise YandexDirectError("Sitelink reference scan returned an invalid result")
             if not response.get("ok"):
-                raise YandexDirectError("Yandex Direct rejected sitelink reference scan")
-            result = response.get("result") or {}
+                error = response.get("error")
+                if not isinstance(error, dict):
+                    error = {}
+                diagnostics: dict[str, Any] = {
+                    "provider": "yandex_direct",
+                    "service": "ads",
+                    "method": "get",
+                    "operation": "sitelink_reference_scan",
+                }
+                for key in ("error_code", "error_string", "error_detail"):
+                    if error.get(key) is not None:
+                        diagnostics[key] = error[key]
+                if response.get("units") is not None:
+                    diagnostics["units"] = response["units"]
+                raise YandexDirectError(
+                    "Yandex Direct rejected sitelink reference scan",
+                    diagnostics=diagnostics,
+                )
+            result = response.get("result")
             if not isinstance(result, dict):
                 raise YandexDirectError("Sitelink reference scan returned an invalid result")
-            rows = result.get("Ads") or []
+            rows = result.get("Ads")
             if not isinstance(rows, list):
                 raise YandexDirectError("Sitelink reference scan returned an invalid page")
             for row in rows:
                 if not isinstance(row, dict):
                     raise YandexDirectError("Sitelink reference scan returned an invalid ad")
-                ad_id = _url_migration_safe_int(row.get("Id"))
                 text_ad = row.get("TextAd")
-                if ad_id is None or ad_id in seen_ids or not isinstance(text_ad, dict):
+                if not isinstance(text_ad, dict) or str(text_ad.get("SitelinkSetId")) != str(source_sitelink_set_id):
+                    continue
+                ad_id = _url_migration_safe_int(row.get("Id"))
+                if ad_id is None or ad_id in seen_ids:
                     raise YandexDirectError("Sitelink reference scan is incomplete or contains duplicates")
-                if str(text_ad.get("SitelinkSetId")) != str(source_sitelink_set_id):
-                    raise YandexDirectError("Sitelink reference scan returned an unexpected ad relationship")
                 seen_ids.add(ad_id)
                 references.append(
                     {

@@ -83,14 +83,30 @@ class _MigrationClient:
         self,
         *,
         ads: list[dict[str, Any]] | None = None,
+        campaigns: list[dict[str, Any]] | None = None,
+        campaigns_response: dict[str, Any] | None = None,
         scan_pages: dict[int, dict[str, Any]] | None = None,
         add_response: dict[str, Any] | None = None,
         update_response: dict[str, Any] | None = None,
         apply_updates: bool = True,
         clone_readback_items: list[dict[str, Any]] | None = None,
     ) -> None:
-        source_ads = ads or [_ad(101), _ad(102)]
+        source_ads = ads if ads is not None else [_ad(101), _ad(102)]
         self.ads = {int(item["Id"]): copy.deepcopy(item) for item in source_ads}
+        if campaigns is None:
+            campaign_ids = sorted(
+                {
+                    int(item["CampaignId"])
+                    for item in source_ads
+                    if isinstance(item.get("CampaignId"), (int, str))
+                    and str(item["CampaignId"]).isdigit()
+                }
+            )
+            campaigns = [{"Id": campaign_id} for campaign_id in campaign_ids]
+        self.campaigns = copy.deepcopy(campaigns)
+        self.campaigns_response = (
+            copy.deepcopy(campaigns_response) if campaigns_response is not None else None
+        )
         self.sitelink_sets: dict[int, dict[str, Any]] = {
             SOURCE_SET_ID: {"Id": SOURCE_SET_ID, "Sitelinks": copy.deepcopy(SOURCE_ITEMS)}
         }
@@ -101,9 +117,16 @@ class _MigrationClient:
         self.clone_readback_items = copy.deepcopy(clone_readback_items)
         self.read_calls: list[tuple[str, list[int]]] = []
         self.scan_calls: list[tuple[list[int], int, int]] = []
+        self.campaigns_get_calls = 0
         self.add_calls: list[list[dict[str, Any]]] = []
         self.update_calls: list[list[dict[str, Any]]] = []
         self.sitelinks_update_calls = 0
+
+    def campaigns_get(self) -> dict[str, Any]:
+        self.campaigns_get_calls += 1
+        if self.campaigns_response is not None:
+            return copy.deepcopy(self.campaigns_response)
+        return {"ok": True, "result": {"Campaigns": copy.deepcopy(self.campaigns)}}
 
     def ads_get_by_campaign_and_ids(self, campaign_id: str, ad_ids: list[int]) -> dict[str, Any]:
         self.read_calls.append((str(campaign_id), list(ad_ids)))
@@ -112,23 +135,23 @@ class _MigrationClient:
             "result": {"Ads": [copy.deepcopy(self.ads[ad_id]) for ad_id in ad_ids if ad_id in self.ads]},
         }
 
-    def ads_get_by_sitelink_set_ids(
+    def ads_get_by_campaign_ids(
         self,
-        sitelink_set_ids: list[int],
+        campaign_ids: list[int],
         *,
         limit: int,
         offset: int,
     ) -> dict[str, Any]:
-        self.scan_calls.append((list(sitelink_set_ids), limit, offset))
+        self.scan_calls.append((list(campaign_ids), limit, offset))
         if self.scan_pages is not None:
             return {"ok": True, "result": copy.deepcopy(self.scan_pages[offset])}
-        set_id = sitelink_set_ids[0]
-        refs = [
+        selected_campaign_ids = {str(item) for item in campaign_ids}
+        rows = [
             copy.deepcopy(ad)
             for ad in self.ads.values()
-            if str((ad.get("TextAd") or {}).get("SitelinkSetId")) == str(set_id)
+            if str(ad.get("CampaignId")) in selected_campaign_ids
         ]
-        return {"ok": True, "result": {"Ads": refs}}
+        return {"ok": True, "result": {"Ads": rows}}
 
     def sitelinks_get(self, ids: list[int]) -> dict[str, Any]:
         return {
@@ -291,7 +314,7 @@ def test_sitelinks_add_posts_documented_payload_and_returns_add_results() -> Non
     assert result["result"]["AddResults"] == [{"Id": 91}]
 
 
-def test_client_builds_campaign_scoped_and_sitelink_reference_reads() -> None:
+def test_client_builds_campaign_scoped_and_account_reference_reads() -> None:
     captured: list[dict[str, Any]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -300,15 +323,141 @@ def test_client_builds_campaign_scoped_and_sitelink_reference_reads() -> None:
 
     client = YandexDirectClient(_settings(), transport=httpx.MockTransport(handler))
     client.ads_get_by_campaign_and_ids(CAMPAIGN_ID, [101])
-    client.ads_get_by_sitelink_set_ids([SOURCE_SET_ID], limit=200, offset=20)
+    client.ads_get_by_campaign_ids([int(CAMPAIGN_ID), 999], limit=200, offset=20)
 
     assert captured[0]["params"]["SelectionCriteria"] == {
         "CampaignIds": [int(CAMPAIGN_ID)],
         "Ids": [101],
         "Types": ["TEXT_AD"],
     }
-    assert captured[1]["params"]["SelectionCriteria"] == {"SitelinkSetIds": [SOURCE_SET_ID]}
+    assert captured[1]["params"]["SelectionCriteria"] == {
+        "CampaignIds": [int(CAMPAIGN_ID), 999]
+    }
+    assert "SitelinkSetIds" not in captured[1]["params"]["SelectionCriteria"]
+    assert captured[1]["params"]["FieldNames"] == ["Id", "CampaignId", "AdGroupId", "Type"]
+    assert captured[1]["params"]["TextAdFieldNames"] == ["Href", "SitelinkSetId"]
     assert captured[1]["params"]["Page"] == {"Limit": 200, "Offset": 20}
+
+
+def test_client_http_error_diagnostics_are_allowlisted() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "error_code": "BAD_REQUEST",
+                    "error_string": "Structured failure",
+                    "error_detail": "safe diagnostic detail",
+                    "token": "should-not-leak",
+                    "raw_body": "should-not-leak",
+                }
+            },
+            headers={"X-Internal": "should-not-leak"},
+        )
+
+    client = YandexDirectClient(_settings(), transport=httpx.MockTransport(handler))
+
+    with pytest.raises(YandexDirectError) as raised:
+        client.sitelinks_add([])
+
+    diagnostics = raised.value.diagnostics
+    assert diagnostics == {
+        "provider": "yandex_direct",
+        "service": "sitelinks",
+        "method": "add",
+        "http_status": 400,
+        "error_code": "BAD_REQUEST",
+        "error_string": "Structured failure",
+        "error_detail": "safe diagnostic detail",
+    }
+    assert "should-not-leak" not in json.dumps(diagnostics)
+    assert "raw_body" not in diagnostics
+    assert "token" not in diagnostics
+
+
+def test_sitelink_reference_scan_error_is_redacted_in_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _MigrationClient()
+    _install_public_url_fakes(monkeypatch)
+
+    def rejected_scan(
+        campaign_ids: list[int], *, limit: int, offset: int
+    ) -> dict[str, Any]:
+        assert campaign_ids == [int(CAMPAIGN_ID)]
+        assert limit == 10_000
+        assert offset == 0
+        return {
+            "ok": False,
+            "error": {
+                "error_code": "SCAN_REJECTED",
+                "error_string": "Reference scan rejected",
+                "error_detail": "safe diagnostic detail",
+                "token": "should-not-leak",
+                "raw_body": "should-not-leak",
+            },
+            "units": "17/1000",
+            "request": "should-not-leak",
+        }
+
+    monkeypatch.setattr(fake, "ads_get_by_campaign_ids", rejected_scan)
+    response = _post_migration(
+        f"/yandex/campaigns/{CAMPAIGN_ID}/sitelinks/migrate-urls",
+        _sitelink_body(),
+        client=fake,
+        settings=_settings(),
+    )
+
+    assert response.status_code == 502, response.text
+    detail = response.json()["detail"]
+    assert detail["operation"] == "sitelink_reference_scan"
+    assert detail["service"] == "ads"
+    assert detail["method"] == "get"
+    assert detail["error_code"] == "SCAN_REJECTED"
+    assert detail["error_string"] == "Reference scan rejected"
+    assert detail["error_detail"] == "safe diagnostic detail"
+    assert "should-not-leak" not in json.dumps(detail)
+    assert "token" not in detail
+    assert "raw_body" not in detail
+    assert "request" not in detail
+    assert "units" not in detail
+
+
+def test_sitelink_campaign_inventory_error_is_redacted_in_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _MigrationClient(
+        campaigns_response={
+            "ok": False,
+            "error": {
+                "error_code": "CAMPAIGNS_REJECTED",
+                "error_string": "Campaign inventory rejected",
+                "error_detail": "safe diagnostic detail",
+                "token": "should-not-leak",
+            },
+            "units": "17/1000",
+        }
+    )
+    _install_public_url_fakes(monkeypatch)
+
+    response = _post_migration(
+        f"/yandex/campaigns/{CAMPAIGN_ID}/sitelinks/migrate-urls",
+        _sitelink_body(),
+        client=fake,
+        settings=_settings(),
+    )
+
+    assert response.status_code == 502, response.text
+    detail = response.json()["detail"]
+    assert detail["operation"] == "sitelink_reference_campaign_inventory"
+    assert detail["service"] == "campaigns"
+    assert detail["method"] == "get"
+    assert detail["error_code"] == "CAMPAIGNS_REJECTED"
+    assert detail["error_string"] == "Campaign inventory rejected"
+    assert detail["error_detail"] == "safe diagnostic detail"
+    assert "should-not-leak" not in json.dumps(detail)
+    assert "units" not in detail
+    assert fake.scan_calls == []
 
 
 def test_sitelink_preview_is_clone_only_and_uses_minimal_attach_payload(
@@ -719,19 +868,26 @@ def test_landing_apply_idempotency_replays_exact_result_and_rejects_collision(
     assert len(fake.update_calls) == 1
 
 
-def test_sitelink_reference_scan_paginates_and_fails_closed_on_bad_limitedby_pages() -> None:
+def test_sitelink_reference_scan_paginates_filters_unrelated_rows_and_fails_closed() -> None:
     first = _ad(101)
     second = _ad(102)
+    unrelated = _ad(303, sitelink_set_id=SOURCE_SET_ID + 1)
+    without_sitelink = _ad(404, sitelink_set_id=None)
     paged = _MigrationClient(
-        ads=[first, second],
+        ads=[first, second, unrelated, without_sitelink],
+        campaigns=[{"Id": int(CAMPAIGN_ID)}, {"Id": 999}],
         scan_pages={
-            0: {"Ads": [first], "LimitedBy": 1},
-            1: {"Ads": [second]},
+            0: {"Ads": [first, unrelated], "LimitedBy": 2},
+            2: {"Ads": [without_sitelink, second]},
         },
     )
     refs = store._url_migration_scan_sitelink_references(paged, SOURCE_SET_ID)
     assert [item["ad_id"] for item in refs] == [101, 102]
-    assert [call[2] for call in paged.scan_calls] == [0, 1]
+    assert paged.campaigns_get_calls == 1
+    assert paged.scan_calls == [
+        ([int(CAMPAIGN_ID), 999], 10_000, 0),
+        ([int(CAMPAIGN_ID), 999], 10_000, 2),
+    ]
 
     repeated_cursor = _MigrationClient(
         ads=[first, second],
@@ -745,6 +901,39 @@ def test_sitelink_reference_scan_paginates_and_fails_closed_on_bad_limitedby_pag
         ads=[first],
         scan_pages={0: {"Ads": [], "LimitedBy": 1}},
     )
-    for client in (repeated_cursor, duplicate, truncated_without_progress):
+    rejected_inventories = (
+        _MigrationClient(campaigns_response={"ok": False, "error": {}}),
+        _MigrationClient(campaigns_response={"ok": True, "result": {"Campaigns": [], "LimitedBy": 1}}),
+        _MigrationClient(campaigns_response={"ok": True, "result": {"Campaigns": "malformed"}}),
+        _MigrationClient(campaigns=[]),
+        _MigrationClient(campaigns=[{"Id": "not-a-number"}]),
+        _MigrationClient(campaigns=[{"Id": 1}, {"Id": "1"}]),
+    )
+    for client in (
+        repeated_cursor,
+        duplicate,
+        truncated_without_progress,
+        *rejected_inventories,
+    ):
         with pytest.raises(YandexDirectError):
             store._url_migration_scan_sitelink_references(client, SOURCE_SET_ID)
+
+
+def test_sitelink_target_fetch_timeout_returns_safe_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _MigrationClient()
+    _install_public_url_fakes(monkeypatch)
+
+    def timeout(_url: str) -> httpx.Response:
+        raise httpx.ReadTimeout("should-not-leak")
+
+    monkeypatch.setattr(store, "_url_migration_http_fetcher", timeout, raising=False)
+    response = _post_migration(
+        f"/yandex/campaigns/{CAMPAIGN_ID}/sitelinks/migrate-urls",
+        _sitelink_body(),
+        client=fake,
+        settings=_settings(),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "Target URL could not be fetched safely"
+    assert "should-not-leak" not in response.text

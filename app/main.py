@@ -592,12 +592,26 @@ def audit_log() -> AuditLog:
 
 def _yandex_error_to_502(exc: YandexDirectError) -> HTTPException:
     """Translate a YandexDirectError into an HTTP 502 with no token in detail."""
+    detail: dict[str, Any] = {
+        "error_type": "YandexDirectError",
+        "message": str(exc),
+    }
+    for key in (
+        "provider",
+        "service",
+        "method",
+        "operation",
+        "http_status",
+        "error_code",
+        "error_string",
+        "error_detail",
+    ):
+        value = exc.diagnostics.get(key)
+        if value is not None:
+            detail[key] = value
     return HTTPException(
         status_code=502,
-        detail={
-            "error_type": "YandexDirectError",
-            "message": str(exc),
-        },
+        detail=detail,
     )
 
 
