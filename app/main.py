@@ -2828,6 +2828,14 @@ _TYPED_REPORT_RESPONSES = {
 }
 
 
+_RAW_LIVE_REPORT_RESPONSES = {
+    202: {"model": YandexReportPending, "description": "Direct report is queued or pending."},
+    409: {"description": "Live Direct read client is unavailable."},
+    422: {"description": "Invalid Direct report type, view, or date."},
+    502: {"description": "Sanitized Direct provider error."},
+}
+
+
 @app.get("/yandex/reports/catalog", response_model=YandexReportCatalog)
 def yandex_reports_catalog() -> YandexReportCatalog:
     return YandexReportCatalog(
@@ -2925,7 +2933,7 @@ def _raw_report_diagnostic(
     "/yandex/reports/live/{report_type}",
     response_model=YandexRawResult,
     response_model_exclude_none=True,
-    responses={202: {"model": YandexReportPending}, 422: {"description": "Unsupported report type or view."}},
+    responses=_RAW_LIVE_REPORT_RESPONSES,
 )
 def yandex_report(
     report_type: str,
@@ -2948,7 +2956,7 @@ def yandex_report(
     "/yandex/reports/search-queries-live",
     response_model=YandexRawResult,
     response_model_exclude_none=True,
-    responses={202: {"model": YandexReportPending}, 422: {"description": "Invalid report view."}},
+    responses=_RAW_LIVE_REPORT_RESPONSES,
 )
 def yandex_search_queries_live(
     date_from: str | None = Query(default=None),
@@ -5046,6 +5054,43 @@ def _mock_metrika_report(
     )
 
 
+def _legacy_metrika_result(
+    *,
+    method: Literal["summary", "traffic_sources"],
+    counter_id: int,
+    date1: date | None,
+    date2: date | None,
+    limit: int | None,
+    settings: Settings,
+    client: YandexMetrikaClient,
+) -> YandexMetrikaResult:
+    """Return the established envelope for legacy Metrika Stats routes."""
+    period = _metrika_report_period(date1, date2)
+    if settings.directpilot_mode == "mock":
+        provider_data: Any = {"data": [], "totals": []}
+    else:
+        try:
+            if method == "summary":
+                result = client.summary(counter_id, date1=period.date1, date2=period.date2)
+            else:
+                result = client.traffic_sources(
+                    counter_id,
+                    date1=period.date1,
+                    date2=period.date2,
+                    limit=limit,
+                )
+        except YandexMetrikaError as exc:
+            _raise_metrika_http_error(exc)
+        provider_data = result["data"]
+
+    return YandexMetrikaResult(
+        service="stat",
+        method=method,
+        counter_id=counter_id,
+        data=provider_data,
+    )
+
+
 def _server_owned_metrika_report(
     *,
     preset_name: str,
@@ -5245,64 +5290,48 @@ def metrika_report_landing_pages(
 
 @app.get(
     "/metrika/counters/{counter_id}/summary",
-    response_model=MetrikaReportResponse,
+    response_model=YandexMetrikaResult,
     responses=METRIKA_REPORT_ERROR_RESPONSES,
 )
 def metrika_counter_summary(
     counter_id: int,
     date1: date | None = Query(default=None),
     date2: date | None = Query(default=None),
-    accuracy: Literal["medium", "high", "full"] = Query(default="high"),
-    view: Literal["core", "ecommerce"] = Query(default="core"),
-    currency: Literal["RUB", "USD", "EUR", "YND"] = Query(default="RUB"),
     settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
-) -> MetrikaReportResponse:
-    """Backward-compatible adapter for the typed site-summary preset."""
-    return _server_owned_metrika_report(
-        preset_name="site-summary",
+) -> YandexMetrikaResult:
+    """Legacy Metrika summary envelope backed by the Stats API adapter."""
+    return _legacy_metrika_result(
+        method="summary",
         counter_id=counter_id,
         date1=date1,
         date2=date2,
         limit=None,
-        accuracy=accuracy,
-        view=view,
-        currency=currency,
         settings=settings,
         client=client,
-        legacy_method="summary",
-        include_legacy_data=True,
     )
 
 
 @app.get(
     "/metrika/counters/{counter_id}/traffic-sources",
-    response_model=MetrikaReportResponse,
+    response_model=YandexMetrikaResult,
     responses=METRIKA_REPORT_ERROR_RESPONSES,
 )
 def metrika_counter_traffic_sources(
     counter_id: int,
     date1: date | None = Query(default=None),
     date2: date | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=1000),
-    accuracy: Literal["medium", "high", "full"] = Query(default="high"),
-    view: Literal["core", "ecommerce"] = Query(default="core"),
-    currency: Literal["RUB", "USD", "EUR", "YND"] = Query(default="RUB"),
+    limit: int = Query(default=10, ge=1, le=1000),
     settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
-) -> MetrikaReportResponse:
-    """Backward-compatible adapter for the typed traffic-source preset."""
-    return _server_owned_metrika_report(
-        preset_name="traffic-sources",
+) -> YandexMetrikaResult:
+    """Legacy Metrika traffic-source envelope backed by the Stats API adapter."""
+    return _legacy_metrika_result(
+        method="traffic_sources",
         counter_id=counter_id,
         date1=date1,
         date2=date2,
         limit=limit,
-        accuracy=accuracy,
-        view=view,
-        currency=currency,
         settings=settings,
         client=client,
-        legacy_method="traffic_sources",
-        include_legacy_data=True,
     )

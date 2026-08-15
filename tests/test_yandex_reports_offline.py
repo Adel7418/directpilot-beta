@@ -166,3 +166,16 @@ def test_report_http_error_is_redacted_at_typed_route_boundary():
 
     assert response.status_code == 502, response.text
     assert "unit-test-token" not in response.text
+
+
+def test_raw_live_report_openapi_documents_all_runtime_error_statuses():
+    from app.main import app
+
+    paths = app.openapi()["paths"]
+    expected_statuses = {"202", "409", "422", "502"}
+
+    for path in (
+        "/yandex/reports/live/{report_type}",
+        "/yandex/reports/search-queries-live",
+    ):
+        assert expected_statuses <= set(paths[path]["get"]["responses"])

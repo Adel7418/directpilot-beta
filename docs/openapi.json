@@ -11816,7 +11816,7 @@
     },
     "/metrika/counters/{counter_id}/summary": {
       "get": {
-        "description": "Backward-compatible adapter for the typed site-summary preset.",
+        "description": "Legacy Metrika summary envelope backed by the Stats API adapter.",
         "operationId": "metrika_counter_summary_metrika_counters__counter_id__summary_get",
         "parameters": [
           {
@@ -11861,51 +11861,6 @@
               ],
               "title": "Date2"
             }
-          },
-          {
-            "in": "query",
-            "name": "accuracy",
-            "required": false,
-            "schema": {
-              "default": "high",
-              "enum": [
-                "medium",
-                "high",
-                "full"
-              ],
-              "title": "Accuracy",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "view",
-            "required": false,
-            "schema": {
-              "default": "core",
-              "enum": [
-                "core",
-                "ecommerce"
-              ],
-              "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "currency",
-            "required": false,
-            "schema": {
-              "default": "RUB",
-              "enum": [
-                "RUB",
-                "USD",
-                "EUR",
-                "YND"
-              ],
-              "title": "Currency",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -11913,7 +11868,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MetrikaReportResponse"
+                  "$ref": "#/components/schemas/YandexMetrikaResult"
                 }
               }
             },
@@ -11948,7 +11903,7 @@
     },
     "/metrika/counters/{counter_id}/traffic-sources": {
       "get": {
-        "description": "Backward-compatible adapter for the typed traffic-source preset.",
+        "description": "Legacy Metrika traffic-source envelope backed by the Stats API adapter.",
         "operationId": "metrika_counter_traffic_sources_metrika_counters__counter_id__traffic_sources_get",
         "parameters": [
           {
@@ -11999,56 +11954,11 @@
             "name": "limit",
             "required": false,
             "schema": {
-              "default": 100,
+              "default": 10,
               "maximum": 1000,
               "minimum": 1,
               "title": "Limit",
               "type": "integer"
-            }
-          },
-          {
-            "in": "query",
-            "name": "accuracy",
-            "required": false,
-            "schema": {
-              "default": "high",
-              "enum": [
-                "medium",
-                "high",
-                "full"
-              ],
-              "title": "Accuracy",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "view",
-            "required": false,
-            "schema": {
-              "default": "core",
-              "enum": [
-                "core",
-                "ecommerce"
-              ],
-              "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "currency",
-            "required": false,
-            "schema": {
-              "default": "RUB",
-              "enum": [
-                "RUB",
-                "USD",
-                "EUR",
-                "YND"
-              ],
-              "title": "Currency",
-              "type": "string"
             }
           }
         ],
@@ -12057,7 +11967,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MetrikaReportResponse"
+                  "$ref": "#/components/schemas/YandexMetrikaResult"
                 }
               }
             },
@@ -15821,10 +15731,16 @@
                 }
               }
             },
-            "description": "Accepted"
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Live Direct read client is unavailable."
           },
           "422": {
-            "description": "Unsupported report type or view."
+            "description": "Invalid Direct report type, view, or date."
+          },
+          "502": {
+            "description": "Sanitized Direct provider error."
           }
         },
         "summary": "Yandex Report"
@@ -16178,10 +16094,16 @@
                 }
               }
             },
-            "description": "Accepted"
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Live Direct read client is unavailable."
           },
           "422": {
-            "description": "Invalid report view."
+            "description": "Invalid Direct report type, view, or date."
+          },
+          "502": {
+            "description": "Sanitized Direct provider error."
           }
         },
         "summary": "Yandex Search Queries Live"

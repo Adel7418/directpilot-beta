@@ -87,7 +87,7 @@ Scope rule for operators/agents:
    - `GET /metrika/counters/{counter_id}/reports/direct-hierarchy`
    - `GET /metrika/counters/{counter_id}/reports/utm-hierarchy`
    - `GET /metrika/counters/{counter_id}/reports/landing-pages`
-   - legacy/compat: `GET /metrika/counters/{counter_id}/summary`, `.../traffic-sources` (upgraded)
+   - legacy/compat: `GET /metrika/counters/{counter_id}/summary`, `.../traffic-sources` (legacy `YandexMetrikaResult` envelope; distinct from typed `/reports/*` routes)
 7. For `/yandex/reports/summary`, use query filters explicitly when needed:
    - `campaign_id`
    - `date_from` (YYYY-MM-DD)

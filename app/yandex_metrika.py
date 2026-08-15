@@ -43,9 +43,9 @@ from app.config import Settings
 MANAGEMENT_BASE_URL = "https://api-metrika.yandex.net/management/v1"
 STATS_BASE_URL = "https://api-metrika.yandex.net/stat/v1"
 
-# Default limit for bounded hierarchy/list presets. The public API validates
-# the same 1..1000 range before this value reaches the provider.
-_DEFAULT_TRAFFIC_LIMIT = 100
+# Legacy traffic-sources default. The public API validates the same 1..1000
+# range before this value reaches the provider.
+_DEFAULT_TRAFFIC_LIMIT = 10
 
 # The server owns every Stats API preset. Public callers choose only a preset
 # route and documented bounded options; they never send dimensions, metrics,

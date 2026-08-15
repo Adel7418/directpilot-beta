@@ -59,8 +59,8 @@ DirectPilot — единая прослойка для маркетолога:
 | Баланс общего счета | `GET /yandex/account/balance` | безопасная финансовая сводка |
 | Счетчики Метрики | `GET /metrika/counters` | доступные сайты/счетчики |
 | Цели Метрики | `GET /metrika/counters/{counter_id}/goals` | список целей |
-| Сводка Метрики | `GET /metrika/counters/{counter_id}/summary` | visits/users/pageviews/goals |
-| Источники трафика | `GET /metrika/counters/{counter_id}/traffic-sources` | source mix |
+| Сводка Метрики | `GET /metrika/counters/{counter_id}/summary` | legacy `YandexMetrikaResult` envelope; use `/metrika/counters/{counter_id}/reports/site-summary` for normalized typed rows |
+| Источники трафика | `GET /metrika/counters/{counter_id}/traffic-sources` | legacy `YandexMetrikaResult` envelope; `limit` defaults to `10` |
 | Расширить семантику | `GET /wordstat/top?phrase=...&regions=...&limit=...` | похожие запросы и спрос |
 | Динамика спроса | `GET /wordstat/dynamics?phrase=...&regions=...&date_from=...&date_to=...&period=...` | сезонность/тренд |
 | Региональный спрос | `GET /wordstat/regions?phrase=...` | где спрос выше |
@@ -76,6 +76,11 @@ DirectPilot — единая прослойка для маркетолога:
 - В `sandbox`/`live_readonly`/`live_write` endpoint возвращает `source="yandex"` при рабочей интеграции.
 - `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`.
 - В live-режимах HTTP **409** означает, что Yandex Direct client/токен недоступен; это не скрытая подмена mock-данными.
+
+Important legacy Metrika contract:
+
+- `/metrika/counters/{counter_id}/summary` and `.../traffic-sources` return only the legacy envelope: `service=stat`, `method`, `counter_id`, provider-like `data`, `source=yandex_metrika`, and `read_only=true`. They do not return typed `/reports/*` fields.
+- Use `/metrika/counters/{counter_id}/reports/*` for typed Metrika analysis. Legacy routes accept `date1`/`date2`, plus `limit` only for traffic-sources, and default missing dates to the prior completed day.
 
 ## Read-only acceptance checklist (DirectPilot workflow)
 

@@ -1709,7 +1709,7 @@ Purpose: `site-summary`, hierarchy, utm and landing-page report cuts for a selec
 - Pagination limit is `1..1000`.
 - Optional ecommerce metric (`ecommerce_revenue`) can be enabled in typed report presets when applicable.
 - Response includes parser metadata: `sampling`, `data_lag`, `privacy`, plus `request_id`.
-- `GET /metrika/counters/{counter_id}/summary` and `.../traffic-sources` are upgraded to this typed report pipeline.
+- Typed `/reports/*` endpoints return the normalized `MetrikaReportResponse` contract above. The older summary and traffic routes below deliberately remain legacy envelopes, not typed aliases.
 
 ```text
 GET /metrika/counters
@@ -1719,6 +1719,8 @@ GET /metrika/counters/{counter_id}/traffic-sources?date1=YYYY-MM-DD&date2=YYYY-M
 ```
 
 Назначение: счётчики, цели, визиты, пользователи, просмотры, отказы, средняя длительность визита, агрегированные достижения целей (`ym:s:anyGoalReaches`) и источники трафика (`ym:s:lastsignTrafficSource`). Метрика использует отдельный `YANDEX_METRIKA_OAUTH_TOKEN` и не зависит от Direct OAuth.
+
+`/metrika/counters/{counter_id}/summary` и `/metrika/counters/{counter_id}/traffic-sources` сохраняют legacy-контракт `YandexMetrikaResult` ровно с полями `service="stat"`, `method`, `counter_id`, `data`, `source="yandex_metrika"`, `read_only=true`. Они принимают только `date1`/`date2` (и `limit`, default `10`, для traffic-sources); `accuracy`, `view` и `currency` — параметры только typed `/reports/*` routes. Если даты не указаны, legacy routes используют предыдущий завершённый день. В `DIRECTPILOT_MODE=mock` они возвращают детерминированный `data={"data": [], "totals": []}` без сети/токена; в live-режимах сохраняются санитизированные `502`/`503` ошибки.
 
 #### Настройки и диагностика кампаний
 

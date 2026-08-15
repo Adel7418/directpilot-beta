@@ -369,7 +369,7 @@ def test_report_provider_error_maps_to_sanitized_502() -> None:
     assert TEST_TOKEN not in response.text
 
 
-def test_legacy_summary_and_traffic_sources_remain_paths_with_upgraded_core_metrics() -> None:
+def test_legacy_summary_and_traffic_sources_preserve_exact_envelopes_and_provider_params() -> None:
     payload = _report_payload(dimensions=[{"id": "organic", "name": "Organic"}])
     captured, handler = _capture(body=payload)
     _override_client(YandexMetrikaClient(settings=_settings(), transport=httpx.MockTransport(handler)))
@@ -386,19 +386,97 @@ def test_legacy_summary_and_traffic_sources_remain_paths_with_upgraded_core_metr
 
     assert summary.status_code == 200, summary.text
     assert traffic.status_code == 200, traffic.text
-    assert summary_params["dimensions"] == "ym:s:date"
-    assert summary_params["metrics"] == CORE_METRICS
-    assert traffic_params["dimensions"] == "ym:s:lastsignTrafficSource"
-    assert traffic_params["metrics"] == CORE_METRICS
-    assert traffic_params["limit"] == "100"
-    assert traffic_params["sort"] == "-ym:s:visits"
-    for response, preset in ((summary, "site-summary"), (traffic, "traffic-sources")):
-        body = response.json()
-        assert body["preset"] == preset
-        assert body["items"][0]["metrics"]["ym:s:visits"] == 12.0
-        assert body["items"][0]["metrics"]["ym:s:users"] == 9.0
-        assert body["items"][0]["metrics"]["ym:s:pageviews"] == 20.0
-        assert body["data"] == payload
+    assert summary_params == {
+        "ids": "42",
+        "date1": "2026-01-01",
+        "date2": "2026-01-01",
+        "accuracy": "high",
+        "dimensions": "ym:s:date",
+        "metrics": CORE_METRICS,
+    }
+    assert traffic_params == {
+        "ids": "42",
+        "date1": "2026-01-01",
+        "date2": "2026-01-01",
+        "accuracy": "high",
+        "dimensions": "ym:s:lastsignTrafficSource",
+        "metrics": CORE_METRICS,
+        "sort": "-ym:s:visits",
+        "limit": "10",
+    }
+    for response, method in ((summary, "summary"), (traffic, "traffic_sources")):
+        assert response.json() == {
+            "service": "stat",
+            "method": method,
+            "counter_id": 42,
+            "data": payload,
+            "source": "yandex_metrika",
+            "read_only": True,
+        }
+
+
+def test_legacy_metrika_defaults_to_yesterday_before_provider_calls() -> None:
+    payload = _report_payload()
+    captured, handler = _capture(body=payload)
+    _override_client(YandexMetrikaClient(settings=_settings(), transport=httpx.MockTransport(handler)))
+    try:
+        api = TestClient(app)
+        summary = api.get("/metrika/counters/42/summary")
+        summary_params = dict(captured["params"])
+        traffic = api.get("/metrika/counters/42/traffic-sources")
+        traffic_params = dict(captured["params"])
+    finally:
+        _clear_overrides()
+
+    expected = str(date.today() - timedelta(days=1))
+    assert summary.status_code == 200, summary.text
+    assert traffic.status_code == 200, traffic.text
+    assert summary_params["date1"] == expected
+    assert summary_params["date2"] == expected
+    assert traffic_params["date1"] == expected
+    assert traffic_params["date2"] == expected
+
+
+def test_legacy_metrika_routes_mock_without_a_token_or_provider_calls() -> None:
+    settings = Settings(_env_file=None, directpilot_mode="mock", yandex_metrika_oauth_token=None)
+    captured, handler = _capture()
+    client = YandexMetrikaClient(settings=settings, transport=httpx.MockTransport(handler))
+    from app import main as main_mod
+
+    app.dependency_overrides[main_mod.get_settings] = lambda: settings
+    app.dependency_overrides[main_mod.get_yandex_metrika_client] = lambda: client
+    try:
+        api = TestClient(app)
+        summary = api.get("/metrika/counters/42/summary")
+        traffic = api.get("/metrika/counters/42/traffic-sources")
+    finally:
+        _clear_overrides()
+
+    assert captured["calls"] == 0
+    for response, method in ((summary, "summary"), (traffic, "traffic_sources")):
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "service": "stat",
+            "method": method,
+            "counter_id": 42,
+            "data": {"data": [], "totals": []},
+            "source": "yandex_metrika",
+            "read_only": True,
+        }
+
+
+def test_legacy_metrika_openapi_keeps_envelope_model_and_parameters() -> None:
+    schema = TestClient(app).get("/openapi.json").json()
+    expected_parameters = {
+        "/metrika/counters/{counter_id}/summary": {"counter_id", "date1", "date2"},
+        "/metrika/counters/{counter_id}/traffic-sources": {"counter_id", "date1", "date2", "limit"},
+    }
+
+    for path, parameters in expected_parameters.items():
+        operation = schema["paths"][path]["get"]
+        response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        assert response_schema == {"$ref": "#/components/schemas/YandexMetrikaResult"}
+        assert {parameter["name"] for parameter in operation["parameters"]} == parameters
 
 
 def test_reports_openapi_includes_catalog_and_all_public_report_routes() -> None:
