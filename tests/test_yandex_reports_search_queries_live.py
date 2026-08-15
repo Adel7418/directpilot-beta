@@ -29,6 +29,7 @@ Tests use ``httpx.MockTransport`` so no real network call ever happens.
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -171,11 +172,30 @@ def test_search_queries_in_mock_mode_uses_mock_payload(client_with_client: TestC
     body = response.json()
     assert body["source"] == "mock"
     assert body["read_only"] is True
-    assert body["period"] == "last_7_days"
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    assert body["period"] == f"{yesterday}..{yesterday}"
+    assert body["completed_day"] is True
     # Mock payload has the three legacy fixtures; they remain a deterministic
     # mock for mock mode only and must NEVER appear in live source responses.
     assert len(body["items"]) == 3
     assert body["items"][0]["query"] == "сантехник на дом казань"
+
+
+def test_search_queries_in_mock_mode_preserves_explicit_period(client_with_client: TestClient):
+    settings = _settings_for("mock", token=None)
+    cleanup = _install_overrides(settings, client_obj=None)
+    try:
+        response = client_with_client.get(
+            "/yandex/reports/search-queries",
+            params={"date_from": "2026-06-01", "date_to": "2026-06-07"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["period"] == "2026-06-01..2026-06-07"
+    assert body["completed_day"] is True
 
 
 # ---------------------------------------------------------------------------

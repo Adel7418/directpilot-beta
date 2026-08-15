@@ -320,6 +320,44 @@ def test_summary_live_readonly_yandex_error_becomes_502_without_token(
     assert "LRO-SECRET" not in response.text
 
 
+def test_summary_all_malformed_provider_rows_become_sanitized_502(
+    client_with_client: TestClient,
+):
+    raw_tsv = _campaign_perf_tsv(
+        rows=[
+            (
+                "2026-06-01",
+                "710691939",
+                "RAW-TSV-MUST-NOT-LEAK",
+                "not-an-integer",
+                "not-a-click-count",
+                "not-a-cost",
+                "not-a-ctr",
+            ),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw_tsv)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/summary")
+    finally:
+        cleanup()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    assert body["detail"]["error_type"] == "report_parse_error"
+    assert body["detail"]["message"] == "Direct report could not be parsed"
+    assert not {"spend", "clicks", "impressions", "ctr", "cpc"}.intersection(body)
+    assert "RAW-TSV-MUST-NOT-LEAK" not in response.text
+    assert "not-an-integer" not in response.text
+    assert "LRO-SECRET" not in response.text
+
+
 def test_summary_sandbox_mode_also_uses_live_report(
     client_with_client: TestClient,
 ):
