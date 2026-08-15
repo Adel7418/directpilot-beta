@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -10,6 +11,197 @@ from app.config import Settings
 
 SANDBOX_BASE_URL = "https://api-sandbox.direct.yandex.com/json/v5"
 LIVE_BASE_URL = "https://api.direct.yandex.com/json/v5"
+
+
+@dataclass(frozen=True)
+class ReportPreset:
+    """One server-owned, compatibility-checked Reports API surface.
+
+    The public API only selects one of these presets by surface and view.  It
+    never accepts provider ``ReportType``, ``FieldNames`` or raw filters.
+    """
+
+    surface: str
+    report_type: str
+    view_fields: dict[str, tuple[str, ...]]
+    filter_fields: frozenset[str]
+    offline_only: bool = False
+
+    @property
+    def default_view(self) -> str:
+        return "reach" if "reach" in self.view_fields else "core"
+
+    def fields_for_view(self, view: str) -> list[str]:
+        try:
+            return list(self.view_fields[view])
+        except KeyError as exc:
+            raise ValueError(
+                f"View {view!r} is not supported by {self.surface!r}"
+            ) from exc
+
+    def supports_view(self, view: str) -> bool:
+        return view in self.view_fields
+
+    @property
+    def all_fields(self) -> frozenset[str]:
+        return frozenset(
+            field for fields in self.view_fields.values() for field in fields
+        )
+
+
+_CORE_METRICS = ("Impressions", "Clicks", "Cost", "Ctr", "AvgCpc")
+_POSITIONS_METRICS = (
+    "AvgEffectiveBid",
+    "AvgImpressionPosition",
+    "AvgClickPosition",
+    "AvgTrafficVolume",
+    "WeightedImpressions",
+    "WeightedCtr",
+)
+_OUTCOMES_METRICS = (
+    "BounceRate",
+    "AvgPageviews",
+    "Conversions",
+    "ConversionRate",
+    "CostPerConversion",
+    "Revenue",
+    "Profit",
+    "GoalsRoi",
+    "PurchaseRevenue",
+    "PurchaseProfit",
+    "PurchaseGoalsRoi",
+)
+_PLACEMENT_FIELDS = ("AdNetworkType", "Placement")
+_REACH_FIELDS = (
+    "Date",
+    "CampaignId",
+    "CampaignName",
+    "CampaignType",
+    "ImpressionReach",
+    "AvgImpressionFrequency",
+    "AvgCpm",
+    "CPV",
+    "AvgVideoCompleteCost",
+    "VideoViews",
+    "VideoViewsRate",
+    "VideoFirstQuartile",
+    "VideoFirstQuartileRate",
+    "VideoMidpoint",
+    "VideoMidpointRate",
+    "VideoThirdQuartile",
+    "VideoThirdQuartileRate",
+    "VideoComplete",
+    "VideoCompleteRate",
+)
+
+
+def _standard_report_views(
+    identity_fields: tuple[str, ...],
+    *,
+    include_sessions: bool = True,
+) -> dict[str, tuple[str, ...]]:
+    outcomes = _OUTCOMES_METRICS + (("Sessions",) if include_sessions else ())
+    return {
+        "core": identity_fields + _CORE_METRICS,
+        "positions": identity_fields + _CORE_METRICS + _POSITIONS_METRICS,
+        "outcomes": identity_fields + _CORE_METRICS + outcomes,
+        "placement": identity_fields + _CORE_METRICS + _PLACEMENT_FIELDS,
+    }
+
+
+_ACCOUNT_IDENTITY = ("Date", "CampaignType")
+_CAMPAIGN_IDENTITY = ("Date", "CampaignId", "CampaignName", "CampaignType")
+_ADGROUP_IDENTITY = _CAMPAIGN_IDENTITY + ("AdGroupId", "AdGroupName")
+_AD_IDENTITY = _ADGROUP_IDENTITY + ("AdId", "AdFormat")
+_CRITERIA_IDENTITY = _ADGROUP_IDENTITY + (
+    "Criterion",
+    "CriterionId",
+    "CriterionType",
+    "MatchType",
+)
+_SEARCH_QUERY_IDENTITY = (
+    "Date",
+    "Query",
+    "CampaignId",
+    "CampaignName",
+    "CampaignType",
+    "AdGroupId",
+    "AdGroupName",
+    "Criterion",
+    "CriterionId",
+    "CriterionType",
+    "MatchedKeyword",
+    "MatchType",
+)
+
+
+# Source: local Yandex Direct Reports documentation 0200, 0205-0209.  Each
+# grouping and field list is fixed here so a client cannot form an incompatible
+# or unbounded provider query through the HTTP API.
+REPORT_PRESETS: dict[str, ReportPreset] = {
+    "account-performance": ReportPreset(
+        surface="account-performance",
+        report_type="ACCOUNT_PERFORMANCE_REPORT",
+        view_fields=_standard_report_views(_ACCOUNT_IDENTITY),
+        filter_fields=frozenset(),
+    ),
+    "campaign-performance": ReportPreset(
+        surface="campaign-performance",
+        report_type="CAMPAIGN_PERFORMANCE_REPORT",
+        view_fields=_standard_report_views(_CAMPAIGN_IDENTITY),
+        filter_fields=frozenset({"CampaignId"}),
+    ),
+    "adgroup-performance": ReportPreset(
+        surface="adgroup-performance",
+        report_type="ADGROUP_PERFORMANCE_REPORT",
+        view_fields=_standard_report_views(_ADGROUP_IDENTITY),
+        filter_fields=frozenset({"CampaignId", "AdGroupId"}),
+    ),
+    "ad-performance": ReportPreset(
+        surface="ad-performance",
+        report_type="AD_PERFORMANCE_REPORT",
+        view_fields=_standard_report_views(_AD_IDENTITY),
+        filter_fields=frozenset({"CampaignId", "AdGroupId", "AdId"}),
+    ),
+    "criteria-performance": ReportPreset(
+        surface="criteria-performance",
+        report_type="CRITERIA_PERFORMANCE_REPORT",
+        view_fields=_standard_report_views(_CRITERIA_IDENTITY),
+        filter_fields=frozenset({"CampaignId", "AdGroupId"}),
+    ),
+    "custom-performance": ReportPreset(
+        surface="custom-performance",
+        report_type="CUSTOM_REPORT",
+        # CUSTOM_REPORT intentionally exposes only the static campaign grouping.
+        view_fields=_standard_report_views(_CAMPAIGN_IDENTITY),
+        filter_fields=frozenset({"CampaignId"}),
+    ),
+    "reach-frequency": ReportPreset(
+        surface="reach-frequency",
+        report_type="REACH_AND_FREQUENCY_PERFORMANCE_REPORT",
+        # CampaignId is in every reach preset as required by Direct.
+        view_fields={"reach": _REACH_FIELDS},
+        filter_fields=frozenset({"CampaignId"}),
+    ),
+    "search-queries": ReportPreset(
+        surface="search-queries",
+        report_type="SEARCH_QUERY_PERFORMANCE_REPORT",
+        view_fields=_standard_report_views(_SEARCH_QUERY_IDENTITY, include_sessions=False),
+        filter_fields=frozenset({"CampaignId", "AdGroupId"}),
+        offline_only=True,
+    ),
+}
+REPORT_PRESETS_BY_TYPE: dict[str, ReportPreset] = {
+    preset.report_type: preset for preset in REPORT_PRESETS.values()
+}
+OFFICIAL_REPORT_TYPES: frozenset[str] = frozenset(REPORT_PRESETS_BY_TYPE)
+
+
+def report_preset_for_type(report_type: str) -> ReportPreset:
+    try:
+        return REPORT_PRESETS_BY_TYPE[report_type]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported Yandex Direct report type: {report_type!r}") from exc
 
 
 class YandexDirectError(RuntimeError):
@@ -1438,19 +1630,39 @@ class YandexDirectClient:
         date_to: str,
         field_names: list[str] | None = None,
         campaign_ids: list[str] | None = None,
+        filter_values: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        field_names = field_names or ["Date", "CampaignId", "CampaignName", "Impressions", "Clicks", "Cost", "Ctr"]
+        preset = report_preset_for_type(report_type)
+        if field_names is None:
+            field_names = preset.fields_for_view(preset.default_view)
+        else:
+            field_names = list(field_names)
+            if not field_names or not set(field_names).issubset(preset.all_fields):
+                raise ValueError(
+                    f"Report fields must be a non-empty server-owned subset for {report_type}"
+                )
+
         selection_criteria: dict[str, Any] = {"DateFrom": date_from, "DateTo": date_to}
+        normalized_filters: dict[str, str] = dict(filter_values or {})
         if campaign_ids:
-            # Reports API selection filters campaign ids through Filter items,
-            # not through SelectionCriteria.CampaignIds (that shape belongs to
-            # many JSON v5 entity services and returns HTTP 400 for reports).
+            if "CampaignId" not in preset.filter_fields:
+                raise ValueError(f"CampaignId cannot filter {report_type}")
+            normalized_filters["CampaignId"] = str(campaign_ids[0])
+        if normalized_filters:
+            unsupported_filters = set(normalized_filters) - preset.filter_fields
+            if unsupported_filters:
+                raise ValueError(
+                    f"Unsupported report filters for {report_type}: {sorted(unsupported_filters)!r}"
+                )
+            # Reports API selection filters use Filter items, not the entity
+            # service SelectionCriteria.CampaignIds shape.
             selection_criteria["Filter"] = [
                 {
-                    "Field": "CampaignId",
+                    "Field": field,
                     "Operator": "IN",
-                    "Values": [str(self._direct_id(campaign_id)) for campaign_id in campaign_ids],
+                    "Values": [str(self._direct_id(value))],
                 }
+                for field, value in sorted(normalized_filters.items())
             ]
         # Direct reports reject reusing the same ReportName for different
         # parameters. Include a short stable hash of the report definition so
@@ -1507,6 +1719,16 @@ class YandexDirectClient:
         }
         return self._call("campaigns", payload)
 
+    @staticmethod
+    def _bounded_retry_after_seconds(raw_value: str | None) -> int:
+        """Return a safe, bounded retry interval from Direct's retryIn header."""
+
+        try:
+            seconds = int(raw_value or "")
+        except (TypeError, ValueError):
+            return 5
+        return max(1, min(seconds, 300))
+
     def _call_report(self, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
@@ -1530,8 +1752,38 @@ class YandexDirectClient:
                 f"Yandex Direct report transport error: {type(exc).__name__}"
             ) from exc
 
+        request_id = response.headers.get("RequestId")
+        if response.status_code in (201, 202):
+            # A queued report is not TSV.  The caller repeats the *same*
+            # deterministic definition after retryIn so Direct can advance it.
+            return {
+                "ok": True,
+                "status": "pending",
+                "retry_after_seconds": self._bounded_retry_after_seconds(
+                    response.headers.get("retryIn")
+                ),
+                "request_id": request_id,
+            }
+
         if response.status_code >= 400:
-            raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
+            diagnostics: dict[str, Any] = {
+                "provider": "yandex_direct",
+                "service": "reports",
+                "http_status": response.status_code,
+            }
+            # Preserve only the machine-readable provider code.  Do not expose
+            # a response body or provider error string: proxies can echo auth.
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            error = body.get("error") if isinstance(body, dict) else None
+            if isinstance(error, dict) and error.get("error_code") is not None:
+                diagnostics["error_code"] = error.get("error_code")
+            raise YandexDirectError(
+                f"Yandex Direct reports HTTP {response.status_code}",
+                diagnostics=diagnostics,
+            )
 
         # Reports usually return TSV, but Direct can still return a JSON error
         # envelope with HTTP 200. Do not let that masquerade as an empty TSV
@@ -1547,18 +1799,20 @@ class YandexDirectClient:
                     "ok": False,
                     "error": {
                         "error_code": error.get("error_code"),
-                        "error_detail": error.get("error_detail"),
-                        "error_string": error.get("error_string"),
                     },
-                    "units": response.headers.get("Units"),
+                    "request_id": request_id,
                 }
             return {
                 "ok": False,
                 "error": {"error_code": None},
-                "units": response.headers.get("Units"),
+                "request_id": request_id,
             }
 
-        return {"ok": True, "result": response.text, "units": response.headers.get("Units")}
+        return {
+            "ok": True,
+            "result": response.text,
+            "request_id": request_id,
+        }
 
     def _call(self, service: str, payload: dict[str, Any]) -> dict[str, Any]:
         diagnostics = {

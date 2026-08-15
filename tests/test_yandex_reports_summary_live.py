@@ -75,15 +75,49 @@ def client_with_client() -> TestClient:
 def _campaign_perf_tsv(
     rows: list[tuple[str, str, str, str, str, str, str]] | None = None,
 ) -> str:
-    """Build a minimal CAMPAIGN_PERFORMANCE_REPORT TSV.
-
-    Default column order matches ``YandexDirectClient.report`` defaults:
-    Date, CampaignId, CampaignName, Impressions, Clicks, Cost, Ctr.
-    """
+    """Build the server-owned CAMPAIGN summary TSV preset."""
     if rows is None:
         rows = [("2026-06-04", "710691939", "Test campaign", "25", "0", "0", "0.00")]
-    lines = ["Date\tCampaignId\tCampaignName\tImpressions\tClicks\tCost\tCtr"]
-    lines.extend("\t".join(r) for r in rows)
+    fields = [
+        "Date", "CampaignId", "CampaignName", "CampaignType", "Impressions", "Clicks",
+        "Cost", "Ctr", "AvgCpc", "AvgEffectiveBid", "AvgImpressionPosition",
+        "AvgClickPosition", "AvgTrafficVolume", "WeightedImpressions", "WeightedCtr",
+        "BounceRate", "AvgPageviews", "Conversions", "ConversionRate", "CostPerConversion",
+        "Revenue", "Profit", "GoalsRoi", "PurchaseRevenue", "PurchaseProfit",
+        "PurchaseGoalsRoi", "Sessions",
+    ]
+    lines = ["\t".join(fields)]
+    for date_value, campaign_id, campaign_name, impressions, clicks, cost, ctr in rows:
+        values = {
+            "Date": date_value,
+            "CampaignId": campaign_id,
+            "CampaignName": campaign_name,
+            "CampaignType": "TEXT_CAMPAIGN",
+            "Impressions": impressions,
+            "Clicks": clicks,
+            "Cost": cost,
+            "Ctr": ctr,
+            "AvgCpc": "0",
+            "AvgEffectiveBid": "0",
+            "AvgImpressionPosition": "0",
+            "AvgClickPosition": "0",
+            "AvgTrafficVolume": "0",
+            "WeightedImpressions": "0",
+            "WeightedCtr": "0",
+            "BounceRate": "0",
+            "AvgPageviews": "0",
+            "Conversions": "0",
+            "ConversionRate": "0",
+            "CostPerConversion": "0",
+            "Revenue": "0",
+            "Profit": "0",
+            "GoalsRoi": "0",
+            "PurchaseRevenue": "0",
+            "PurchaseProfit": "0",
+            "PurchaseGoalsRoi": "0",
+            "Sessions": "0",
+        }
+        lines.append("\t".join(values[field] for field in fields))
     return "\n".join(lines) + "\n"
 
 

@@ -30,6 +30,7 @@ use — do not "fix" them):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -42,9 +43,75 @@ from app.config import Settings
 MANAGEMENT_BASE_URL = "https://api-metrika.yandex.net/management/v1"
 STATS_BASE_URL = "https://api-metrika.yandex.net/stat/v1"
 
-# Default limit on traffic-sources reports. The Metrika Stats API caps
-# `limit` at 100 000; 10 is a reasonable default for a UI summary.
-_DEFAULT_TRAFFIC_LIMIT = 10
+# Default limit for bounded hierarchy/list presets. The public API validates
+# the same 1..1000 range before this value reaches the provider.
+_DEFAULT_TRAFFIC_LIMIT = 100
+
+# The server owns every Stats API preset. Public callers choose only a preset
+# route and documented bounded options; they never send dimensions, metrics,
+# filters, headers, or arbitrary provider parameters.
+CORE_SESSION_METRICS = (
+    "ym:s:visits",
+    "ym:s:users",
+    "ym:s:pageviews",
+    "ym:s:anyGoalReaches",
+    "ym:s:anyGoalConversionRate",
+)
+ECOMMERCE_CONVERTED_REVENUE_TEMPLATE = "ym:s:ecommerce{currency}ConvertedRevenue"
+
+
+@dataclass(frozen=True)
+class MetrikaReportPreset:
+    """Immutable, documented reporting preset sent to ``/stat/v1/data``."""
+
+    name: str
+    dimensions: tuple[str, ...]
+    uses_limit: bool
+
+
+METRIKA_REPORT_PRESETS: dict[str, MetrikaReportPreset] = {
+    "site-summary": MetrikaReportPreset(
+        name="site-summary", dimensions=("ym:s:date",), uses_limit=False
+    ),
+    "direct-hierarchy": MetrikaReportPreset(
+        name="direct-hierarchy",
+        dimensions=(
+            "ym:s:lastsignDirectClickOrder",
+            "ym:s:lastsignDirectBannerGroup",
+            "ym:s:lastsignDirectClickBanner",
+        ),
+        uses_limit=True,
+    ),
+    "utm-hierarchy": MetrikaReportPreset(
+        name="utm-hierarchy",
+        dimensions=(
+            "ym:s:lastsignUTMSource",
+            "ym:s:lastsignUTMMedium",
+            "ym:s:lastsignUTMCampaign",
+        ),
+        uses_limit=True,
+    ),
+    "landing-pages": MetrikaReportPreset(
+        name="landing-pages", dimensions=("ym:s:startURL",), uses_limit=True
+    ),
+    "traffic-sources": MetrikaReportPreset(
+        name="traffic-sources",
+        dimensions=("ym:s:lastsignTrafficSource",),
+        uses_limit=True,
+    ),
+}
+
+
+def metrika_report_metrics(*, view: str, currency: str) -> tuple[str, ...]:
+    """Return the fixed session metric bundle for an allowed report view."""
+
+    if view == "core":
+        return CORE_SESSION_METRICS
+    if view == "ecommerce" and currency in {"RUB", "USD", "EUR", "YND"}:
+        return CORE_SESSION_METRICS + (
+            ECOMMERCE_CONVERTED_REVENUE_TEMPLATE.format(currency=currency),
+        )
+    raise ValueError("unsupported Metrika report view or currency")
 
 
 class YandexMetrikaError(RuntimeError):
@@ -92,6 +159,39 @@ class YandexMetrikaClient:
         response = self._get(f"{self.MANAGEMENT_BASE_URL}/counter/{counter_id}/goals")
         return {"ok": True, "data": response}
 
+    def report(
+        self,
+        counter_id: int | str,
+        *,
+        date1: str,
+        date2: str,
+        accuracy: str,
+        dimensions: tuple[str, ...],
+        metrics: tuple[str, ...],
+        sort: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Run one already-validated, server-owned Stats API preset.
+
+        This method intentionally accepts only values selected by the route
+        registry. It never consumes public HTTP query parameters directly.
+        """
+        counter_id = self._direct_id(counter_id)
+        params: dict[str, Any] = {
+            "ids": str(counter_id),
+            "date1": date1,
+            "date2": date2,
+            "accuracy": accuracy,
+            "dimensions": ",".join(dimensions),
+            "metrics": ",".join(metrics),
+        }
+        if sort is not None:
+            params["sort"] = sort
+        if limit is not None:
+            params["limit"] = int(limit)
+        response = self._get(f"{self.STATS_BASE_URL}/data", params=params)
+        return {"ok": True, "data": response}
+
     def summary(
         self,
         counter_id: int | str,
@@ -99,23 +199,15 @@ class YandexMetrikaClient:
         date1: str,
         date2: str,
     ) -> dict[str, Any]:
-        """Goals-conversion summary for ``date1..date2``.
-
-        Uses the documented ``ym:s:anyGoalReaches`` metric (NOT the
-        per-goal ``ym:s:goalReaches``) and the ``ym:s:date`` dimension so
-        the caller can plot reaches per day.
-        """
-        counter_id = self._direct_id(counter_id)
-        params = {
-            "ids": str(counter_id),
-            "metrics": "ym:s:anyGoalReaches",
-            "dimensions": "ym:s:date",
-            "date1": date1,
-            "date2": date2,
-            "accuracy": "full",
-        }
-        response = self._get(f"{self.STATS_BASE_URL}/data", params=params)
-        return {"ok": True, "data": response}
+        """Legacy summary adapter with the full site-session metric bundle."""
+        return self.report(
+            counter_id,
+            date1=date1,
+            date2=date2,
+            accuracy="high",
+            dimensions=METRIKA_REPORT_PRESETS["site-summary"].dimensions,
+            metrics=CORE_SESSION_METRICS,
+        )
 
     def traffic_sources(
         self,
@@ -125,24 +217,17 @@ class YandexMetrikaClient:
         date2: str,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        """Visits split by the last-sign traffic source.
-
-        Uses the documented ``ym:s:lastsignTrafficSource`` dimension (NOT
-        the older ``ym:s:TrafficSource`` which is deprecated) and the
-        ``ym:s:visits`` metric.
-        """
-        counter_id = self._direct_id(counter_id)
-        params: dict[str, Any] = {
-            "ids": str(counter_id),
-            "metrics": "ym:s:visits",
-            "dimensions": "ym:s:lastsignTrafficSource",
-            "date1": date1,
-            "date2": date2,
-            "accuracy": "full",
-            "limit": int(limit) if limit is not None else _DEFAULT_TRAFFIC_LIMIT,
-        }
-        response = self._get(f"{self.STATS_BASE_URL}/data", params=params)
-        return {"ok": True, "data": response}
+        """Legacy traffic-source adapter with the full session metric bundle."""
+        return self.report(
+            counter_id,
+            date1=date1,
+            date2=date2,
+            accuracy="high",
+            dimensions=METRIKA_REPORT_PRESETS["traffic-sources"].dimensions,
+            metrics=CORE_SESSION_METRICS,
+            sort="-ym:s:visits",
+            limit=_DEFAULT_TRAFFIC_LIMIT if limit is None else limit,
+        )
 
     # ------------------------------------------------------------------
     # transport

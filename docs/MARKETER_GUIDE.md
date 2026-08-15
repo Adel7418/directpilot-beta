@@ -76,6 +76,49 @@ DirectPilot — единая прослойка для маркетолога:
 - В `sandbox`/`live_readonly`/`live_write` endpoint возвращает `source="yandex"` при рабочей интеграции.
 - `source="mock"` ожидается только при `DIRECTPILOT_MODE=mock`.
 - В live-режимах HTTP **409** означает, что Yandex Direct client/токен недоступен; это не скрытая подмена mock-данными.
+
+## Read-only acceptance checklist (DirectPilot workflow)
+
+Use this checklist for every report + Metrika review task:
+
+1. Use DirectPilot only: `/yandex/reports/*`, `/yandex/reports/live/*` diagnostic endpoints, `/metrika/*`, `/yandex/campaigns/*`, `/metrika/*`.
+2. Start with catalogs:
+   - `GET /yandex/reports/catalog`
+   - `GET /metrika/reports/catalog`
+3. For all typed report routes, use completed-day windows (`date_from`/`date_to`); avoid partial live day windows.
+4. Pass only documented filters: no arbitrary provider fields/types (`provider_fields`, `provider_types`, etc.).
+5. For typed GETs that return `HTTP 202`, repeat the same request after `retry_after_seconds`.
+6. Validate response contracts:
+   - `positions` includes `avg_impression_position` and `avg_click_position`
+   - money fields may be `0`/`null`/missing; keep explicit
+   - parser metadata (`request_id`, `parser_status`) is present in report responses.
+7. Before Metrika drill-down: choose one `counter_id` from `GET /metrika/counters`, then call all required typed Metrika routes (`site-summary`, `direct-hierarchy`, `utm-hierarchy`, `landing-pages`).
+8. Keep all actions read-only: no raw POST/PUT/PATCH/DELETE calls in marketer workflow.
+9. Never print secrets, full search-query word lists, or raw customer IDs.
+10. Status semantics to handle:
+   - `409` => environment/contract blocker (missing token, mode lock, or transient upstream gate)
+   - `422` => malformed request shape or invalid payload
+   - `502` => upstream/provider failure
+   - `503` => temporary upstream saturation or throttling
+11. For every change recommendation, separate facts, interpretation, and hypothesis; include exact route names used.
+
+### New typed report endpoint map
+
+- `GET /yandex/reports/catalog`
+- `GET /yandex/reports/account-performance`
+- `GET /yandex/reports/campaign-performance`
+- `GET /yandex/reports/adgroup-performance`
+- `GET /yandex/reports/ad-performance`
+- `GET /yandex/reports/criteria-performance`
+- `GET /yandex/reports/custom-performance`
+- `GET /yandex/reports/reach-frequency`
+- `GET /yandex/reports/search-queries`
+- `GET /metrika/reports/catalog`
+- `GET /metrika/counters/{counter_id}/reports/site-summary`
+- `GET /metrika/counters/{counter_id}/reports/direct-hierarchy`
+- `GET /metrika/counters/{counter_id}/reports/utm-hierarchy`
+- `GET /metrika/counters/{counter_id}/reports/landing-pages`
+
 Важно по `GET /yandex/reports/search-queries`:
 
 - В `sandbox` / `live_readonly` / `live_write` с настроенной интеграцией endpoint

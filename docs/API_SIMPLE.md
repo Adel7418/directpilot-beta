@@ -994,6 +994,34 @@ Impressions=540, Clicks=22, Ctr=4.07, Cost=660.00`, endpoint вернёт
 search-query поля `Query, CampaignId, AdGroupId, Impressions, Clicks, Ctr, Cost`,
 чтобы не получить пустой отчёт из-за campaign-summary field set.
 
+### Direct typed report routes
+
+`GET /yandex/reports/catalog` returns typed report routes for read-only campaign analytics.
+Use these paths:
+
+- `GET /yandex/reports/account-performance`
+- `GET /yandex/reports/campaign-performance`
+- `GET /yandex/reports/adgroup-performance`
+- `GET /yandex/reports/ad-performance`
+- `GET /yandex/reports/criteria-performance`
+- `GET /yandex/reports/custom-performance`
+- `GET /yandex/reports/reach-frequency`
+- `GET /yandex/reports/search-queries`
+
+Filters:
+
+- `date_from`, `date_to` (optional, defaults to previous completed day)
+- optional `campaign_id`, `ad_group_id`, `ad_id`
+- optional `view` (`core`, `positions`, `outcomes`, `placement`; reach route uses `reach`)
+
+Notes:
+
+- `positions` includes `avg_impression_position` and `avg_click_position`.
+- `provider_fields` / `provider_types` are not arbitrary; only documented preset filters are valid.
+- HTTP `200` includes `period`, `columns`, `items`, `parser_status`, row counters, `warnings`, and `request_id`.
+- Header-only empty values are accepted (`--` -> `null`); malformed non-empty values are rejected.
+- HTTP `202` (still parsing) returns `retry_after_seconds` and `request_id`; repeat the same GET after delay.
+
 ---
 
 ## 12. Pause / resume
@@ -1662,6 +1690,26 @@ GET /yandex/reports/search-queries-live?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD
 Назначение: баланс общего счёта, текущий расход кампаний, статистика кампаний, групп, объявлений, условий показа и поисковых запросов. Ответ возвращается как read-only provider payload (`source=yandex`, `read_only=true`). Токен Live v4 передаётся только во внутреннем запросе и не возвращается наружу.
 
 #### Яндекс Метрика
+
+### Typed Metrika report endpoints (upgraded)
+
+```text
+GET /metrika/reports/catalog
+GET /metrika/counters/{counter_id}/reports/site-summary
+GET /metrika/counters/{counter_id}/reports/direct-hierarchy
+GET /metrika/counters/{counter_id}/reports/utm-hierarchy
+GET /metrika/counters/{counter_id}/reports/landing-pages
+```
+
+Purpose: `site-summary`, hierarchy, utm and landing-page report cuts for a selected counter.
+
+- Core metrics are always available: `visits`, `users`, `pageviews`, `anyGoalReaches`, `anyGoalConversionRate`.
+- Optional dimension presets define the grouping behavior.
+- Default period is the previous completed day (`date_from` = `date_to` = previous day).
+- Pagination limit is `1..1000`.
+- Optional ecommerce metric (`ecommerce_revenue`) can be enabled in typed report presets when applicable.
+- Response includes parser metadata: `sampling`, `data_lag`, `privacy`, plus `request_id`.
+- `GET /metrika/counters/{counter_id}/summary` and `.../traffic-sources` are upgraded to this typed report pipeline.
 
 ```text
 GET /metrika/counters

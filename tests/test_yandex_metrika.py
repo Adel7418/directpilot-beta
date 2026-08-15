@@ -192,7 +192,10 @@ def test_summary_uses_any_goal_reaches_metric_not_goal_reaches():
     params = captured["params"]
     # The METRIC must be the documented goals-conversion metric, not the
     # per-goal one or the deprecated one.
-    assert params["metrics"] == "ym:s:anyGoalReaches"
+    assert params["metrics"] == (
+        "ym:s:visits,ym:s:users,ym:s:pageviews,"
+        "ym:s:anyGoalReaches,ym:s:anyGoalConversionRate"
+    )
     assert params["metrics"] != "ym:s:goalReaches"
     # The required dimension for a date-range summary.
     assert params["dimensions"] == "ym:s:date"
@@ -239,7 +242,10 @@ def test_traffic_sources_uses_lastsign_traffic_source_dimension():
     # the older capitalized one.
     assert params["dimensions"] == "ym:s:lastsignTrafficSource"
     assert params["dimensions"] != "ym:s:TrafficSource"
-    assert params["metrics"] == "ym:s:visits"
+    assert params["metrics"] == (
+        "ym:s:visits,ym:s:users,ym:s:pageviews,"
+        "ym:s:anyGoalReaches,ym:s:anyGoalConversionRate"
+    )
     assert params["date1"] == "2026-01-01"
     assert params["date2"] == "2026-01-31"
     assert params["ids"] == "42"
@@ -359,7 +365,10 @@ def test_summary_endpoint_forwards_date_range_and_uses_any_goal_reaches():
     params = captured["params"]
     # The METRIC used by the summary endpoint must be the documented
     # goals-conversion metric, not the per-goal one.
-    assert params["metrics"] == "ym:s:anyGoalReaches"
+    assert params["metrics"] == (
+        "ym:s:visits,ym:s:users,ym:s:pageviews,"
+        "ym:s:anyGoalReaches,ym:s:anyGoalConversionRate"
+    )
     assert params["metrics"] != "ym:s:goalReaches"
     assert params["dimensions"] == "ym:s:date"
     assert params["date1"] == "2026-01-01"
