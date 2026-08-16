@@ -154,13 +154,11 @@ from app.yandex_direct import (
 from app.yandex_facade import mock_yandex
 from app.yandex_metrika import (
     CORE_SESSION_METRICS,
-    ECOMMERCE_CONVERTED_REVENUE_TEMPLATE,
     METRIKA_REPORT_PRESETS,
     MetrikaReportPreset,
     YandexMetrikaClient,
     YandexMetrikaError,
     YandexMetrikaMissingTokenError,
-    metrika_report_metrics,
 )
 from app.yandex_search_wordstat import (
     YandexSearchWordstatClient,
@@ -5105,8 +5103,6 @@ def _server_owned_metrika_report(
     date1: date | None,
     date2: date | None,
     accuracy: Literal["medium", "high", "full"],
-    view: Literal["core", "ecommerce"],
-    currency: Literal["RUB", "USD", "EUR", "YND"],
     limit: int | None,
     settings: Settings,
     client: YandexMetrikaClient,
@@ -5116,7 +5112,7 @@ def _server_owned_metrika_report(
     """Build and execute one fixed Metrika Stats API preset."""
     preset = METRIKA_REPORT_PRESETS[preset_name]
     period = _metrika_report_period(date1, date2)
-    metric_ids = metrika_report_metrics(view=view, currency=currency)
+    metric_ids = CORE_SESSION_METRICS
 
     if settings.directpilot_mode == "mock":
         return _mock_metrika_report(
@@ -5169,7 +5165,7 @@ def metrika_reports_catalog() -> MetrikaReportCatalog:
                 preset=preset.name,
                 dimensions=list(preset.dimensions),
                 core_metrics=list(CORE_SESSION_METRICS),
-                ecommerce_metric_template=ECOMMERCE_CONVERTED_REVENUE_TEMPLATE,
+                supports_ecommerce=False,
             )
             for preset in METRIKA_REPORT_PRESETS.values()
         ]
@@ -5186,8 +5182,7 @@ def metrika_report_site_summary(
     date1: date | None = Query(default=None),
     date2: date | None = Query(default=None),
     accuracy: Literal["medium", "high", "full"] = Query(default="high"),
-    view: Literal["core", "ecommerce"] = Query(default="core"),
-    currency: Literal["RUB", "USD", "EUR", "YND"] = Query(default="RUB"),
+    view: Literal["core"] = Query(default="core"),
     settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
 ) -> MetrikaReportResponse:
@@ -5197,8 +5192,6 @@ def metrika_report_site_summary(
         date1=date1,
         date2=date2,
         accuracy=accuracy,
-        view=view,
-        currency=currency,
         limit=None,
         settings=settings,
         client=client,
@@ -5216,8 +5209,7 @@ def metrika_report_direct_hierarchy(
     date2: date | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     accuracy: Literal["medium", "high", "full"] = Query(default="high"),
-    view: Literal["core", "ecommerce"] = Query(default="core"),
-    currency: Literal["RUB", "USD", "EUR", "YND"] = Query(default="RUB"),
+    view: Literal["core"] = Query(default="core"),
     settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
 ) -> MetrikaReportResponse:
@@ -5228,8 +5220,6 @@ def metrika_report_direct_hierarchy(
         date2=date2,
         limit=limit,
         accuracy=accuracy,
-        view=view,
-        currency=currency,
         settings=settings,
         client=client,
     )
@@ -5246,8 +5236,7 @@ def metrika_report_utm_hierarchy(
     date2: date | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     accuracy: Literal["medium", "high", "full"] = Query(default="high"),
-    view: Literal["core", "ecommerce"] = Query(default="core"),
-    currency: Literal["RUB", "USD", "EUR", "YND"] = Query(default="RUB"),
+    view: Literal["core"] = Query(default="core"),
     settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
 ) -> MetrikaReportResponse:
@@ -5258,8 +5247,6 @@ def metrika_report_utm_hierarchy(
         date2=date2,
         limit=limit,
         accuracy=accuracy,
-        view=view,
-        currency=currency,
         settings=settings,
         client=client,
     )
@@ -5276,8 +5263,7 @@ def metrika_report_landing_pages(
     date2: date | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=1000),
     accuracy: Literal["medium", "high", "full"] = Query(default="high"),
-    view: Literal["core", "ecommerce"] = Query(default="core"),
-    currency: Literal["RUB", "USD", "EUR", "YND"] = Query(default="RUB"),
+    view: Literal["core"] = Query(default="core"),
     settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
 ) -> MetrikaReportResponse:
@@ -5288,8 +5274,6 @@ def metrika_report_landing_pages(
         date2=date2,
         limit=limit,
         accuracy=accuracy,
-        view=view,
-        currency=currency,
         settings=settings,
         client=client,
     )

@@ -161,9 +161,8 @@ def test_catalog_exposes_only_the_documented_preset_identifiers() -> None:
     ]
     assert presets["landing-pages"]["dimensions"] == ["ym:s:startURL"]
     assert presets["site-summary"]["core_metrics"] == CORE_METRICS.split(",")
-    assert presets["direct-hierarchy"]["ecommerce_metric_template"] == (
-        "ym:s:ecommerce{currency}ConvertedRevenue"
-    )
+    assert all(item["supports_ecommerce"] is False for item in presets.values())
+    assert all("ecommerce_metric_template" not in item for item in presets.values())
     assert body["source"] == "yandex"
     assert body["read_only"] is True
 
@@ -230,22 +229,23 @@ def test_report_option_contract_rejects_invalid_values_before_transport(suffix: 
     assert captured["calls"] == 0
 
 
-def test_ecommerce_view_uses_exact_currency_specific_revenue_metric() -> None:
+@pytest.mark.parametrize(
+    "path",
+    ["site-summary", "direct-hierarchy", "utm-hierarchy", "landing-pages"],
+)
+def test_ecommerce_view_is_rejected_before_provider_for_every_report_route(path: str) -> None:
     captured, handler = _capture(body=_report_payload())
     _override_client(YandexMetrikaClient(settings=_settings(), transport=httpx.MockTransport(handler)))
     try:
         response = TestClient(app).get(
-            "/metrika/counters/42/reports/landing-pages"
-            "?date1=2026-01-01&date2=2026-01-01&view=ecommerce&currency=EUR"
+            f"/metrika/counters/42/reports/{path}"
+            "?date1=2026-01-01&date2=2026-01-01&view=ecommerce"
         )
     finally:
         _clear_overrides()
 
-    assert response.status_code == 200, response.text
-    expected_metrics = f"{CORE_METRICS},ym:s:ecommerceEURConvertedRevenue"
-    assert captured["params"]["metrics"] == expected_metrics
-    assert "ym:s:purchaseRevenue" not in captured["params"]["metrics"]
-    assert response.json()["metrics"] == expected_metrics.split(",")
+    assert response.status_code == 422, response.text
+    assert captured["calls"] == 0
 
 
 def test_report_normalizes_rows_and_surfaces_provider_metadata() -> None:

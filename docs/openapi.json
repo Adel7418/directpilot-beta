@@ -3815,7 +3815,7 @@
         "type": "object"
       },
       "MetrikaReportCatalogItem": {
-        "description": "One immutable Metrika report preset exposed by the catalog.",
+        "description": "One immutable core-only Metrika report preset exposed by the catalog.",
         "properties": {
           "core_metrics": {
             "items": {
@@ -3831,16 +3831,12 @@
             "title": "Dimensions",
             "type": "array"
           },
-          "ecommerce_metric_template": {
-            "title": "Ecommerce Metric Template",
-            "type": "string"
-          },
           "preset": {
             "title": "Preset",
             "type": "string"
           },
           "supports_ecommerce": {
-            "default": true,
+            "default": false,
             "title": "Supports Ecommerce",
             "type": "boolean"
           }
@@ -3848,8 +3844,7 @@
         "required": [
           "preset",
           "dimensions",
-          "core_metrics",
-          "ecommerce_metric_template"
+          "core_metrics"
         ],
         "title": "MetrikaReportCatalogItem",
         "type": "object"
@@ -11333,28 +11328,9 @@
             "name": "view",
             "required": false,
             "schema": {
+              "const": "core",
               "default": "core",
-              "enum": [
-                "core",
-                "ecommerce"
-              ],
               "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "currency",
-            "required": false,
-            "schema": {
-              "default": "RUB",
-              "enum": [
-                "RUB",
-                "USD",
-                "EUR",
-                "YND"
-              ],
-              "title": "Currency",
               "type": "string"
             }
           }
@@ -11476,28 +11452,9 @@
             "name": "view",
             "required": false,
             "schema": {
+              "const": "core",
               "default": "core",
-              "enum": [
-                "core",
-                "ecommerce"
-              ],
               "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "currency",
-            "required": false,
-            "schema": {
-              "default": "RUB",
-              "enum": [
-                "RUB",
-                "USD",
-                "EUR",
-                "YND"
-              ],
-              "title": "Currency",
               "type": "string"
             }
           }
@@ -11607,28 +11564,9 @@
             "name": "view",
             "required": false,
             "schema": {
+              "const": "core",
               "default": "core",
-              "enum": [
-                "core",
-                "ecommerce"
-              ],
               "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "currency",
-            "required": false,
-            "schema": {
-              "default": "RUB",
-              "enum": [
-                "RUB",
-                "USD",
-                "EUR",
-                "YND"
-              ],
-              "title": "Currency",
               "type": "string"
             }
           }
@@ -11750,28 +11688,9 @@
             "name": "view",
             "required": false,
             "schema": {
+              "const": "core",
               "default": "core",
-              "enum": [
-                "core",
-                "ecommerce"
-              ],
               "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "currency",
-            "required": false,
-            "schema": {
-              "default": "RUB",
-              "enum": [
-                "RUB",
-                "USD",
-                "EUR",
-                "YND"
-              ],
-              "title": "Currency",
               "type": "string"
             }
           }

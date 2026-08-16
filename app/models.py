@@ -1348,13 +1348,12 @@ class MetrikaReportResponse(BaseModel):
 
 
 class MetrikaReportCatalogItem(BaseModel):
-    """One immutable Metrika report preset exposed by the catalog."""
+    """One immutable core-only Metrika report preset exposed by the catalog."""
 
     preset: str
     dimensions: list[str]
     core_metrics: list[str]
-    ecommerce_metric_template: str
-    supports_ecommerce: bool = True
+    supports_ecommerce: bool = False
 
 
 class MetrikaReportCatalog(BaseModel):

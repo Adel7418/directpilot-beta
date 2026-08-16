@@ -57,9 +57,6 @@ CORE_SESSION_METRICS = (
     "ym:s:anyGoalReaches",
     "ym:s:anyGoalConversionRate",
 )
-ECOMMERCE_CONVERTED_REVENUE_TEMPLATE = "ym:s:ecommerce{currency}ConvertedRevenue"
-
-
 @dataclass(frozen=True)
 class MetrikaReportPreset:
     """Immutable, documented reporting preset sent to ``/stat/v1/data``."""
@@ -100,18 +97,6 @@ METRIKA_REPORT_PRESETS: dict[str, MetrikaReportPreset] = {
         uses_limit=True,
     ),
 }
-
-
-def metrika_report_metrics(*, view: str, currency: str) -> tuple[str, ...]:
-    """Return the fixed session metric bundle for an allowed report view."""
-
-    if view == "core":
-        return CORE_SESSION_METRICS
-    if view == "ecommerce" and currency in {"RUB", "USD", "EUR", "YND"}:
-        return CORE_SESSION_METRICS + (
-            ECOMMERCE_CONVERTED_REVENUE_TEMPLATE.format(currency=currency),
-        )
-    raise ValueError("unsupported Metrika report view or currency")
 
 
 class YandexMetrikaError(RuntimeError):
