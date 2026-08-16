@@ -73,16 +73,21 @@ Scope rule for operators/agents:
 - Never infer that an account-wide entity is attached to a campaign merely because it exists in the account. Example: `GET /yandex/sitelinks` lists all sitelink sets; for campaign-specific quick links use `GET /yandex/campaigns/{campaign_id}/ad-assets` and its `SitelinkSetId`/`sitelinks_sets` readback.
 
 4. Read performance:
-   - `GET /yandex/reports/summary?campaign_id=...&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`
+   - `GET /yandex/reports/catalog`
    - `GET /yandex/reports/search-queries` when available for intent/minus-keyword analysis.
+   - `GET /yandex/reports/account-performance`, `/campaign-performance`, `/adgroup-performance`, `/ad-performance`, `/criteria-performance`, `/custom-performance`, `/reach-frequency`
+   - choose `view` explicitly where supported (`core`, `positions`, `outcomes`, `placement`/`reach`).
 5. Read money/budget signals:
    - `GET /yandex/account/balance`
    - `GET /yandex/campaigns/finance`
 6. Read Metrika context:
    - `GET /metrika/counters`
-   - `GET /metrika/counters/{counter_id}/goals`
-   - `GET /metrika/counters/{counter_id}/summary`
-   - `GET /metrika/counters/{counter_id}/traffic-sources`
+   - `GET /metrika/reports/catalog`
+   - `GET /metrika/counters/{counter_id}/reports/site-summary`
+   - `GET /metrika/counters/{counter_id}/reports/direct-hierarchy`
+   - `GET /metrika/counters/{counter_id}/reports/utm-hierarchy`
+   - `GET /metrika/counters/{counter_id}/reports/landing-pages`
+   - legacy/compat: `GET /metrika/counters/{counter_id}/summary`, `.../traffic-sources` (legacy `YandexMetrikaResult` envelope; distinct from typed `/reports/*` routes)
 7. For `/yandex/reports/summary`, use query filters explicitly when needed:
    - `campaign_id`
    - `date_from` (YYYY-MM-DD)
@@ -121,6 +126,23 @@ Scope rule for operators/agents:
    - marketing interpretation;
    - recommended changes;
    - what requires explicit approval or implementation work.
+
+## Read-only acceptance checklist
+
+- Use DirectPilot routes only; no raw Yandex/AI Studio/Wordstat API calls.
+- Start with typed catalogs: `GET /yandex/reports/catalog`, `GET /metrika/reports/catalog`.
+- For Direct typed reports use completed-day defaults unless explicitly requested otherwise.
+- Retry `202` responses for the same GET only after `retry_after_seconds`.
+- Validate parser metadata in report responses (`request_id`, `parser_status`, `row counters`, `warnings`).
+- For positions views validate `avg_impression_position`/`avg_click_position` and allow explicit `0`/`null` money fields.
+- Before Metrika drill-down choose one `counter_id`, then call all required metrika typed routes.
+- Never include secrets, customer ids, or unredacted query row text in output.
+- Status expectations:
+  - `409` for environment/mode blockers,
+  - `422` for schema/validation issues,
+  - `502` for provider/unexpected failures,
+  - `503` for upstream temporary saturation.
+- Keep marketer flow read-only: dry_run/apply is write path and is out of marketer scope.
 
 For campaign creation or live mutation:
 

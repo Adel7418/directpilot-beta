@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import math
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -43,6 +44,12 @@ from app.models import (
     PreviewPayload,
     RecommendationList,
     ReportSummary,
+    YandexDirectReportRow,
+    YandexReportCatalog,
+    YandexReportCatalogItem,
+    YandexReportPending,
+    YandexReportPeriod,
+    YandexTypedReport,
     SemanticChangeApplyRequest,
     SemanticChangeApplyResult,
     SemanticChangePackage,
@@ -74,6 +81,12 @@ from app.models import (
     YandexControlResult,
     YandexKeyword,
     YandexKeywordList,
+    MetrikaDimensionCell,
+    MetrikaReportCatalog,
+    MetrikaReportCatalogItem,
+    MetrikaReportPeriod,
+    MetrikaReportResponse,
+    MetrikaReportRow,
     YandexMetrikaResult,
     YandexRawResult,
     YandexSearchApiResult,
@@ -130,9 +143,19 @@ from app.models import (
     BidModifiersUpdateResult,
 )
 from app.store import store
-from app.yandex_direct import YandexDirectClient, YandexDirectError
+from app.yandex_direct import (
+    REPORT_PRESETS,
+    REPORT_PRESETS_BY_TYPE,
+    ReportPreset,
+    YandexDirectClient,
+    YandexDirectError,
+    report_preset_for_type,
+)
 from app.yandex_facade import mock_yandex
 from app.yandex_metrika import (
+    CORE_SESSION_METRICS,
+    METRIKA_REPORT_PRESETS,
+    MetrikaReportPreset,
     YandexMetrikaClient,
     YandexMetrikaError,
     YandexMetrikaMissingTokenError,
@@ -1014,6 +1037,7 @@ def _raw_yandex_result(service: str, method: str, response: dict[str, Any]) -> Y
         data=response.get("result"),
         source="yandex",
         read_only=True,
+        request_id=response.get("request_id"),
     )
 
 
@@ -1999,8 +2023,7 @@ def yandex_wordstat_delete(
     )
 
 
-@app.get("/yandex/reports/live/{report_type}", response_model=YandexRawResult)
-def yandex_report(
+def _legacy_yandex_report(
     report_type: str,
     date_from: str,
     date_to: str,
@@ -2016,8 +2039,7 @@ def yandex_report(
     )
 
 
-@app.get("/yandex/reports/search-queries-live", response_model=YandexRawResult)
-def yandex_search_queries_live(
+def _legacy_yandex_search_queries_live(
     date_from: str,
     date_to: str,
     settings: Settings = Depends(get_settings),
@@ -2035,160 +2057,6 @@ def yandex_search_queries_live(
             field_names=list(_SEARCH_QUERY_REPORT_FIELDS),
         ),
     )
-
-@app.get(
-    "/yandex/reports/summary",
-    response_model=ReportSummary,
-    responses={
-        409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
-        502: {"description": "Redacted Yandex Direct Reports API error."},
-    },
-)
-def yandex_reports_summary(
-    date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to 7 days ago."),
-    date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to today."),
-    campaign_id: str | None = Query(default=None, description="Optional Yandex Direct campaign id filter."),
-    settings: Settings = Depends(get_settings),
-    client: YandexDirectClient | None = Depends(get_yandex_client),
-) -> ReportSummary:
-    """Live read-only summary from CAMPAIGN_PERFORMANCE_REPORT.
-
-    In non-mock modes (``sandbox`` / ``live_readonly`` / ``live_write``)
-    with an available Yandex Direct client this calls the v5 reports
-    endpoint, parses the TSV response, and aggregates spend/clicks/
-    impressions across all returned rows. ``period`` reflects the
-    requested date range (or the default 7-day window). ``source`` is
-    ``"yandex"`` and ``read_only`` is ``True``.
-
-    The mock payload is the fallback ONLY for ``DIRECTPILOT_MODE=mock``
-    or when no Yandex client/token is available. Live mode without a
-    usable client surfaces HTTP 409 (the same contract used by other
-    read-only endpoints), not a silent mock — marketing must not
-    mistake mock numbers for live numbers.
-    """
-    # Fallback path: mock mode, or live mode but no client/token.
-    if settings.directpilot_mode == "mock" or client is None:
-        if settings.directpilot_mode != "mock":
-            # Live read mode without a usable client — be explicit
-            # rather than silently returning mock data.
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "This endpoint requires sandbox, live_readonly, or live_write "
-                    "mode with Yandex credentials"
-                ),
-            )
-        data = mock_yandex.report_summary()
-        return ReportSummary(**data, source="mock")
-
-    # Live read-only path: real CAMPAIGN_PERFORMANCE_REPORT, parsed.
-    today = date.today()
-    if date_to is None:
-        date_to = today.isoformat()
-    if date_from is None:
-        date_from = (today - timedelta(days=6)).isoformat()
-
-    period = f"{date_from}..{date_to}"
-
-    try:
-        report_kwargs: dict[str, Any] = {
-            "date_from": date_from,
-            "date_to": date_to,
-        }
-        if campaign_id is not None:
-            report_kwargs["campaign_ids"] = [campaign_id]
-        response = client.report("CAMPAIGN_PERFORMANCE_REPORT", **report_kwargs)
-    except YandexDirectError as exc:
-        raise _yandex_error_to_502(exc) from exc
-
-    if not response.get("ok"):
-        err = response.get("error") or {}
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error_type": "YandexDirectError",
-                "message": (
-                    f"Yandex Direct rejected reports: error_code="
-                    f"{err.get('error_code')!r}"
-                ),
-            },
-        )
-
-    # The client returns the raw TSV text in ``result``. NEVER log it
-    # (it contains customer campaign data); parse and aggregate.
-    tsv_text = response.get("result") or ""
-    totals = _aggregate_campaign_performance_tsv(tsv_text, campaign_id=campaign_id)
-
-    impressions = totals["impressions"]
-    clicks = totals["clicks"]
-    spend = totals["spend"]
-    # CTR / CPC are recomputed from totals so the response is consistent
-    # with the v5 column values, regardless of how Yandex formatted them.
-    ctr = (clicks / impressions * 100.0) if impressions else 0.0
-    cpc = (spend / clicks) if clicks else 0.0
-
-    return ReportSummary(
-        period=period,
-        spend=spend,
-        clicks=int(totals["clicks"]),
-        impressions=int(totals["impressions"]),
-        ctr=round(ctr, 4),
-        cpc=round(cpc, 4),
-        conversions=None,
-        cpa=None,
-        source="yandex",
-        read_only=True,
-    )
-
-
-def _aggregate_campaign_performance_tsv(
-    tsv_text: str, campaign_id: str | None = None
-) -> dict[str, float | int]:
-    """Aggregate a CAMPAIGN_PERFORMANCE_REPORT TSV into totals.
-
-    Expected column order (matches ``YandexDirectClient.report`` defaults):
-        Date, CampaignId, CampaignName, Impressions, Clicks, Cost, Ctr
-
-    Returns a dict with ``impressions``, ``clicks``, ``spend`` summed
-    across the rows. Rows whose ``CampaignId`` does not match an
-    optional ``campaign_id`` filter are dropped. Malformed rows are
-    skipped silently (the endpoint surfaces 502 only on transport /
-    envelope errors, not on per-row parse noise).
-    """
-    impressions = 0
-    clicks = 0
-    spend = 0.0
-    seen = False
-    for raw_line in tsv_text.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        cols = line.split("\t")
-        # Need at least Date, CampaignId, ..., Impressions, Clicks, Cost
-        # i.e. index 5 (Cost) reachable. CTR is index 6 — we ignore it
-        # and recompute CTR/CPC from totals instead.
-        if len(cols) < 6:
-            continue
-        # Skip the header row (TSV first line repeats the field names).
-        if cols[0].lower() == "date":
-            continue
-        if campaign_id is not None and cols[1] != campaign_id:
-            continue
-        try:
-            impressions += int(cols[3])
-            clicks += int(cols[4])
-            spend += float(cols[5])
-        except ValueError:
-            # Malformed numeric — skip the row, do not raise.
-            continue
-        seen = True
-    # If we got a report body but nothing matched the filter, return zeros
-    # rather than 502 — the report is valid, it just has no rows for the
-    # requested campaign / period.
-    if not seen and not tsv_text.strip():
-        return {"impressions": 0, "clicks": 0, "spend": 0.0}
-    return {"impressions": impressions, "clicks": clicks, "spend": spend}
-
 
 # Default field set for SEARCH_QUERY_PERFORMANCE_REPORT. The order matches
 # what we request from Yandex and what the parser expects by default:
@@ -2297,7 +2165,7 @@ def _aggregate_search_query_tsv(
 
     header_map: dict[str, int] | None = None
     first_columns = rows[0].split("\t")
-    if first_columns and first_columns[0].lower() == "query":
+    if "Query" in first_columns:
         header_map = {name: idx for idx, name in enumerate(first_columns) if name}
         rows = rows[1:]
 
@@ -2355,15 +2223,7 @@ def _aggregate_search_query_tsv(
     return items
 
 
-@app.get(
-    "/yandex/reports/search-queries",
-    response_model=YandexSearchQueriesReport,
-    responses={
-        409: {"description": "Non-mock mode requires configured Yandex credentials/client."},
-        502: {"description": "Redacted Yandex Direct Reports API error."},
-    },
-)
-def yandex_search_queries(
+def _legacy_yandex_search_queries(
     date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to 7 days ago."),
     date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to today."),
     campaign_id: str | None = Query(default=None, description="Optional Yandex Direct campaign id filter."),
@@ -2470,6 +2330,703 @@ def yandex_search_queries(
         items=items,
         source="yandex",
         read_only=True,
+    )
+
+
+_DIRECT_REPORT_FIELD_TO_KEY = {
+    "Date": "date",
+    "CampaignId": "campaign_id",
+    "CampaignName": "campaign_name",
+    "CampaignType": "campaign_type",
+    "AdGroupId": "ad_group_id",
+    "AdGroupName": "ad_group_name",
+    "AdId": "ad_id",
+    "AdFormat": "ad_format",
+    "Criterion": "criterion",
+    "CriterionId": "criterion_id",
+    "CriterionType": "criterion_type",
+    "Query": "query",
+    "MatchedKeyword": "matched_keyword",
+    "MatchType": "match_type",
+    "AdNetworkType": "ad_network_type",
+    "Placement": "placement",
+    "Impressions": "impressions",
+    "Clicks": "clicks",
+    "ImpressionReach": "impression_reach",
+    "VideoViews": "video_views",
+    "VideoFirstQuartile": "video_first_quartile",
+    "VideoMidpoint": "video_midpoint",
+    "VideoThirdQuartile": "video_third_quartile",
+    "VideoComplete": "video_complete",
+    "Sessions": "sessions",
+    "Conversions": "conversions",
+    "Cost": "cost",
+    "Ctr": "ctr",
+    "AvgCpc": "avg_cpc",
+    "AvgEffectiveBid": "avg_effective_bid",
+    "AvgImpressionPosition": "avg_impression_position",
+    "AvgClickPosition": "avg_click_position",
+    "AvgTrafficVolume": "avg_traffic_volume",
+    "WeightedImpressions": "weighted_impressions",
+    "WeightedCtr": "weighted_ctr",
+    "BounceRate": "bounce_rate",
+    "AvgPageviews": "avg_pageviews",
+    "ConversionRate": "conversion_rate",
+    "CostPerConversion": "cost_per_conversion",
+    "Revenue": "revenue",
+    "Profit": "profit",
+    "GoalsRoi": "goals_roi",
+    "PurchaseRevenue": "purchase_revenue",
+    "PurchaseProfit": "purchase_profit",
+    "PurchaseGoalsRoi": "purchase_goals_roi",
+    "AvgImpressionFrequency": "avg_impression_frequency",
+    "AvgCpm": "avg_cpm",
+    "CPV": "cpv",
+    "AvgVideoCompleteCost": "avg_video_complete_cost",
+    "VideoViewsRate": "video_views_rate",
+    "VideoFirstQuartileRate": "video_first_quartile_rate",
+    "VideoMidpointRate": "video_midpoint_rate",
+    "VideoThirdQuartileRate": "video_third_quartile_rate",
+    "VideoCompleteRate": "video_complete_rate",
+}
+_DIRECT_REPORT_INTEGER_FIELDS = frozenset(
+    {
+        "Impressions", "Clicks", "ImpressionReach", "VideoViews", "VideoFirstQuartile",
+        "VideoMidpoint", "VideoThirdQuartile", "VideoComplete", "Sessions", "Conversions",
+    }
+)
+_DIRECT_REPORT_TEXT_FIELDS = frozenset(
+    {
+        "Date", "CampaignId", "CampaignName", "CampaignType", "AdGroupId", "AdGroupName",
+        "AdId", "AdFormat", "Criterion", "CriterionId", "CriterionType", "Query",
+        "MatchedKeyword", "MatchType", "AdNetworkType", "Placement",
+    }
+)
+_DIRECT_REPORT_FLOAT_FIELDS = (
+    frozenset(_DIRECT_REPORT_FIELD_TO_KEY) - _DIRECT_REPORT_INTEGER_FIELDS - _DIRECT_REPORT_TEXT_FIELDS
+)
+_DIRECT_REPORT_SIGNED_FLOAT_FIELDS = frozenset(
+    {"Profit", "GoalsRoi", "PurchaseProfit", "PurchaseGoalsRoi"}
+)
+_DIRECT_REPORT_UNAVAILABLE_VALUES = frozenset({"", "-", "--", "–", "—", "n/a", "unavailable"})
+
+
+class _DirectReportParseError(ValueError):
+    def __init__(self, message: str, *, missing_headers: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.missing_headers = missing_headers or []
+
+
+def _direct_report_field_key(field: str) -> str:
+    try:
+        return _DIRECT_REPORT_FIELD_TO_KEY[field]
+    except KeyError as exc:
+        raise _DirectReportParseError("unsupported server-owned report field") from exc
+
+
+def _direct_value_is_unavailable(value: str) -> bool:
+    return value.strip().lower() in _DIRECT_REPORT_UNAVAILABLE_VALUES
+
+
+def _parse_direct_report_count(value: str) -> int | None:
+    if _direct_value_is_unavailable(value):
+        return None
+    if re.fullmatch(r"[0-9]+", value) is None:
+        raise ValueError("Direct report count is not an ASCII integer")
+    return int(value)
+
+
+def _parse_direct_report_float(value: str, *, allow_negative: bool = False) -> float | None:
+    if _direct_value_is_unavailable(value):
+        return None
+    if allow_negative and value.startswith("-"):
+        return -_parse_yandex_report_number(value[1:])
+    return _parse_yandex_report_number(value)
+
+
+def _parse_direct_report_text(value: str) -> str | None:
+    return None if _direct_value_is_unavailable(value) else value.strip()
+
+
+def _parse_direct_report_tsv(tsv_text: str, *, expected_fields: list[str]) -> dict[str, Any]:
+    """Header-driven parser for completed Direct TSV reports."""
+    lines = [line for line in tsv_text.splitlines() if line.strip()]
+    if not lines:
+        return {
+            "items": [], "parser_status": "empty", "rows_received": 0,
+            "rows_parsed": 0, "rows_rejected": 0, "warnings": [], "raw_header": [],
+        }
+
+    raw_header = lines[0].split("\t")
+    header_map: dict[str, int] = {}
+    duplicates: set[str] = set()
+    for index, field in enumerate(raw_header):
+        if field in header_map:
+            duplicates.add(field)
+        else:
+            header_map[field] = index
+    missing_headers = [field for field in expected_fields if field not in header_map]
+    if missing_headers or duplicates.intersection(expected_fields):
+        raise _DirectReportParseError(
+            "Direct report is missing required headers", missing_headers=missing_headers
+        )
+
+    items: list[YandexDirectReportRow] = []
+    warnings: list[str] = []
+    rejected = 0
+    data_lines = lines[1:]
+    for row_number, line in enumerate(data_lines, start=1):
+        values = line.split("\t")
+        parsed: dict[str, Any] = {}
+        unavailable: list[str] = []
+        try:
+            for field in expected_fields:
+                index = header_map[field]
+                if index >= len(values):
+                    raise ValueError("row is shorter than header")
+                raw_value = values[index]
+                if field in _DIRECT_REPORT_INTEGER_FIELDS:
+                    value = _parse_direct_report_count(raw_value)
+                elif field in _DIRECT_REPORT_FLOAT_FIELDS:
+                    value = _parse_direct_report_float(
+                        raw_value, allow_negative=field in _DIRECT_REPORT_SIGNED_FLOAT_FIELDS
+                    )
+                else:
+                    value = _parse_direct_report_text(raw_value)
+                if value is None:
+                    unavailable.append(field)
+                parsed[_direct_report_field_key(field)] = value
+            if "Query" in expected_fields and parsed.get("query") is None:
+                raise ValueError("search query is unavailable")
+            items.append(YandexDirectReportRow(**parsed))
+        except (TypeError, ValueError):
+            rejected += 1
+            warnings.append(f"row {row_number}: rejected invalid Direct report values")
+            continue
+        if unavailable:
+            warnings.append(
+                f"row {row_number}: unavailable Direct values in {', '.join(unavailable)}"
+            )
+
+    received = len(data_lines)
+    if received and not items and rejected == received:
+        raise _DirectReportParseError("Direct report contains no parseable data rows")
+    return {
+        "items": items,
+        "parser_status": "partial" if rejected and items else ("ok" if items else "empty"),
+        "rows_received": received,
+        "rows_parsed": len(items),
+        "rows_rejected": rejected,
+        "warnings": warnings,
+        "raw_header": raw_header,
+    }
+
+
+def _report_parse_error_to_502(exc: _DirectReportParseError) -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail={
+            "error_type": "report_parse_error",
+            "message": "Direct report could not be parsed",
+            "missing_headers": exc.missing_headers,
+        },
+    )
+
+
+def _completed_day_period(date_from: str | None, date_to: str | None) -> tuple[str, str, bool]:
+    if (date_from is None) != (date_to is None):
+        raise HTTPException(status_code=422, detail="date_from and date_to must be supplied together")
+    today = date.today()
+    if date_from is None:
+        yesterday = today - timedelta(days=1)
+        return yesterday.isoformat(), yesterday.isoformat(), True
+    assert date_to is not None
+    try:
+        parsed_from = date.fromisoformat(date_from)
+        parsed_to = date.fromisoformat(date_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="date_from and date_to must be ISO dates") from exc
+    if parsed_from > parsed_to:
+        raise HTTPException(status_code=422, detail="date_from must not be after date_to")
+    if parsed_from > today or parsed_to > today:
+        raise HTTPException(status_code=422, detail="future report dates are not allowed")
+    return parsed_from.isoformat(), parsed_to.isoformat(), parsed_to < today
+
+
+def _validated_report_view(preset: ReportPreset, view: str | None) -> str:
+    selected = view or preset.default_view
+    if not preset.supports_view(selected):
+        raise HTTPException(
+            status_code=422,
+            detail=f"view {selected!r} is not supported for {preset.surface}",
+        )
+    return selected
+
+
+def _report_filter_values(
+    preset: ReportPreset,
+    *,
+    campaign_id: str | None,
+    ad_group_id: str | None,
+    ad_id: str | None,
+) -> dict[str, str]:
+    requested = {"CampaignId": campaign_id, "AdGroupId": ad_group_id, "AdId": ad_id}
+    filters: dict[str, str] = {}
+    for field, raw_value in requested.items():
+        if raw_value is None:
+            continue
+        if field not in preset.filter_fields:
+            raise HTTPException(status_code=422, detail=f"{field} is not compatible with {preset.surface}")
+        value = raw_value.strip()
+        if not value.isdigit():
+            raise HTTPException(status_code=422, detail=f"{_direct_report_field_key(field)} must be a numeric string")
+        filters[field] = str(int(value))
+    return filters
+
+
+def _pending_report_response(preset: ReportPreset, response: dict[str, Any]) -> JSONResponse:
+    pending = YandexReportPending(
+        retry_after_seconds=int(response["retry_after_seconds"]),
+        report_type=preset.report_type,
+        surface=preset.surface,
+        request_id=response.get("request_id"),
+    )
+    return JSONResponse(status_code=202, content=pending.model_dump(exclude_none=True))
+
+
+def _mock_typed_report(
+    preset: ReportPreset, *, date_from: str, date_to: str, completed_day: bool, view: str
+) -> YandexTypedReport:
+    fields = preset.fields_for_view(view)
+    return YandexTypedReport(
+        report_type=preset.report_type,
+        surface=preset.surface,
+        period=YandexReportPeriod(date_from=date_from, date_to=date_to, completed_day=completed_day),
+        view=view,
+        columns=[_direct_report_field_key(field) for field in fields],
+        items=[], row_count=0, parser_status="empty", rows_received=0, rows_parsed=0,
+        rows_rejected=0, source="mock", read_only=True,
+    )
+
+
+def _typed_report_response(
+    surface: str,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    campaign_id: str | None,
+    ad_group_id: str | None,
+    ad_id: str | None,
+    view: str | None,
+    settings: Settings,
+    client: YandexDirectClient | None,
+) -> YandexTypedReport | JSONResponse:
+    preset = REPORT_PRESETS[surface]
+    normalized_from, normalized_to, completed_day = _completed_day_period(date_from, date_to)
+    selected_view = _validated_report_view(preset, view)
+    filters = _report_filter_values(
+        preset, campaign_id=campaign_id, ad_group_id=ad_group_id, ad_id=ad_id
+    )
+    if settings.directpilot_mode == "mock":
+        return _mock_typed_report(
+            preset, date_from=normalized_from, date_to=normalized_to,
+            completed_day=completed_day, view=selected_view,
+        )
+
+    direct = _require_yandex_read_client(settings, client)
+    fields = preset.fields_for_view(selected_view)
+    try:
+        response = direct.report(
+            preset.report_type, date_from=normalized_from, date_to=normalized_to,
+            field_names=fields, filter_values=filters,
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if response.get("status") == "pending":
+        return _pending_report_response(preset, response)
+    if not response.get("ok"):
+        error = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "error_code": error.get("error_code"),
+                "message": "Yandex Direct rejected reports",
+            },
+        )
+    try:
+        parsed = _parse_direct_report_tsv(response.get("result") or "", expected_fields=fields)
+    except _DirectReportParseError as exc:
+        raise _report_parse_error_to_502(exc) from exc
+    if filters:
+        parsed["items"] = [
+            item
+            for item in parsed["items"]
+            if all(
+                getattr(item, _direct_report_field_key(field)) == value
+                for field, value in filters.items()
+            )
+        ]
+        parsed["rows_parsed"] = len(parsed["items"])
+        if not parsed["items"] and parsed["parser_status"] == "ok":
+            parsed["parser_status"] = "empty"
+    return YandexTypedReport(
+        report_type=preset.report_type, surface=preset.surface,
+        period=YandexReportPeriod(
+            date_from=normalized_from, date_to=normalized_to, completed_day=completed_day
+        ),
+        view=selected_view, columns=[_direct_report_field_key(field) for field in fields],
+        items=parsed["items"], row_count=len(parsed["items"]),
+        parser_status=parsed["parser_status"], rows_received=parsed["rows_received"],
+        rows_parsed=parsed["rows_parsed"], rows_rejected=parsed["rows_rejected"],
+        source="yandex", read_only=True, warnings=parsed["warnings"],
+        raw_header=parsed["raw_header"], request_id=response.get("request_id"),
+    )
+
+
+_SUMMARY_REPORT_FIELDS = tuple(
+    dict.fromkeys(
+        REPORT_PRESETS["campaign-performance"].fields_for_view("positions")
+        + REPORT_PRESETS["campaign-performance"].fields_for_view("outcomes")
+    )
+)
+
+
+def _summary_report_response(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    campaign_id: str | None,
+    settings: Settings,
+    client: YandexDirectClient | None,
+) -> ReportSummary | JSONResponse:
+    normalized_from, normalized_to, _ = _completed_day_period(date_from, date_to)
+    if settings.directpilot_mode == "mock":
+        return ReportSummary(**mock_yandex.report_summary(), source="mock")
+    preset = REPORT_PRESETS["campaign-performance"]
+    filters = _report_filter_values(
+        preset, campaign_id=campaign_id, ad_group_id=None, ad_id=None
+    )
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        response = direct.report(
+            preset.report_type, date_from=normalized_from, date_to=normalized_to,
+            field_names=list(_SUMMARY_REPORT_FIELDS), filter_values=filters,
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    if response.get("status") == "pending":
+        return _pending_report_response(preset, response)
+    if not response.get("ok"):
+        error = response.get("error") or {}
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError", "error_code": error.get("error_code"),
+                "message": "Yandex Direct rejected reports",
+            },
+        )
+    try:
+        parsed = _parse_direct_report_tsv(
+            response.get("result") or "", expected_fields=list(_SUMMARY_REPORT_FIELDS)
+        )
+    except _DirectReportParseError as exc:
+        raise _report_parse_error_to_502(exc) from exc
+    rows = parsed["items"]
+    if filters:
+        rows = [
+            row
+            for row in rows
+            if all(
+                getattr(row, _direct_report_field_key(field)) == value
+                for field, value in filters.items()
+            )
+        ]
+    impressions = sum(row.impressions or 0 for row in rows)
+    clicks = sum(row.clicks or 0 for row in rows)
+    spend = sum(row.cost or 0.0 for row in rows)
+    conversion_values = [row.conversions for row in rows if row.conversions is not None]
+    conversions = sum(conversion_values) if conversion_values else None
+
+    def average(field: str) -> float | None:
+        values = [getattr(row, field) for row in rows if getattr(row, field) is not None]
+        return round(sum(values) / len(values), 4) if values else None
+
+    return ReportSummary(
+        period=f"{normalized_from}..{normalized_to}", spend=spend, clicks=clicks,
+        impressions=impressions, ctr=round(clicks / impressions * 100.0, 4) if impressions else 0.0,
+        cpc=round(spend / clicks, 4) if clicks else 0.0, conversions=conversions,
+        cpa=round(spend / conversions, 4) if conversions else None,
+        avg_effective_bid=average("avg_effective_bid"),
+        avg_impression_position=average("avg_impression_position"),
+        avg_click_position=average("avg_click_position"),
+        avg_traffic_volume=average("avg_traffic_volume"),
+        weighted_impressions=average("weighted_impressions"),
+        weighted_ctr=average("weighted_ctr"),
+        source="yandex", read_only=True,
+    )
+
+
+def _search_queries_report_response(
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    campaign_id: str | None,
+    ad_group_id: str | None,
+    ad_id: str | None,
+    view: str | None,
+    settings: Settings,
+    client: YandexDirectClient | None,
+) -> YandexSearchQueriesReport | JSONResponse:
+    preset = REPORT_PRESETS["search-queries"]
+    if settings.directpilot_mode == "mock":
+        selected_view = _validated_report_view(preset, view)
+        normalized_from, normalized_to, completed_day = _completed_day_period(date_from, date_to)
+        _report_filter_values(
+            preset, campaign_id=campaign_id, ad_group_id=ad_group_id, ad_id=ad_id
+        )
+        items = [YandexSearchQuery(**item) for item in mock_yandex.search_queries()]
+        return YandexSearchQueriesReport(
+            period=f"{normalized_from}..{normalized_to}", items=items, source="mock", read_only=True,
+            report_type=preset.report_type, surface=preset.surface, completed_day=completed_day,
+            view=selected_view, columns=[
+                _direct_report_field_key(field) for field in preset.fields_for_view(selected_view)
+            ], row_count=len(items), rows_received=len(items), rows_parsed=len(items),
+        )
+    typed = _typed_report_response(
+        "search-queries", date_from=date_from, date_to=date_to, campaign_id=campaign_id,
+        ad_group_id=ad_group_id, ad_id=ad_id, view=view, settings=settings, client=client,
+    )
+    if isinstance(typed, JSONResponse):
+        return typed
+    items = [
+        YandexSearchQuery(**item.model_dump(exclude_unset=True))
+        for item in typed.items if item.query is not None
+    ]
+    ids_without_names = {item.campaign_id for item in items if item.campaign_id and not item.campaign_name}
+    if ids_without_names and client is not None:
+        campaign_names = _lookup_search_query_campaign_names(client, ids_without_names)
+        items = [
+            item.model_copy(update={"campaign_name": campaign_names[item.campaign_id]})
+            if item.campaign_id in campaign_names and not item.campaign_name else item
+            for item in items
+        ]
+    return YandexSearchQueriesReport(
+        period=f"{typed.period.date_from}..{typed.period.date_to}", items=items,
+        source=typed.source, read_only=True, report_type=preset.report_type,
+        surface=preset.surface, view=typed.view, columns=typed.columns,
+        row_count=len(items), parser_status=typed.parser_status,
+        rows_received=typed.rows_received, rows_parsed=typed.rows_parsed,
+        rows_rejected=typed.rows_rejected, warnings=typed.warnings,
+        raw_header=typed.raw_header, completed_day=typed.period.completed_day,
+        request_id=typed.request_id,
+    )
+
+
+_TYPED_REPORT_RESPONSES = {
+    202: {"model": YandexReportPending, "description": "Direct report is queued or pending."},
+    409: {"description": "Non-mock mode requires a configured Yandex client."},
+    422: {"description": "Invalid date, view, or report filter."},
+    502: {"description": "Redacted Direct provider or report parser error."},
+}
+
+
+_RAW_LIVE_REPORT_RESPONSES = {
+    202: {"model": YandexReportPending, "description": "Direct report is queued or pending."},
+    409: {"description": "Live Direct read client is unavailable."},
+    422: {"description": "Invalid Direct report type, view, or date."},
+    502: {"description": "Sanitized Direct provider error."},
+}
+
+
+@app.get("/yandex/reports/catalog", response_model=YandexReportCatalog)
+def yandex_reports_catalog() -> YandexReportCatalog:
+    return YandexReportCatalog(
+        items=[
+            YandexReportCatalogItem(
+                surface=preset.surface,
+                report_type=preset.report_type,
+                supported_views=list(preset.view_fields),
+                fields={
+                    view: [_direct_report_field_key(field) for field in fields]
+                    for view, fields in preset.view_fields.items()
+                },
+                offline_only=preset.offline_only,
+                read_only=True,
+            )
+            for preset in REPORT_PRESETS.values()
+        ]
+    )
+
+
+def _register_typed_report_route(surface: str) -> None:
+    def endpoint(
+        date_from: str | None = Query(default=None),
+        date_to: str | None = Query(default=None),
+        campaign_id: str | None = Query(default=None),
+        ad_group_id: str | None = Query(default=None),
+        ad_id: str | None = Query(default=None),
+        view: str | None = Query(default=None),
+        settings: Settings = Depends(get_settings),
+        client: YandexDirectClient | None = Depends(get_yandex_client),
+    ) -> YandexTypedReport | JSONResponse:
+        return _typed_report_response(
+            surface,
+            date_from=date_from,
+            date_to=date_to,
+            campaign_id=campaign_id,
+            ad_group_id=ad_group_id,
+            ad_id=ad_id,
+            view=view,
+            settings=settings,
+            client=client,
+        )
+
+    endpoint.__name__ = f"yandex_{surface.replace('-', '_')}_report"
+    app.get(
+        f"/yandex/reports/{surface}",
+        response_model=YandexTypedReport,
+        response_model_exclude_unset=True,
+        responses=_TYPED_REPORT_RESPONSES,
+    )(endpoint)
+
+
+for _typed_surface in (
+    "account-performance",
+    "campaign-performance",
+    "adgroup-performance",
+    "ad-performance",
+    "criteria-performance",
+    "custom-performance",
+    "reach-frequency",
+):
+    _register_typed_report_route(_typed_surface)
+del _typed_surface
+
+
+def _raw_report_diagnostic(
+    preset: ReportPreset,
+    *,
+    date_from: str | None,
+    date_to: str | None,
+    view: str | None,
+    settings: Settings,
+    client: YandexDirectClient | None,
+) -> YandexRawResult | JSONResponse:
+    normalized_from, normalized_to, _ = _completed_day_period(date_from, date_to)
+    selected_view = _validated_report_view(preset, view)
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        response = direct.report(
+            preset.report_type,
+            date_from=normalized_from,
+            date_to=normalized_to,
+            field_names=preset.fields_for_view(selected_view),
+        )
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if response.get("status") == "pending":
+        return _pending_report_response(preset, response)
+    return _raw_yandex_result("reports", preset.report_type, response)
+
+
+@app.get(
+    "/yandex/reports/live/{report_type}",
+    response_model=YandexRawResult,
+    response_model_exclude_none=True,
+    responses=_RAW_LIVE_REPORT_RESPONSES,
+)
+def yandex_report(
+    report_type: str,
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    view: str | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult | JSONResponse:
+    try:
+        preset = report_preset_for_type(report_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="unsupported Direct report type") from exc
+    return _raw_report_diagnostic(
+        preset, date_from=date_from, date_to=date_to, view=view, settings=settings, client=client
+    )
+
+
+@app.get(
+    "/yandex/reports/search-queries-live",
+    response_model=YandexRawResult,
+    response_model_exclude_none=True,
+    responses=_RAW_LIVE_REPORT_RESPONSES,
+)
+def yandex_search_queries_live(
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    view: str | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexRawResult | JSONResponse:
+    return _raw_report_diagnostic(
+        REPORT_PRESETS["search-queries"],
+        date_from=date_from,
+        date_to=date_to,
+        view=view,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.get(
+    "/yandex/reports/summary",
+    response_model=ReportSummary,
+    response_model_exclude_none=True,
+    responses=_TYPED_REPORT_RESPONSES,
+)
+def yandex_reports_summary(
+    date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to yesterday."),
+    date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to yesterday."),
+    campaign_id: str | None = Query(default=None, description="Optional Yandex Direct campaign id filter."),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> ReportSummary | JSONResponse:
+    return _summary_report_response(
+        date_from=date_from,
+        date_to=date_to,
+        campaign_id=campaign_id,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.get(
+    "/yandex/reports/search-queries",
+    response_model=YandexSearchQueriesReport,
+    response_model_exclude_unset=True,
+    responses=_TYPED_REPORT_RESPONSES,
+)
+def yandex_search_queries(
+    date_from: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to yesterday."),
+    date_to: str | None = Query(default=None, description="ISO date (YYYY-MM-DD). Defaults to yesterday."),
+    campaign_id: str | None = Query(default=None, description="Optional Yandex Direct campaign id filter."),
+    ad_group_id: str | None = Query(default=None),
+    ad_id: str | None = Query(default=None),
+    view: str | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> YandexSearchQueriesReport | JSONResponse:
+    return _search_queries_report_response(
+        date_from=date_from,
+        date_to=date_to,
+        campaign_id=campaign_id,
+        ad_group_id=ad_group_id,
+        ad_id=ad_id,
+        view=view,
+        settings=settings,
+        client=client,
     )
 
 
@@ -4330,61 +4887,442 @@ def metrika_counter_goals(
     )
 
 
+def _metrika_report_period(
+    date1: date | None, date2: date | None
+) -> MetrikaReportPeriod:
+    """Resolve the bounded reporting period before any provider call."""
+    if (date1 is None) != (date2 is None):
+        raise HTTPException(
+            status_code=422,
+            detail="date1 and date2 must be supplied together",
+        )
+
+    today = date.today()
+    if date1 is None:
+        yesterday = today - timedelta(days=1)
+        return MetrikaReportPeriod(
+            date1=yesterday.isoformat(),
+            date2=yesterday.isoformat(),
+            completed_day=True,
+        )
+
+    assert date2 is not None
+    if date1 > date2:
+        raise HTTPException(status_code=422, detail="date1 must not be after date2")
+    if date1 > today or date2 > today:
+        raise HTTPException(status_code=422, detail="future Metrika dates are not allowed")
+    return MetrikaReportPeriod(
+        date1=date1.isoformat(),
+        date2=date2.isoformat(),
+        completed_day=date2 < today,
+    )
+
+
+def _safe_metrika_text(value: Any) -> str | None:
+    """Project provider dimension values without echoing arbitrary objects."""
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return str(value)
+    return None
+
+
+def _nullable_metrika_float(value: Any) -> float | None:
+    """Normalize an upstream numeric value without turning absence into zero."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _nullable_metrika_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def _nullable_metrika_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _normalize_metrika_dimensions(value: Any) -> list[MetrikaDimensionCell]:
+    if not isinstance(value, list):
+        return []
+    cells: list[MetrikaDimensionCell] = []
+    for cell in value:
+        if isinstance(cell, dict):
+            cells.append(
+                MetrikaDimensionCell(
+                    id=_safe_metrika_text(cell.get("id")),
+                    name=_safe_metrika_text(cell.get("name")),
+                )
+            )
+    return cells
+
+
+def _normalize_metrika_metrics(
+    values: Any, metric_ids: tuple[str, ...]
+) -> dict[str, float | None]:
+    raw_values = values if isinstance(values, list) else []
+    return {
+        metric_id: _nullable_metrika_float(raw_values[index])
+        if index < len(raw_values)
+        else None
+        for index, metric_id in enumerate(metric_ids)
+    }
+
+
+def _normalized_metrika_report(
+    *,
+    preset: MetrikaReportPreset,
+    counter_id: int,
+    period: MetrikaReportPeriod,
+    metric_ids: tuple[str, ...],
+    provider_data: Any,
+    source: Literal["mock", "yandex"],
+    legacy_method: str | None = None,
+    include_legacy_data: bool = False,
+) -> MetrikaReportResponse:
+    raw = provider_data if isinstance(provider_data, dict) else {}
+    items: list[MetrikaReportRow] = []
+    raw_rows = raw.get("data")
+    if isinstance(raw_rows, list):
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict):
+                continue
+            items.append(
+                MetrikaReportRow(
+                    dimensions=_normalize_metrika_dimensions(raw_row.get("dimensions")),
+                    metrics=_normalize_metrika_metrics(raw_row.get("metrics"), metric_ids),
+                )
+            )
+
+    raw_totals = raw.get("totals")
+    totals = (
+        _normalize_metrika_metrics(raw_totals, metric_ids)
+        if isinstance(raw_totals, list) and raw_totals
+        else None
+    )
+    return MetrikaReportResponse(
+        preset=preset.name,
+        counter_id=counter_id,
+        period=period,
+        dimensions=list(preset.dimensions),
+        metrics=list(metric_ids),
+        items=items,
+        totals=totals,
+        row_count=len(items),
+        sampled=_nullable_metrika_bool(raw.get("sampled")),
+        sample_share=_nullable_metrika_float(raw.get("sample_share")),
+        sample_size=_nullable_metrika_int(raw.get("sample_size")),
+        sample_space=_nullable_metrika_int(raw.get("sample_space")),
+        data_lag=_nullable_metrika_int(raw.get("data_lag")),
+        contains_sensitive_data=_nullable_metrika_bool(raw.get("contains_sensitive_data")),
+        total_rows_rounded=_nullable_metrika_bool(raw.get("total_rows_rounded")),
+        source=source,
+        read_only=True,
+        service="stat" if legacy_method is not None else None,
+        method=legacy_method,
+        data=raw if include_legacy_data else None,
+    )
+
+
+def _mock_metrika_report(
+    *,
+    preset: MetrikaReportPreset,
+    counter_id: int,
+    period: MetrikaReportPeriod,
+    metric_ids: tuple[str, ...],
+    legacy_method: str | None,
+    include_legacy_data: bool,
+) -> MetrikaReportResponse:
+    """Deterministic mock result; it never contains live-provider rows."""
+    return _normalized_metrika_report(
+        preset=preset,
+        counter_id=counter_id,
+        period=period,
+        metric_ids=metric_ids,
+        provider_data={"data": [], "totals": []},
+        source="mock",
+        legacy_method=legacy_method,
+        include_legacy_data=include_legacy_data,
+    )
+
+
+def _legacy_metrika_result(
+    *,
+    method: Literal["summary", "traffic_sources"],
+    counter_id: int,
+    date1: date | None,
+    date2: date | None,
+    limit: int | None,
+    settings: Settings,
+    client: YandexMetrikaClient,
+) -> YandexMetrikaResult:
+    """Return the established envelope for legacy Metrika Stats routes."""
+    period = _metrika_report_period(date1, date2)
+    if settings.directpilot_mode == "mock":
+        provider_data: Any = {"data": [], "totals": []}
+    else:
+        try:
+            if method == "summary":
+                result = client.summary(counter_id, date1=period.date1, date2=period.date2)
+            else:
+                result = client.traffic_sources(
+                    counter_id,
+                    date1=period.date1,
+                    date2=period.date2,
+                    limit=limit,
+                )
+        except YandexMetrikaError as exc:
+            _raise_metrika_http_error(exc)
+        provider_data = result["data"]
+
+    return YandexMetrikaResult(
+        service="stat",
+        method=method,
+        counter_id=counter_id,
+        data=provider_data,
+    )
+
+
+def _server_owned_metrika_report(
+    *,
+    preset_name: str,
+    counter_id: int,
+    date1: date | None,
+    date2: date | None,
+    accuracy: Literal["medium", "high", "full"],
+    limit: int | None,
+    settings: Settings,
+    client: YandexMetrikaClient,
+    legacy_method: str | None = None,
+    include_legacy_data: bool = False,
+) -> MetrikaReportResponse:
+    """Build and execute one fixed Metrika Stats API preset."""
+    preset = METRIKA_REPORT_PRESETS[preset_name]
+    period = _metrika_report_period(date1, date2)
+    metric_ids = CORE_SESSION_METRICS
+
+    if settings.directpilot_mode == "mock":
+        return _mock_metrika_report(
+            preset=preset,
+            counter_id=counter_id,
+            period=period,
+            metric_ids=metric_ids,
+            legacy_method=legacy_method,
+            include_legacy_data=include_legacy_data,
+        )
+
+    try:
+        result = client.report(
+            counter_id,
+            date1=period.date1,
+            date2=period.date2,
+            accuracy=accuracy,
+            dimensions=preset.dimensions,
+            metrics=metric_ids,
+            sort="-ym:s:visits" if preset.uses_limit else None,
+            limit=limit if preset.uses_limit else None,
+        )
+    except YandexMetrikaError as exc:
+        _raise_metrika_http_error(exc)
+
+    return _normalized_metrika_report(
+        preset=preset,
+        counter_id=counter_id,
+        period=period,
+        metric_ids=metric_ids,
+        provider_data=result["data"],
+        source="yandex",
+        legacy_method=legacy_method,
+        include_legacy_data=include_legacy_data,
+    )
+
+
+METRIKA_REPORT_ERROR_RESPONSES = {
+    **METRIKA_ERROR_RESPONSES,
+    422: {"description": "Invalid completed-day Metrika report query."},
+}
+
+
+@app.get("/metrika/reports/catalog", response_model=MetrikaReportCatalog)
+def metrika_reports_catalog() -> MetrikaReportCatalog:
+    """List immutable, server-owned Metrika reporting presets."""
+    return MetrikaReportCatalog(
+        presets=[
+            MetrikaReportCatalogItem(
+                preset=preset.name,
+                dimensions=list(preset.dimensions),
+                core_metrics=list(CORE_SESSION_METRICS),
+                supports_ecommerce=False,
+            )
+            for preset in METRIKA_REPORT_PRESETS.values()
+        ]
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/reports/site-summary",
+    response_model=MetrikaReportResponse,
+    responses=METRIKA_REPORT_ERROR_RESPONSES,
+)
+def metrika_report_site_summary(
+    counter_id: int,
+    date1: date | None = Query(default=None),
+    date2: date | None = Query(default=None),
+    accuracy: Literal["medium", "high", "full"] = Query(default="high"),
+    view: Literal["core"] = Query(default="core"),
+    settings: Settings = Depends(get_settings),
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> MetrikaReportResponse:
+    return _server_owned_metrika_report(
+        preset_name="site-summary",
+        counter_id=counter_id,
+        date1=date1,
+        date2=date2,
+        accuracy=accuracy,
+        limit=None,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/reports/direct-hierarchy",
+    response_model=MetrikaReportResponse,
+    responses=METRIKA_REPORT_ERROR_RESPONSES,
+)
+def metrika_report_direct_hierarchy(
+    counter_id: int,
+    date1: date | None = Query(default=None),
+    date2: date | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    accuracy: Literal["medium", "high", "full"] = Query(default="high"),
+    view: Literal["core"] = Query(default="core"),
+    settings: Settings = Depends(get_settings),
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> MetrikaReportResponse:
+    return _server_owned_metrika_report(
+        preset_name="direct-hierarchy",
+        counter_id=counter_id,
+        date1=date1,
+        date2=date2,
+        limit=limit,
+        accuracy=accuracy,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/reports/utm-hierarchy",
+    response_model=MetrikaReportResponse,
+    responses=METRIKA_REPORT_ERROR_RESPONSES,
+)
+def metrika_report_utm_hierarchy(
+    counter_id: int,
+    date1: date | None = Query(default=None),
+    date2: date | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    accuracy: Literal["medium", "high", "full"] = Query(default="high"),
+    view: Literal["core"] = Query(default="core"),
+    settings: Settings = Depends(get_settings),
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> MetrikaReportResponse:
+    return _server_owned_metrika_report(
+        preset_name="utm-hierarchy",
+        counter_id=counter_id,
+        date1=date1,
+        date2=date2,
+        limit=limit,
+        accuracy=accuracy,
+        settings=settings,
+        client=client,
+    )
+
+
+@app.get(
+    "/metrika/counters/{counter_id}/reports/landing-pages",
+    response_model=MetrikaReportResponse,
+    responses=METRIKA_REPORT_ERROR_RESPONSES,
+)
+def metrika_report_landing_pages(
+    counter_id: int,
+    date1: date | None = Query(default=None),
+    date2: date | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    accuracy: Literal["medium", "high", "full"] = Query(default="high"),
+    view: Literal["core"] = Query(default="core"),
+    settings: Settings = Depends(get_settings),
+    client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
+) -> MetrikaReportResponse:
+    return _server_owned_metrika_report(
+        preset_name="landing-pages",
+        counter_id=counter_id,
+        date1=date1,
+        date2=date2,
+        limit=limit,
+        accuracy=accuracy,
+        settings=settings,
+        client=client,
+    )
+
+
 @app.get(
     "/metrika/counters/{counter_id}/summary",
     response_model=YandexMetrikaResult,
-    responses=METRIKA_ERROR_RESPONSES,
+    responses=METRIKA_REPORT_ERROR_RESPONSES,
 )
 def metrika_counter_summary(
     counter_id: int,
-    date1: str,
-    date2: str,
+    date1: date | None = Query(default=None),
+    date2: date | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
 ) -> YandexMetrikaResult:
-    """Goals-conversion summary (any-goal reaches per day) for date1..date2.
-
-    Uses the documented ``ym:s:anyGoalReaches`` metric, NOT the per-goal
-    ``ym:s:goalReaches`` (the latter is per-goal and is no longer a valid
-    metric name in v2).
-    """
-    try:
-        result = client.summary(counter_id, date1=date1, date2=date2)
-    except YandexMetrikaError as exc:
-        _raise_metrika_http_error(exc)
-    return YandexMetrikaResult(
-        service="stat",
+    """Legacy Metrika summary envelope backed by the Stats API adapter."""
+    return _legacy_metrika_result(
         method="summary",
         counter_id=counter_id,
-        data=result["data"],
+        date1=date1,
+        date2=date2,
+        limit=None,
+        settings=settings,
+        client=client,
     )
 
 
 @app.get(
     "/metrika/counters/{counter_id}/traffic-sources",
     response_model=YandexMetrikaResult,
-    responses=METRIKA_ERROR_RESPONSES,
+    responses=METRIKA_REPORT_ERROR_RESPONSES,
 )
 def metrika_counter_traffic_sources(
     counter_id: int,
-    date1: str,
-    date2: str,
-    limit: int = 10,
+    date1: date | None = Query(default=None),
+    date2: date | None = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=1000),
+    settings: Settings = Depends(get_settings),
     client: YandexMetrikaClient = Depends(get_yandex_metrika_client),
 ) -> YandexMetrikaResult:
-    """Visits split by the last-sign traffic source.
-
-    Uses the documented ``ym:s:lastsignTrafficSource`` dimension, NOT the
-    older ``ym:s:TrafficSource`` (which is deprecated and breaks in v2).
-    """
-    try:
-        result = client.traffic_sources(
-            counter_id, date1=date1, date2=date2, limit=limit
-        )
-    except YandexMetrikaError as exc:
-        _raise_metrika_http_error(exc)
-    return YandexMetrikaResult(
-        service="stat",
+    """Legacy Metrika traffic-source envelope backed by the Stats API adapter."""
+    return _legacy_metrika_result(
         method="traffic_sources",
         counter_id=counter_id,
-        data=result["data"],
+        date1=date1,
+        date2=date2,
+        limit=limit,
+        settings=settings,
+        client=client,
     )

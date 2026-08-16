@@ -3758,6 +3758,355 @@
         "title": "LiveCreateCampaignResult",
         "type": "object"
       },
+      "MetrikaDimensionCell": {
+        "description": "Safe projection of one provider dimension cell.",
+        "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "MetrikaDimensionCell",
+        "type": "object"
+      },
+      "MetrikaReportCatalog": {
+        "properties": {
+          "presets": {
+            "items": {
+              "$ref": "#/components/schemas/MetrikaReportCatalogItem"
+            },
+            "title": "Presets",
+            "type": "array"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "presets"
+        ],
+        "title": "MetrikaReportCatalog",
+        "type": "object"
+      },
+      "MetrikaReportCatalogItem": {
+        "description": "One immutable core-only Metrika report preset exposed by the catalog.",
+        "properties": {
+          "core_metrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Core Metrics",
+            "type": "array"
+          },
+          "dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "preset": {
+            "title": "Preset",
+            "type": "string"
+          },
+          "supports_ecommerce": {
+            "default": false,
+            "title": "Supports Ecommerce",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "preset",
+          "dimensions",
+          "core_metrics"
+        ],
+        "title": "MetrikaReportCatalogItem",
+        "type": "object"
+      },
+      "MetrikaReportPeriod": {
+        "description": "The resolved Metrika reporting window and its completion state.",
+        "properties": {
+          "completed_day": {
+            "title": "Completed Day",
+            "type": "boolean"
+          },
+          "date1": {
+            "title": "Date1",
+            "type": "string"
+          },
+          "date2": {
+            "title": "Date2",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date1",
+          "date2",
+          "completed_day"
+        ],
+        "title": "MetrikaReportPeriod",
+        "type": "object"
+      },
+      "MetrikaReportResponse": {
+        "description": "Normalized, server-owned Metrika report envelope.\n\n``service``, ``method`` and ``data`` retain the old summary/traffic\nadapter fields. New ``/reports/*`` routes use only the typed fields.",
+        "properties": {
+          "contains_sensitive_data": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contains Sensitive Data"
+          },
+          "counter_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Counter Id"
+          },
+          "data": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "data_lag": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Lag"
+          },
+          "dimensions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MetrikaReportRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Method"
+          },
+          "metrics": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "period": {
+            "$ref": "#/components/schemas/MetrikaReportPeriod"
+          },
+          "preset": {
+            "title": "Preset",
+            "type": "string"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "sample_share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Share"
+          },
+          "sample_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Size"
+          },
+          "sample_space": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Space"
+          },
+          "sampled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sampled"
+          },
+          "service": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service"
+          },
+          "source": {
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "total_rows_rounded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Rows Rounded"
+          },
+          "totals": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Totals"
+          }
+        },
+        "required": [
+          "preset",
+          "counter_id",
+          "period",
+          "dimensions",
+          "metrics",
+          "items",
+          "row_count",
+          "source"
+        ],
+        "title": "MetrikaReportResponse",
+        "type": "object"
+      },
+      "MetrikaReportRow": {
+        "description": "Typed Metrika Stats API row with metric IDs mapped to nullable floats.",
+        "properties": {
+          "dimensions": {
+            "items": {
+              "$ref": "#/components/schemas/MetrikaDimensionCell"
+            },
+            "title": "Dimensions",
+            "type": "array"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Metrics",
+            "type": "object"
+          }
+        },
+        "required": [
+          "dimensions",
+          "metrics"
+        ],
+        "title": "MetrikaReportRow",
+        "type": "object"
+      },
       "NegativeKeywordsReplace": {
         "properties": {
           "negative_keywords": {
@@ -4010,6 +4359,50 @@
       },
       "ReportSummary": {
         "properties": {
+          "avg_click_position": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Click Position"
+          },
+          "avg_effective_bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Effective Bid"
+          },
+          "avg_impression_position": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Impression Position"
+          },
+          "avg_traffic_volume": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Traffic Volume"
+          },
           "clicks": {
             "title": "Clicks",
             "type": "integer"
@@ -4070,6 +4463,28 @@
           "spend": {
             "title": "Spend",
             "type": "number"
+          },
+          "weighted_ctr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Ctr"
+          },
+          "weighted_impressions": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Impressions"
           }
         },
         "required": [
@@ -7141,6 +7556,607 @@
         "title": "YandexControlResult",
         "type": "object"
       },
+      "YandexDirectReportRow": {
+        "description": "Typed, nullable Direct Reports row shared by server-owned presets.",
+        "properties": {
+          "ad_format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Format"
+          },
+          "ad_group_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "ad_group_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Name"
+          },
+          "ad_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Id"
+          },
+          "ad_network_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Network Type"
+          },
+          "avg_click_position": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Click Position"
+          },
+          "avg_cpc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Cpc"
+          },
+          "avg_cpm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Cpm"
+          },
+          "avg_effective_bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Effective Bid"
+          },
+          "avg_impression_frequency": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Impression Frequency"
+          },
+          "avg_impression_position": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Impression Position"
+          },
+          "avg_pageviews": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Pageviews"
+          },
+          "avg_traffic_volume": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Traffic Volume"
+          },
+          "avg_video_complete_cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Video Complete Cost"
+          },
+          "bounce_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bounce Rate"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "campaign_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Name"
+          },
+          "campaign_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Type"
+          },
+          "clicks": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clicks"
+          },
+          "conversion_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversion Rate"
+          },
+          "conversions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversions"
+          },
+          "cost": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost"
+          },
+          "cost_per_conversion": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Per Conversion"
+          },
+          "cpv": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpv"
+          },
+          "criterion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion"
+          },
+          "criterion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion Id"
+          },
+          "criterion_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion Type"
+          },
+          "ctr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ctr"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "goals_roi": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goals Roi"
+          },
+          "impression_reach": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impression Reach"
+          },
+          "impressions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impressions"
+          },
+          "match_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Type"
+          },
+          "matched_keyword": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Keyword"
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placement"
+          },
+          "profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit"
+          },
+          "purchase_goals_roi": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Goals Roi"
+          },
+          "purchase_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Profit"
+          },
+          "purchase_revenue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Revenue"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revenue"
+          },
+          "sessions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sessions"
+          },
+          "video_complete": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Complete"
+          },
+          "video_complete_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Complete Rate"
+          },
+          "video_first_quartile": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video First Quartile"
+          },
+          "video_first_quartile_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video First Quartile Rate"
+          },
+          "video_midpoint": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Midpoint"
+          },
+          "video_midpoint_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Midpoint Rate"
+          },
+          "video_third_quartile": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Third Quartile"
+          },
+          "video_third_quartile_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Third Quartile Rate"
+          },
+          "video_views": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Views"
+          },
+          "video_views_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Views Rate"
+          },
+          "weighted_ctr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Ctr"
+          },
+          "weighted_impressions": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Impressions"
+          }
+        },
+        "title": "YandexDirectReportRow",
+        "type": "object"
+      },
       "YandexKeyword": {
         "properties": {
           "ad_group_id": {
@@ -7261,6 +8277,17 @@
             "title": "Read Only",
             "type": "boolean"
           },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
           "service": {
             "title": "Service",
             "type": "string"
@@ -7281,6 +8308,144 @@
           "data"
         ],
         "title": "YandexRawResult",
+        "type": "object"
+      },
+      "YandexReportCatalog": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexReportCatalogItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "YandexReportCatalog",
+        "type": "object"
+      },
+      "YandexReportCatalogItem": {
+        "properties": {
+          "fields": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Fields",
+            "type": "object"
+          },
+          "offline_only": {
+            "title": "Offline Only",
+            "type": "boolean"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "report_type": {
+            "title": "Report Type",
+            "type": "string"
+          },
+          "supported_views": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Views",
+            "type": "array"
+          },
+          "surface": {
+            "title": "Surface",
+            "type": "string"
+          }
+        },
+        "required": [
+          "surface",
+          "report_type",
+          "supported_views",
+          "fields",
+          "offline_only"
+        ],
+        "title": "YandexReportCatalogItem",
+        "type": "object"
+      },
+      "YandexReportPending": {
+        "properties": {
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "report_type": {
+            "title": "Report Type",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "retry_after_seconds": {
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Retry After Seconds",
+            "type": "integer"
+          },
+          "status": {
+            "const": "pending",
+            "default": "pending",
+            "title": "Status",
+            "type": "string"
+          },
+          "surface": {
+            "title": "Surface",
+            "type": "string"
+          }
+        },
+        "required": [
+          "retry_after_seconds",
+          "report_type",
+          "surface"
+        ],
+        "title": "YandexReportPending",
+        "type": "object"
+      },
+      "YandexReportPeriod": {
+        "properties": {
+          "completed_day": {
+            "default": true,
+            "title": "Completed Day",
+            "type": "boolean"
+          },
+          "date_from": {
+            "title": "Date From",
+            "type": "string"
+          },
+          "date_to": {
+            "title": "Date To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date_from",
+          "date_to"
+        ],
+        "title": "YandexReportPeriod",
         "type": "object"
       },
       "YandexSearchApiResult": {
@@ -7319,6 +8484,18 @@
       },
       "YandexSearchQueriesReport": {
         "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "completed_day": {
+            "default": true,
+            "title": "Completed Day",
+            "type": "boolean"
+          },
           "items": {
             "items": {
               "$ref": "#/components/schemas/YandexSearchQuery"
@@ -7326,14 +8503,67 @@
             "title": "Items",
             "type": "array"
           },
+          "parser_status": {
+            "default": "ok",
+            "enum": [
+              "ok",
+              "empty",
+              "partial"
+            ],
+            "title": "Parser Status",
+            "type": "string"
+          },
           "period": {
             "title": "Period",
             "type": "string"
+          },
+          "raw_header": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Header",
+            "type": "array"
           },
           "read_only": {
             "default": true,
             "title": "Read Only",
             "type": "boolean"
+          },
+          "report_type": {
+            "default": "SEARCH_QUERY_PERFORMANCE_REPORT",
+            "title": "Report Type",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "row_count": {
+            "default": 0,
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows_parsed": {
+            "default": 0,
+            "title": "Rows Parsed",
+            "type": "integer"
+          },
+          "rows_received": {
+            "default": 0,
+            "title": "Rows Received",
+            "type": "integer"
+          },
+          "rows_rejected": {
+            "default": 0,
+            "title": "Rows Rejected",
+            "type": "integer"
           },
           "source": {
             "default": "mock",
@@ -7343,6 +8573,23 @@
             ],
             "title": "Source",
             "type": "string"
+          },
+          "surface": {
+            "default": "search-queries",
+            "title": "Surface",
+            "type": "string"
+          },
+          "view": {
+            "default": "core",
+            "title": "View",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
           }
         },
         "required": [
@@ -7355,12 +8602,125 @@
       "YandexSearchQuery": {
         "properties": {
           "ad_group_id": {
-            "title": "Ad Group Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "ad_group_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Name"
+          },
+          "ad_network_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Network Type"
+          },
+          "avg_click_position": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Click Position"
+          },
+          "avg_cpc": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Cpc"
+          },
+          "avg_effective_bid": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Effective Bid"
+          },
+          "avg_impression_position": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Impression Position"
+          },
+          "avg_pageviews": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Pageviews"
+          },
+          "avg_traffic_volume": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Traffic Volume"
+          },
+          "bounce_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bounce Rate"
           },
           "campaign_id": {
-            "title": "Campaign Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
           },
           "campaign_name": {
             "anyOf": [
@@ -7373,9 +8733,49 @@
             ],
             "title": "Campaign Name"
           },
+          "campaign_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Type"
+          },
           "clicks": {
-            "title": "Clicks",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clicks"
+          },
+          "conversion_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversion Rate"
+          },
+          "conversions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversions"
           },
           "cost": {
             "anyOf": [
@@ -7388,26 +8788,211 @@
             ],
             "title": "Cost"
           },
+          "cost_per_conversion": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Per Conversion"
+          },
+          "criterion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion"
+          },
+          "criterion_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion Id"
+          },
+          "criterion_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Criterion Type"
+          },
           "ctr": {
-            "title": "Ctr",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ctr"
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Date"
+          },
+          "goals_roi": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goals Roi"
           },
           "impressions": {
-            "title": "Impressions",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Impressions"
+          },
+          "match_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Type"
+          },
+          "matched_keyword": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Keyword"
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Placement"
+          },
+          "profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profit"
+          },
+          "purchase_goals_roi": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Goals Roi"
+          },
+          "purchase_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Profit"
+          },
+          "purchase_revenue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Purchase Revenue"
           },
           "query": {
             "title": "Query",
             "type": "string"
+          },
+          "revenue": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revenue"
+          },
+          "weighted_ctr": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Ctr"
+          },
+          "weighted_impressions": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weighted Impressions"
           }
         },
         "required": [
-          "query",
-          "campaign_id",
-          "ad_group_id",
-          "impressions",
-          "clicks",
-          "ctr"
+          "query"
         ],
         "title": "YandexSearchQuery",
         "type": "object"
@@ -8126,6 +9711,118 @@
           "days"
         ],
         "title": "YandexTimeTargetingSchedule",
+        "type": "object"
+      },
+      "YandexTypedReport": {
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/YandexDirectReportRow"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "parser_status": {
+            "enum": [
+              "ok",
+              "empty",
+              "partial"
+            ],
+            "title": "Parser Status",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/YandexReportPeriod"
+          },
+          "raw_header": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Raw Header",
+            "type": "array"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "report_type": {
+            "title": "Report Type",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows_parsed": {
+            "title": "Rows Parsed",
+            "type": "integer"
+          },
+          "rows_received": {
+            "title": "Rows Received",
+            "type": "integer"
+          },
+          "rows_rejected": {
+            "title": "Rows Rejected",
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "surface": {
+            "title": "Surface",
+            "type": "string"
+          },
+          "view": {
+            "title": "View",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "report_type",
+          "surface",
+          "period",
+          "view",
+          "columns",
+          "items",
+          "row_count",
+          "parser_status",
+          "rows_received",
+          "rows_parsed",
+          "rows_rejected",
+          "source"
+        ],
+        "title": "YandexTypedReport",
         "type": "object"
       },
       "YandexVCardAssetItem": {
@@ -9552,9 +11249,493 @@
         "summary": "Metrika Counter Goals"
       }
     },
+    "/metrika/counters/{counter_id}/reports/direct-hierarchy": {
+      "get": {
+        "operationId": "metrika_report_direct_hierarchy_metrika_counters__counter_id__reports_direct_hierarchy_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "counter_id",
+            "required": true,
+            "schema": {
+              "title": "Counter Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accuracy",
+            "required": false,
+            "schema": {
+              "default": "high",
+              "enum": [
+                "medium",
+                "high",
+                "full"
+              ],
+              "title": "Accuracy",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "const": "core",
+              "default": "core",
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetrikaReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Invalid completed-day Metrika report query."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Metrika upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured"
+          }
+        },
+        "summary": "Metrika Report Direct Hierarchy"
+      }
+    },
+    "/metrika/counters/{counter_id}/reports/landing-pages": {
+      "get": {
+        "operationId": "metrika_report_landing_pages_metrika_counters__counter_id__reports_landing_pages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "counter_id",
+            "required": true,
+            "schema": {
+              "title": "Counter Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accuracy",
+            "required": false,
+            "schema": {
+              "default": "high",
+              "enum": [
+                "medium",
+                "high",
+                "full"
+              ],
+              "title": "Accuracy",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "const": "core",
+              "default": "core",
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetrikaReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Invalid completed-day Metrika report query."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Metrika upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured"
+          }
+        },
+        "summary": "Metrika Report Landing Pages"
+      }
+    },
+    "/metrika/counters/{counter_id}/reports/site-summary": {
+      "get": {
+        "operationId": "metrika_report_site_summary_metrika_counters__counter_id__reports_site_summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "counter_id",
+            "required": true,
+            "schema": {
+              "title": "Counter Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accuracy",
+            "required": false,
+            "schema": {
+              "default": "high",
+              "enum": [
+                "medium",
+                "high",
+                "full"
+              ],
+              "title": "Accuracy",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "const": "core",
+              "default": "core",
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetrikaReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Invalid completed-day Metrika report query."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Metrika upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured"
+          }
+        },
+        "summary": "Metrika Report Site Summary"
+      }
+    },
+    "/metrika/counters/{counter_id}/reports/utm-hierarchy": {
+      "get": {
+        "operationId": "metrika_report_utm_hierarchy_metrika_counters__counter_id__reports_utm_hierarchy_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "counter_id",
+            "required": true,
+            "schema": {
+              "title": "Counter Id",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date1",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date1"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date2",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date2"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "accuracy",
+            "required": false,
+            "schema": {
+              "default": "high",
+              "enum": [
+                "medium",
+                "high",
+                "full"
+              ],
+              "title": "Accuracy",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "const": "core",
+              "default": "core",
+              "title": "View",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetrikaReportResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Invalid completed-day Metrika report query."
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Metrika upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "YANDEX_METRIKA_OAUTH_TOKEN is not configured"
+          }
+        },
+        "summary": "Metrika Report Utm Hierarchy"
+      }
+    },
     "/metrika/counters/{counter_id}/summary": {
       "get": {
-        "description": "Goals-conversion summary (any-goal reaches per day) for date1..date2.\n\nUses the documented ``ym:s:anyGoalReaches`` metric, NOT the per-goal\n``ym:s:goalReaches`` (the latter is per-goal and is no longer a valid\nmetric name in v2).",
+        "description": "Legacy Metrika summary envelope backed by the Stats API adapter.",
         "operationId": "metrika_counter_summary_metrika_counters__counter_id__summary_get",
         "parameters": [
           {
@@ -9569,19 +11750,35 @@
           {
             "in": "query",
             "name": "date1",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date1",
-              "type": "string"
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date1"
             }
           },
           {
             "in": "query",
             "name": "date2",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date2",
-              "type": "string"
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date2"
             }
           }
         ],
@@ -9597,14 +11794,7 @@
             "description": "Successful Response"
           },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Invalid completed-day Metrika report query."
           },
           "502": {
             "content": {
@@ -9632,7 +11822,7 @@
     },
     "/metrika/counters/{counter_id}/traffic-sources": {
       "get": {
-        "description": "Visits split by the last-sign traffic source.\n\nUses the documented ``ym:s:lastsignTrafficSource`` dimension, NOT the\nolder ``ym:s:TrafficSource`` (which is deprecated and breaks in v2).",
+        "description": "Legacy Metrika traffic-source envelope backed by the Stats API adapter.",
         "operationId": "metrika_counter_traffic_sources_metrika_counters__counter_id__traffic_sources_get",
         "parameters": [
           {
@@ -9647,19 +11837,35 @@
           {
             "in": "query",
             "name": "date1",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date1",
-              "type": "string"
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date1"
             }
           },
           {
             "in": "query",
             "name": "date2",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date2",
-              "type": "string"
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date2"
             }
           },
           {
@@ -9668,6 +11874,8 @@
             "required": false,
             "schema": {
               "default": 10,
+              "maximum": 1000,
+              "minimum": 1,
               "title": "Limit",
               "type": "integer"
             }
@@ -9685,14 +11893,7 @@
             "description": "Successful Response"
           },
           "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
+            "description": "Invalid completed-day Metrika report query."
           },
           "502": {
             "content": {
@@ -9716,6 +11917,25 @@
           }
         },
         "summary": "Metrika Counter Traffic Sources"
+      }
+    },
+    "/metrika/reports/catalog": {
+      "get": {
+        "description": "List immutable, server-owned Metrika reporting presets.",
+        "operationId": "metrika_reports_catalog_metrika_reports_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetrikaReportCatalog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Metrika Reports Catalog"
       }
     },
     "/recommendations": {
@@ -12521,6 +14741,834 @@
         "summary": "Yandex Wordstat Get"
       }
     },
+    "/yandex/reports/account-performance": {
+      "get": {
+        "operationId": "yandex_account_performance_report_yandex_reports_account_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Account Performance Report"
+      }
+    },
+    "/yandex/reports/ad-performance": {
+      "get": {
+        "operationId": "yandex_ad_performance_report_yandex_reports_ad_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Ad Performance Report"
+      }
+    },
+    "/yandex/reports/adgroup-performance": {
+      "get": {
+        "operationId": "yandex_adgroup_performance_report_yandex_reports_adgroup_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Adgroup Performance Report"
+      }
+    },
+    "/yandex/reports/campaign-performance": {
+      "get": {
+        "operationId": "yandex_campaign_performance_report_yandex_reports_campaign_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Campaign Performance Report"
+      }
+    },
+    "/yandex/reports/catalog": {
+      "get": {
+        "operationId": "yandex_reports_catalog_yandex_reports_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportCatalog"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Yandex Reports Catalog"
+      }
+    },
+    "/yandex/reports/criteria-performance": {
+      "get": {
+        "operationId": "yandex_criteria_performance_report_yandex_reports_criteria_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Criteria Performance Report"
+      }
+    },
+    "/yandex/reports/custom-performance": {
+      "get": {
+        "operationId": "yandex_custom_performance_report_yandex_reports_custom_performance_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Custom Performance Report"
+      }
+    },
     "/yandex/reports/live/{report_type}": {
       "get": {
         "operationId": "yandex_report_yandex_reports_live__report_type__get",
@@ -12537,19 +15585,49 @@
           {
             "in": "query",
             "name": "date_from",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date From",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
             }
           },
           {
             "in": "query",
             "name": "date_to",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date To",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
             }
           }
         ],
@@ -12564,27 +15642,34 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/YandexReportPending"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Live Direct read client is unavailable."
+          },
+          "422": {
+            "description": "Invalid Direct report type, view, or date."
+          },
+          "502": {
+            "description": "Sanitized Direct provider error."
           }
         },
         "summary": "Yandex Report"
       }
     },
-    "/yandex/reports/search-queries": {
+    "/yandex/reports/reach-frequency": {
       "get": {
-        "description": "Search query performance for the requested period.\n\nIn ``DIRECTPILOT_MODE=mock`` the deterministic mock payload is returned\n(with ``source=\"mock\"``). In any non-mock mode (``sandbox`` /\n``live_readonly`` / ``live_write``) with a configured Yandex Direct\nclient, the live ``SEARCH_QUERY_PERFORMANCE_REPORT`` v5 reports\nendpoint is called and the TSV is parsed into YandexSearchQuery items\nwith ``source=\"yandex\"``, ``read_only=True``. An empty live report is\na valid response — it returns ``items=[]`` and ``source=\"yandex\"``,\nnot a mock fallback and not a 502.\n\nWhen the live mode is selected but no client/token is available the\nendpoint surfaces HTTP 409 (same contract as\n``/yandex/reports/summary`` and the other read-only endpoints), not\na silent mock — marketing must not mistake mock numbers for live\nnumbers.",
-        "operationId": "yandex_search_queries_yandex_reports_search_queries_get",
+        "operationId": "yandex_reach_frequency_report_yandex_reports_reach_frequency_get",
         "parameters": [
           {
-            "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
             "in": "query",
             "name": "date_from",
             "required": false,
@@ -12597,12 +15682,10 @@
                   "type": "null"
                 }
               ],
-              "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
               "title": "Date From"
             }
           },
           {
-            "description": "ISO date (YYYY-MM-DD). Defaults to today.",
             "in": "query",
             "name": "date_to",
             "required": false,
@@ -12615,7 +15698,145 @@
                   "type": "null"
                 }
               ],
-              "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexTypedReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexReportPending"
+                }
+              }
+            },
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
+          },
+          "502": {
+            "description": "Redacted Direct provider or report parser error."
+          }
+        },
+        "summary": "Yandex Reach Frequency Report"
+      }
+    },
+    "/yandex/reports/search-queries": {
+      "get": {
+        "operationId": "yandex_search_queries_yandex_reports_search_queries_get",
+        "parameters": [
+          {
+            "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
+              "title": "Date From"
+            }
+          },
+          {
+            "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
               "title": "Date To"
             }
           },
@@ -12636,6 +15857,54 @@
               "description": "Optional Yandex Direct campaign id filter.",
               "title": "Campaign Id"
             }
+          },
+          {
+            "in": "query",
+            "name": "ad_group_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Group Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "ad_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Ad Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
+            }
           }
         ],
         "responses": {
@@ -12649,21 +15918,24 @@
             },
             "description": "Successful Response"
           },
-          "409": {
-            "description": "Non-mock mode requires configured Yandex credentials/client."
-          },
-          "422": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/YandexReportPending"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
           },
           "502": {
-            "description": "Redacted Yandex Direct Reports API error."
+            "description": "Redacted Direct provider or report parser error."
           }
         },
         "summary": "Yandex Search Queries"
@@ -12676,19 +15948,49 @@
           {
             "in": "query",
             "name": "date_from",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date From",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
             }
           },
           {
             "in": "query",
             "name": "date_to",
-            "required": true,
+            "required": false,
             "schema": {
-              "title": "Date To",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "view",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "View"
             }
           }
         ],
@@ -12703,15 +16005,24 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/YandexReportPending"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Live Direct read client is unavailable."
+          },
+          "422": {
+            "description": "Invalid Direct report type, view, or date."
+          },
+          "502": {
+            "description": "Sanitized Direct provider error."
           }
         },
         "summary": "Yandex Search Queries Live"
@@ -12719,11 +16030,10 @@
     },
     "/yandex/reports/summary": {
       "get": {
-        "description": "Live read-only summary from CAMPAIGN_PERFORMANCE_REPORT.\n\nIn non-mock modes (``sandbox`` / ``live_readonly`` / ``live_write``)\nwith an available Yandex Direct client this calls the v5 reports\nendpoint, parses the TSV response, and aggregates spend/clicks/\nimpressions across all returned rows. ``period`` reflects the\nrequested date range (or the default 7-day window). ``source`` is\n``\"yandex\"`` and ``read_only`` is ``True``.\n\nThe mock payload is the fallback ONLY for ``DIRECTPILOT_MODE=mock``\nor when no Yandex client/token is available. Live mode without a\nusable client surfaces HTTP 409 (the same contract used by other\nread-only endpoints), not a silent mock — marketing must not\nmistake mock numbers for live numbers.",
         "operationId": "yandex_reports_summary_yandex_reports_summary_get",
         "parameters": [
           {
-            "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
+            "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
             "in": "query",
             "name": "date_from",
             "required": false,
@@ -12736,12 +16046,12 @@
                   "type": "null"
                 }
               ],
-              "description": "ISO date (YYYY-MM-DD). Defaults to 7 days ago.",
+              "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
               "title": "Date From"
             }
           },
           {
-            "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+            "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
             "in": "query",
             "name": "date_to",
             "required": false,
@@ -12754,7 +16064,7 @@
                   "type": "null"
                 }
               ],
-              "description": "ISO date (YYYY-MM-DD). Defaults to today.",
+              "description": "ISO date (YYYY-MM-DD). Defaults to yesterday.",
               "title": "Date To"
             }
           },
@@ -12788,21 +16098,24 @@
             },
             "description": "Successful Response"
           },
-          "409": {
-            "description": "Non-mock mode requires configured Yandex credentials/client."
-          },
-          "422": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/YandexReportPending"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "Direct report is queued or pending."
+          },
+          "409": {
+            "description": "Non-mock mode requires a configured Yandex client."
+          },
+          "422": {
+            "description": "Invalid date, view, or report filter."
           },
           "502": {
-            "description": "Redacted Yandex Direct Reports API error."
+            "description": "Redacted Direct provider or report parser error."
           }
         },
         "summary": "Yandex Reports Summary"

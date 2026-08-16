@@ -74,16 +74,54 @@ def client_with_client() -> TestClient:
 
 def _campaign_perf_tsv(
     rows: list[tuple[str, str, str, str, str, str, str]] | None = None,
+    *,
+    outcome_overrides: list[dict[str, str]] | None = None,
 ) -> str:
-    """Build a minimal CAMPAIGN_PERFORMANCE_REPORT TSV.
-
-    Default column order matches ``YandexDirectClient.report`` defaults:
-    Date, CampaignId, CampaignName, Impressions, Clicks, Cost, Ctr.
-    """
+    """Build the server-owned CAMPAIGN summary TSV preset."""
     if rows is None:
         rows = [("2026-06-04", "710691939", "Test campaign", "25", "0", "0", "0.00")]
-    lines = ["Date\tCampaignId\tCampaignName\tImpressions\tClicks\tCost\tCtr"]
-    lines.extend("\t".join(r) for r in rows)
+    fields = [
+        "Date", "CampaignId", "CampaignName", "CampaignType", "Impressions", "Clicks",
+        "Cost", "Ctr", "AvgCpc", "AvgEffectiveBid", "AvgImpressionPosition",
+        "AvgClickPosition", "AvgTrafficVolume", "WeightedImpressions", "WeightedCtr",
+        "BounceRate", "AvgPageviews", "Conversions", "ConversionRate", "CostPerConversion",
+        "Revenue", "Profit", "GoalsRoi", "PurchaseRevenue", "PurchaseProfit",
+        "PurchaseGoalsRoi", "Sessions",
+    ]
+    lines = ["\t".join(fields)]
+    for row_index, (date_value, campaign_id, campaign_name, impressions, clicks, cost, ctr) in enumerate(rows):
+        values = {
+            "Date": date_value,
+            "CampaignId": campaign_id,
+            "CampaignName": campaign_name,
+            "CampaignType": "TEXT_CAMPAIGN",
+            "Impressions": impressions,
+            "Clicks": clicks,
+            "Cost": cost,
+            "Ctr": ctr,
+            "AvgCpc": "0",
+            "AvgEffectiveBid": "0",
+            "AvgImpressionPosition": "0",
+            "AvgClickPosition": "0",
+            "AvgTrafficVolume": "0",
+            "WeightedImpressions": "0",
+            "WeightedCtr": "0",
+            "BounceRate": "0",
+            "AvgPageviews": "0",
+            "Conversions": "0",
+            "ConversionRate": "0",
+            "CostPerConversion": "0",
+            "Revenue": "0",
+            "Profit": "0",
+            "GoalsRoi": "0",
+            "PurchaseRevenue": "0",
+            "PurchaseProfit": "0",
+            "PurchaseGoalsRoi": "0",
+            "Sessions": "0",
+        }
+        if outcome_overrides is not None:
+            values.update(outcome_overrides[row_index])
+        lines.append("\t".join(values[field] for field in fields))
     return "\n".join(lines) + "\n"
 
 
@@ -180,6 +218,43 @@ def test_summary_in_live_readonly_calls_campaign_performance_report_and_parses_t
     assert "Clicks" in fields
     assert "Cost" in fields
     assert "Ctr" in fields
+
+
+def test_summary_aggregates_rows_that_include_negative_outcomes(client_with_client: TestClient):
+    tsv = _campaign_perf_tsv(
+        rows=[
+            ("2026-06-04", "1", "First campaign", "10", "2", "3.00", "20.00"),
+            ("2026-06-04", "2", "Second campaign", "20", "3", "7.00", "15.00"),
+        ],
+        outcome_overrides=[
+            {
+                "Profit": "-12.34",
+                "GoalsRoi": "-25.5",
+                "PurchaseProfit": "-4.56",
+                "PurchaseGoalsRoi": "-8.75",
+            },
+            {},
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=tsv)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/summary")
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["impressions"] == 30
+    assert body["clicks"] == 5
+    assert body["spend"] == 10.0
+    assert body["ctr"] == 16.6667
+    assert body["cpc"] == 2.0
 
 
 def test_summary_accepts_date_from_and_date_to_query_params(
@@ -283,6 +358,44 @@ def test_summary_live_readonly_yandex_error_becomes_502_without_token(
         cleanup()
 
     assert response.status_code == 502, response.text
+    assert "LRO-SECRET" not in response.text
+
+
+def test_summary_all_malformed_provider_rows_become_sanitized_502(
+    client_with_client: TestClient,
+):
+    raw_tsv = _campaign_perf_tsv(
+        rows=[
+            (
+                "2026-06-01",
+                "710691939",
+                "RAW-TSV-MUST-NOT-LEAK",
+                "not-an-integer",
+                "not-a-click-count",
+                "not-a-cost",
+                "not-a-ctr",
+            ),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=raw_tsv)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/summary")
+    finally:
+        cleanup()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    assert body["detail"]["error_type"] == "report_parse_error"
+    assert body["detail"]["message"] == "Direct report could not be parsed"
+    assert not {"spend", "clicks", "impressions", "ctr", "cpc"}.intersection(body)
+    assert "RAW-TSV-MUST-NOT-LEAK" not in response.text
+    assert "not-an-integer" not in response.text
     assert "LRO-SECRET" not in response.text
 
 

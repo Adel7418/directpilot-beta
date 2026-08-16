@@ -29,6 +29,7 @@ Tests use ``httpx.MockTransport`` so no real network call ever happens.
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 from typing import Any
 
 import httpx
@@ -82,13 +83,7 @@ def _search_query_tsv(
     rows: list[tuple[str, ...]] | None = None,
     include_campaign_name: bool = True,
 ) -> str:
-    """Build a minimal SEARCH_QUERY_PERFORMANCE_REPORT TSV.
-
-    By default the fixture includes optional CampaignName to prove the parser
-    tolerates a provider response that returns it, while the requested
-    FieldNames contract remains Query, CampaignId, AdGroupId, Impressions,
-    Clicks, Ctr, Cost.
-    """
+    """Build the server-owned SEARCH_QUERY_PERFORMANCE_REPORT core TSV."""
     if rows is None:
         rows = [
             ("ремонт квартир казань", "710691939", "Локальный сервис", "1001", "540", "22", "4.07", "660.00"),
@@ -106,14 +101,44 @@ def _search_query_tsv(
             continue
         if len(row) != 8:
             raise ValueError(f"Expected 7 or 8 columns, got {len(row)}: {row!r}")
+        if not include_campaign_name:
+            query, campaign_id, _campaign_name, ad_group_id, impressions, clicks, ctr, cost = row
+            normalized_rows.append((query, campaign_id, ad_group_id, impressions, clicks, ctr, cost))
+            continue
         normalized_rows.append(row)
 
-    header = ["Query", "CampaignId"]
-    if include_campaign_name:
-        header.append("CampaignName")
-    header.extend(["AdGroupId", "Impressions", "Clicks", "Ctr", "Cost"])
-    lines = ["\t".join(header)]
-    lines.extend("\t".join(r) for r in normalized_rows)
+    fields = [
+        "Date", "Query", "CampaignId", "CampaignName", "CampaignType", "AdGroupId",
+        "AdGroupName", "Criterion", "CriterionId", "CriterionType", "MatchedKeyword",
+        "MatchType", "Impressions", "Clicks", "Cost", "Ctr", "AvgCpc",
+    ]
+    lines = ["\t".join(fields)]
+    for row in normalized_rows:
+        if include_campaign_name:
+            query, campaign_id, campaign_name, ad_group_id, impressions, clicks, ctr, cost = row
+        else:
+            query, campaign_id, ad_group_id, impressions, clicks, ctr, cost = row
+            campaign_name = "--"
+        values = {
+            "Date": "2026-06-01",
+            "Query": query,
+            "CampaignId": campaign_id,
+            "CampaignName": campaign_name,
+            "CampaignType": "TEXT_CAMPAIGN",
+            "AdGroupId": ad_group_id,
+            "AdGroupName": "Test ad group",
+            "Criterion": "test criterion",
+            "CriterionId": "101",
+            "CriterionType": "KEYWORD",
+            "MatchedKeyword": "test keyword",
+            "MatchType": "EXACT",
+            "Impressions": impressions,
+            "Clicks": clicks,
+            "Cost": cost,
+            "Ctr": ctr,
+            "AvgCpc": "1.25",
+        }
+        lines.append("\t".join(values[field] for field in fields))
     return "\n".join(lines) + "\n"
 
 
@@ -147,11 +172,30 @@ def test_search_queries_in_mock_mode_uses_mock_payload(client_with_client: TestC
     body = response.json()
     assert body["source"] == "mock"
     assert body["read_only"] is True
-    assert body["period"] == "last_7_days"
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    assert body["period"] == f"{yesterday}..{yesterday}"
+    assert body["completed_day"] is True
     # Mock payload has the three legacy fixtures; they remain a deterministic
     # mock for mock mode only and must NEVER appear in live source responses.
     assert len(body["items"]) == 3
     assert body["items"][0]["query"] == "сантехник на дом казань"
+
+
+def test_search_queries_in_mock_mode_preserves_explicit_period(client_with_client: TestClient):
+    settings = _settings_for("mock", token=None)
+    cleanup = _install_overrides(settings, client_obj=None)
+    try:
+        response = client_with_client.get(
+            "/yandex/reports/search-queries",
+            params={"date_from": "2026-06-01", "date_to": "2026-06-07"},
+        )
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["period"] == "2026-06-01..2026-06-07"
+    assert body["completed_day"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -224,13 +268,9 @@ def test_search_queries_in_live_readonly_calls_search_query_report_and_parses_ts
     # FieldNames should match the live contract.
     fields = captured["body"]["params"]["FieldNames"]
     assert fields == [
-        "Query",
-        "CampaignId",
-        "AdGroupId",
-        "Impressions",
-        "Clicks",
-        "Ctr",
-        "Cost",
+        "Date", "Query", "CampaignId", "CampaignName", "CampaignType", "AdGroupId",
+        "AdGroupName", "Criterion", "CriterionId", "CriterionType", "MatchedKeyword",
+        "MatchType", "Impressions", "Clicks", "Cost", "Ctr", "AvgCpc",
     ]
 
 
@@ -330,16 +370,12 @@ def test_search_queries_live_raw_endpoint_uses_search_query_field_names(
     assert body["source"] == "yandex"
     assert body["read_only"] is True
     assert body["method"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
-    assert "Query\tCampaignId\tAdGroupId" in body["data"]
+    assert "Date\tQuery\tCampaignId\tCampaignName" in body["data"]
     assert captured["body"]["params"]["ReportType"] == "SEARCH_QUERY_PERFORMANCE_REPORT"
     assert captured["body"]["params"]["FieldNames"] == [
-        "Query",
-        "CampaignId",
-        "AdGroupId",
-        "Impressions",
-        "Clicks",
-        "Ctr",
-        "Cost",
+        "Date", "Query", "CampaignId", "CampaignName", "CampaignType", "AdGroupId",
+        "AdGroupName", "Criterion", "CriterionId", "CriterionType", "MatchedKeyword",
+        "MatchType", "Impressions", "Clicks", "Cost", "Ctr", "AvgCpc",
     ]
 
 
@@ -378,10 +414,7 @@ def test_search_queries_empty_live_report_with_only_header_returns_empty_items(
     """A report containing only the column header is also an empty result."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            content="Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n",
-        )
+        return httpx.Response(200, content=_search_query_tsv(rows=[]))
 
     settings = _settings_for("live_readonly", token="LRO-SECRET")
     client_obj = _make_client(settings, handler)
@@ -686,14 +719,14 @@ def test_search_queries_live_readonly_malformed_tsv_rows_are_skipped_silently(
 ):
     """Malformed rows (missing columns or non-numeric values) are skipped
     silently, not surfaced as 502 — the report body itself is valid."""
-    tsv = (
-        "Query\tCampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n"
-        "ремонт\t710691939\t1001\t100\t5\t5.00\t150.00\n"
-        # Short row — should be skipped silently.
-        "сантехник\t710691939\n"
-        # Non-numeric values — should be skipped silently.
-        "электрик\t710691939\t1001\tnot_a_number\t1\t2.00\t30.00\n"
-    )
+    header = _search_query_tsv(rows=[]).splitlines()[0]
+    valid_row = _search_query_tsv(
+        rows=[("ремонт", "710691939", "1001", "100", "5", "5.00", "150.00")]
+    ).splitlines()[1]
+    invalid_row = _search_query_tsv(
+        rows=[("электрик", "710691939", "1001", "not_a_number", "1", "2.00", "30.00")]
+    ).splitlines()[1]
+    tsv = f"{header}\n{valid_row}\nсантехник\t710691939\n{invalid_row}\n"
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=tsv)

@@ -48,6 +48,12 @@ class ReportSummary(BaseModel):
     cpc: float
     conversions: int | None = None
     cpa: float | None = None
+    avg_effective_bid: float | None = None
+    avg_impression_position: float | None = None
+    avg_click_position: float | None = None
+    avg_traffic_volume: float | None = None
+    weighted_impressions: float | None = None
+    weighted_ctr: float | None = None
     source: Literal["mock", "yandex"] = "mock"
     read_only: bool = True
 
@@ -573,22 +579,171 @@ class YandexKeywordList(BaseModel):
     read_only: bool = True
 
 
+class YandexReportPeriod(BaseModel):
+    date_from: str
+    date_to: str
+    completed_day: bool = True
+
+
+class YandexDirectReportRow(BaseModel):
+    """Typed, nullable Direct Reports row shared by server-owned presets."""
+
+    date: str | None = None
+    campaign_id: str | None = None
+    campaign_name: str | None = None
+    campaign_type: str | None = None
+    ad_group_id: str | None = None
+    ad_group_name: str | None = None
+    ad_id: str | None = None
+    ad_format: str | None = None
+    criterion: str | None = None
+    criterion_id: str | None = None
+    criterion_type: str | None = None
+    query: str | None = None
+    matched_keyword: str | None = None
+    match_type: str | None = None
+    ad_network_type: str | None = None
+    placement: str | None = None
+    impressions: int | None = None
+    clicks: int | None = None
+    impression_reach: int | None = None
+    video_views: int | None = None
+    video_first_quartile: int | None = None
+    video_midpoint: int | None = None
+    video_third_quartile: int | None = None
+    video_complete: int | None = None
+    sessions: int | None = None
+    conversions: int | None = None
+    cost: float | None = None
+    ctr: float | None = None
+    avg_cpc: float | None = None
+    avg_effective_bid: float | None = None
+    avg_impression_position: float | None = None
+    avg_click_position: float | None = None
+    avg_traffic_volume: float | None = None
+    weighted_impressions: float | None = None
+    weighted_ctr: float | None = None
+    bounce_rate: float | None = None
+    avg_pageviews: float | None = None
+    conversion_rate: float | None = None
+    cost_per_conversion: float | None = None
+    revenue: float | None = None
+    profit: float | None = None
+    goals_roi: float | None = None
+    purchase_revenue: float | None = None
+    purchase_profit: float | None = None
+    purchase_goals_roi: float | None = None
+    avg_impression_frequency: float | None = None
+    avg_cpm: float | None = None
+    cpv: float | None = None
+    avg_video_complete_cost: float | None = None
+    video_views_rate: float | None = None
+    video_first_quartile_rate: float | None = None
+    video_midpoint_rate: float | None = None
+    video_third_quartile_rate: float | None = None
+    video_complete_rate: float | None = None
+
+
+class YandexTypedReport(BaseModel):
+    report_type: str
+    surface: str
+    period: YandexReportPeriod
+    view: str
+    columns: list[str]
+    items: list[YandexDirectReportRow]
+    row_count: int
+    parser_status: Literal["ok", "empty", "partial"]
+    rows_received: int
+    rows_parsed: int
+    rows_rejected: int
+    source: Literal["mock", "yandex"]
+    read_only: bool = True
+    warnings: list[str] = Field(default_factory=list)
+    raw_header: list[str] = Field(default_factory=list)
+    request_id: str | None = None
+
+
+class YandexReportPending(BaseModel):
+    status: Literal["pending"] = "pending"
+    retry_after_seconds: int = Field(ge=1, le=300)
+    report_type: str
+    surface: str
+    read_only: bool = True
+    request_id: str | None = None
+
+
+class YandexReportCatalogItem(BaseModel):
+    surface: str
+    report_type: str
+    supported_views: list[str]
+    fields: dict[str, list[str]]
+    offline_only: bool
+    read_only: bool = True
+
+
+class YandexReportCatalog(BaseModel):
+    items: list[YandexReportCatalogItem]
+    read_only: bool = True
+
+
 class YandexSearchQuery(BaseModel):
     query: str
-    campaign_id: str
+    campaign_id: str | None = None
     campaign_name: str | None = None
-    ad_group_id: str
-    impressions: int
-    clicks: int
-    ctr: float
+    campaign_type: str | None = None
+    ad_group_id: str | None = None
+    ad_group_name: str | None = None
+    criterion: str | None = None
+    criterion_id: str | None = None
+    criterion_type: str | None = None
+    matched_keyword: str | None = None
+    match_type: str | None = None
+    ad_network_type: str | None = None
+    placement: str | None = None
+    date: str | None = None
+    impressions: int | None = None
+    clicks: int | None = None
+    ctr: float | None = None
     cost: float | None = None
+    avg_cpc: float | None = None
+    avg_effective_bid: float | None = None
+    avg_impression_position: float | None = None
+    avg_click_position: float | None = None
+    avg_traffic_volume: float | None = None
+    weighted_impressions: float | None = None
+    weighted_ctr: float | None = None
+    bounce_rate: float | None = None
+    avg_pageviews: float | None = None
+    conversions: int | None = None
+    conversion_rate: float | None = None
+    cost_per_conversion: float | None = None
+    revenue: float | None = None
+    profit: float | None = None
+    goals_roi: float | None = None
+    purchase_revenue: float | None = None
+    purchase_profit: float | None = None
+    purchase_goals_roi: float | None = None
 
 
 class YandexSearchQueriesReport(BaseModel):
+    # The legacy string period stays intact for existing consumers.
     period: str
     items: list[YandexSearchQuery]
     source: Literal["mock", "yandex"] = "mock"
     read_only: bool = True
+    report_type: str = "SEARCH_QUERY_PERFORMANCE_REPORT"
+    surface: str = "search-queries"
+    view: str = "core"
+    columns: list[str] = Field(default_factory=list)
+    row_count: int = 0
+    parser_status: Literal["ok", "empty", "partial"] = "ok"
+    rows_received: int = 0
+    rows_parsed: int = 0
+    rows_rejected: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    raw_header: list[str] = Field(default_factory=list)
+    completed_day: bool = True
+    request_id: str | None = None
 
 
 class YandexRawResult(BaseModel):
@@ -597,6 +752,7 @@ class YandexRawResult(BaseModel):
     data: Any
     source: Literal["mock", "yandex"] = "yandex"
     read_only: bool = True
+    request_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1137,6 +1293,72 @@ class YandexMetrikaResult(BaseModel):
     counter_id: int | str | None = None
     data: Any
     source: Literal["yandex_metrika"] = "yandex_metrika"
+    read_only: bool = True
+
+
+class MetrikaReportPeriod(BaseModel):
+    """The resolved Metrika reporting window and its completion state."""
+
+    date1: str
+    date2: str
+    completed_day: bool
+
+
+class MetrikaDimensionCell(BaseModel):
+    """Safe projection of one provider dimension cell."""
+
+    id: str | None = None
+    name: str | None = None
+
+
+class MetrikaReportRow(BaseModel):
+    """Typed Metrika Stats API row with metric IDs mapped to nullable floats."""
+
+    dimensions: list[MetrikaDimensionCell]
+    metrics: dict[str, float | None]
+
+
+class MetrikaReportResponse(BaseModel):
+    """Normalized, server-owned Metrika report envelope.
+
+    ``service``, ``method`` and ``data`` retain the old summary/traffic
+    adapter fields. New ``/reports/*`` routes use only the typed fields.
+    """
+
+    preset: str
+    counter_id: int | str
+    period: MetrikaReportPeriod
+    dimensions: list[str]
+    metrics: list[str]
+    items: list[MetrikaReportRow]
+    totals: dict[str, float | None] | None = None
+    row_count: int
+    sampled: bool | None = None
+    sample_share: float | None = None
+    sample_size: int | None = None
+    sample_space: int | None = None
+    data_lag: int | None = None
+    contains_sensitive_data: bool | None = None
+    total_rows_rounded: bool | None = None
+    source: Literal["mock", "yandex"]
+    read_only: bool = True
+    service: str | None = None
+    method: str | None = None
+    data: Any | None = None
+
+
+class MetrikaReportCatalogItem(BaseModel):
+    """One immutable core-only Metrika report preset exposed by the catalog."""
+
+    preset: str
+    dimensions: list[str]
+    core_metrics: list[str]
+    supports_ecommerce: bool = False
+
+
+class MetrikaReportCatalog(BaseModel):
+    presets: list[MetrikaReportCatalogItem]
+    source: Literal["yandex"] = "yandex"
     read_only: bool = True
 
 
