@@ -74,6 +74,8 @@ def client_with_client() -> TestClient:
 
 def _campaign_perf_tsv(
     rows: list[tuple[str, str, str, str, str, str, str]] | None = None,
+    *,
+    outcome_overrides: list[dict[str, str]] | None = None,
 ) -> str:
     """Build the server-owned CAMPAIGN summary TSV preset."""
     if rows is None:
@@ -87,7 +89,7 @@ def _campaign_perf_tsv(
         "PurchaseGoalsRoi", "Sessions",
     ]
     lines = ["\t".join(fields)]
-    for date_value, campaign_id, campaign_name, impressions, clicks, cost, ctr in rows:
+    for row_index, (date_value, campaign_id, campaign_name, impressions, clicks, cost, ctr) in enumerate(rows):
         values = {
             "Date": date_value,
             "CampaignId": campaign_id,
@@ -117,6 +119,8 @@ def _campaign_perf_tsv(
             "PurchaseGoalsRoi": "0",
             "Sessions": "0",
         }
+        if outcome_overrides is not None:
+            values.update(outcome_overrides[row_index])
         lines.append("\t".join(values[field] for field in fields))
     return "\n".join(lines) + "\n"
 
@@ -214,6 +218,43 @@ def test_summary_in_live_readonly_calls_campaign_performance_report_and_parses_t
     assert "Clicks" in fields
     assert "Cost" in fields
     assert "Ctr" in fields
+
+
+def test_summary_aggregates_rows_that_include_negative_outcomes(client_with_client: TestClient):
+    tsv = _campaign_perf_tsv(
+        rows=[
+            ("2026-06-04", "1", "First campaign", "10", "2", "3.00", "20.00"),
+            ("2026-06-04", "2", "Second campaign", "20", "3", "7.00", "15.00"),
+        ],
+        outcome_overrides=[
+            {
+                "Profit": "-12.34",
+                "GoalsRoi": "-25.5",
+                "PurchaseProfit": "-4.56",
+                "PurchaseGoalsRoi": "-8.75",
+            },
+            {},
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=tsv)
+
+    settings = _settings_for("live_readonly", token="LRO-SECRET")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/summary")
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["impressions"] == 30
+    assert body["clicks"] == 5
+    assert body["spend"] == 10.0
+    assert body["ctr"] == 16.6667
+    assert body["cpc"] == 2.0
 
 
 def test_summary_accepts_date_from_and_date_to_query_params(

@@ -1012,7 +1012,7 @@ Filters:
 
 - `date_from`, `date_to` (optional, defaults to previous completed day)
 - optional `campaign_id`, `ad_group_id`, `ad_id`
-- optional `view` (`core`, `positions`, `outcomes`, `placement`; reach route uses `reach`)
+- optional `view`: `core`, `positions`, `outcomes`; `placement` is supported by account/campaign/ad-group/ad/criteria/custom performance routes only; reach route uses `reach`
 
 Notes:
 

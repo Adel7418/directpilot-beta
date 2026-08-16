@@ -99,14 +99,17 @@ def _standard_report_views(
     identity_fields: tuple[str, ...],
     *,
     include_sessions: bool = True,
+    include_placement: bool = True,
 ) -> dict[str, tuple[str, ...]]:
     outcomes = _OUTCOMES_METRICS + (("Sessions",) if include_sessions else ())
-    return {
+    views = {
         "core": identity_fields + _CORE_METRICS,
         "positions": identity_fields + _CORE_METRICS + _POSITIONS_METRICS,
         "outcomes": identity_fields + _CORE_METRICS + outcomes,
-        "placement": identity_fields + _CORE_METRICS + _PLACEMENT_FIELDS,
     }
+    if include_placement:
+        views["placement"] = identity_fields + _CORE_METRICS + _PLACEMENT_FIELDS
+    return views
 
 
 _ACCOUNT_IDENTITY = ("Date", "CampaignType")
@@ -186,7 +189,9 @@ REPORT_PRESETS: dict[str, ReportPreset] = {
     "search-queries": ReportPreset(
         surface="search-queries",
         report_type="SEARCH_QUERY_PERFORMANCE_REPORT",
-        view_fields=_standard_report_views(_SEARCH_QUERY_IDENTITY, include_sessions=False),
+        view_fields=_standard_report_views(
+            _SEARCH_QUERY_IDENTITY, include_sessions=False, include_placement=False
+        ),
         filter_fields=frozenset({"CampaignId", "AdGroupId"}),
         offline_only=True,
     ),

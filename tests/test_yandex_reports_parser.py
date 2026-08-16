@@ -33,6 +33,21 @@ CAMPAIGN_POSITIONS = [
     "WeightedImpressions",
     "WeightedCtr",
 ]
+CAMPAIGN_OUTCOMES = [
+    *CAMPAIGN_POSITIONS,
+    "BounceRate",
+    "AvgPageviews",
+    "Conversions",
+    "ConversionRate",
+    "CostPerConversion",
+    "Revenue",
+    "Profit",
+    "GoalsRoi",
+    "PurchaseRevenue",
+    "PurchaseProfit",
+    "PurchaseGoalsRoi",
+    "Sessions",
+]
 
 
 def _call_campaign(tsv: str, *, view: str = "core"):
@@ -130,6 +145,38 @@ def test_mixed_valid_and_invalid_rows_are_visible_partial_result():
     assert body["rows_parsed"] == 1
     assert body["rows_rejected"] == 1
     assert body["warnings"]
+
+
+def test_negative_outcome_values_parse_without_accepting_negative_costs():
+    tsv = report_tsv(
+        CAMPAIGN_OUTCOMES,
+        rows=[
+            {
+                "Profit": "-12.34",
+                "GoalsRoi": "-25.5",
+                "PurchaseProfit": "-4.56",
+                "PurchaseGoalsRoi": "-8.75",
+                "Sessions": "12",
+                "Conversions": "12",
+            },
+            {"Cost": "-1.00"},
+        ],
+    )
+
+    response, _ = _call_campaign(tsv, view="outcomes")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["parser_status"] == "partial"
+    assert body["row_count"] == 1
+    assert body["rows_received"] == 2
+    assert body["rows_parsed"] == 1
+    assert body["rows_rejected"] == 1
+    item = body["items"][0]
+    assert item["profit"] == -12.34
+    assert item["goals_roi"] == -25.5
+    assert item["purchase_profit"] == -4.56
+    assert item["purchase_goals_roi"] == -8.75
 
 
 def test_nonempty_all_invalid_rows_fail_closed_as_report_parse_error():

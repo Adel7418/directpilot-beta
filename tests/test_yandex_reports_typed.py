@@ -153,6 +153,20 @@ def test_reports_catalog_lists_only_the_eight_server_owned_presets():
     assert by_surface["search-queries"]["offline_only"] is True
 
 
+def test_search_queries_catalog_does_not_advertise_placement_view():
+    from app.main import app
+    from fastapi.testclient import TestClient
+
+    response = TestClient(app).get("/yandex/reports/catalog")
+
+    assert response.status_code == 200, response.text
+    search_queries = next(
+        item for item in response.json()["items"] if item["surface"] == "search-queries"
+    )
+    assert search_queries["supported_views"] == ["core", "positions", "outcomes"]
+    assert "placement" not in search_queries["fields"]
+
+
 def _snake_case(name: str) -> str:
     import re
 
@@ -269,6 +283,31 @@ def test_incompatible_view_and_filter_are_rejected_before_transport():
         )
 
     assert [response.status_code for response in (incompatible_view, incompatible_filter, non_numeric_filter)] == [422, 422, 422]
+    assert calls == []
+
+
+def test_search_queries_placement_view_is_rejected_before_transport():
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        payload = json.loads(request.content.decode())
+        return httpx.Response(200, content=report_tsv(payload["params"]["FieldNames"]))
+
+    settings = settings_for()
+    direct_client = make_direct_client(settings, handler)
+    with report_overrides(settings, direct_client) as api:
+        response = api.get(
+            "/yandex/reports/search-queries",
+            params={
+                "date_from": "2026-08-01",
+                "date_to": "2026-08-01",
+                "view": "placement",
+            },
+        )
+
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"] == "view 'placement' is not supported for search-queries"
     assert calls == []
 
 

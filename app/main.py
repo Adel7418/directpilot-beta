@@ -2407,6 +2407,9 @@ _DIRECT_REPORT_TEXT_FIELDS = frozenset(
 _DIRECT_REPORT_FLOAT_FIELDS = (
     frozenset(_DIRECT_REPORT_FIELD_TO_KEY) - _DIRECT_REPORT_INTEGER_FIELDS - _DIRECT_REPORT_TEXT_FIELDS
 )
+_DIRECT_REPORT_SIGNED_FLOAT_FIELDS = frozenset(
+    {"Profit", "GoalsRoi", "PurchaseProfit", "PurchaseGoalsRoi"}
+)
 _DIRECT_REPORT_UNAVAILABLE_VALUES = frozenset({"", "-", "--", "–", "—", "n/a", "unavailable"})
 
 
@@ -2435,9 +2438,11 @@ def _parse_direct_report_count(value: str) -> int | None:
     return int(value)
 
 
-def _parse_direct_report_float(value: str) -> float | None:
+def _parse_direct_report_float(value: str, *, allow_negative: bool = False) -> float | None:
     if _direct_value_is_unavailable(value):
         return None
+    if allow_negative and value.startswith("-"):
+        return -_parse_yandex_report_number(value[1:])
     return _parse_yandex_report_number(value)
 
 
@@ -2485,7 +2490,9 @@ def _parse_direct_report_tsv(tsv_text: str, *, expected_fields: list[str]) -> di
                 if field in _DIRECT_REPORT_INTEGER_FIELDS:
                     value = _parse_direct_report_count(raw_value)
                 elif field in _DIRECT_REPORT_FLOAT_FIELDS:
-                    value = _parse_direct_report_float(raw_value)
+                    value = _parse_direct_report_float(
+                        raw_value, allow_negative=field in _DIRECT_REPORT_SIGNED_FLOAT_FIELDS
+                    )
                 else:
                     value = _parse_direct_report_text(raw_value)
                 if value is None:
