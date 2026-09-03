@@ -52,6 +52,7 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/keywords`
    - `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
    - `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
+   - `GET /yandex/campaigns/{campaign_id}/auction-forecast` — read-only auction forecast (`forecast_status`, `forecast_reason`, int `traffic_volume`)
    - `GET /yandex/campaigns/{campaign_id}/bid-modifiers`
    - `POST /yandex/campaigns/{campaign_id}/bid-modifiers` (dry_run/apply)
    - `POST /yandex/campaigns/{campaign_id}/ad-groups`
@@ -214,6 +215,13 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Direct can return warning `10165` / `Параметр не будет применен`: one of the request fields was ignored by the API. The `details` field names the specific parameter. Check `provider_warnings` in the DirectPilot response to find which parameter was dropped.
 - Reports API v5 (`/reports`) uses a different filter shape than the entity services. Campaign filters MUST be sent as `SelectionCriteria.Filter = [{Field: "CampaignId", Operator: "IN", Values: ["..."]}]`, NOT as `SelectionCriteria.CampaignIds` (the latter returns HTTP 400 on the reports endpoint — that field shape belongs to many JSON v5 entity services like `adgroups.get` / `ads.get` / `keywords.get`, not to `reports`). `SEARCH_QUERY_PERFORMANCE_REPORT`, `CAMPAIGN_PERFORMANCE_REPORT`, `ADGROUP_PERFORMANCE_REPORT`, `AD_PERFORMANCE_REPORT`, `CRITERIA_PERFORMANCE_REPORT` all share this contract.
 - Reports API v5 can also return HTTP 400 `error_code=4000` when the same `ReportName` is reused with different parameters, e.g. different fields, date range, or filters: `Отчет с таким названием, но с отличающимися параметрами уже сформирован или находится в очереди. Измените значение в параметре ReportName`. Generate a deterministic unique `ReportName` per report definition, for example by appending a short stable hash of `ReportType + SelectionCriteria + FieldNames`.
+
+### Auction forecast read (per-keyword)
+
+- Endpoint: `GET /yandex/campaigns/{campaign_id}/auction-forecast`.
+- Read-only wrapper over `keywords.get` + campaign strategy read + bounded `keywordbids.get` auction batches for manual keywords.
+- Never infer zero prices from missing auction data; rely on `forecast_status` and `forecast_reason`.
+- Autotargeting rows are `NOT_APPLICABLE`; search strategy `SERVING_OFF` is `UNAVAILABLE`; malformed provider rows become per-item `ERROR` without leaking raw provider payloads.
 
 ### Demographic bid modifiers (AGE_0_17)
 

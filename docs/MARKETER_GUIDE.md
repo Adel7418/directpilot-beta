@@ -30,6 +30,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть ключи | `GET /yandex/campaigns/{campaign_id}/keywords` | семантика, минус-гипотезы, дубли |
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
+| Посмотреть прогноз аукциона по ключам | `GET /yandex/campaigns/{campaign_id}/auction-forecast` | read-only per-keyword `TrafficVolume` levels + normalized `forecast_status`/`forecast_reason` |
 | Посмотреть демографические ставки кампании | `GET /yandex/campaigns/{campaign_id}/bid-modifiers` | текущие `AgeRange`/`BidModifier` для `Age` сегментов |
 | Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; сначала обязательно `GET`-readback для `modifier_id` |
 | Создать группу в существующей кампании | `POST /yandex/campaigns/{campaign_id}/ad-groups` | создаёт только группу: name/region_ids/optional negative_keywords; затем отдельные шаги для `ads`, ключей и модерации |
@@ -166,6 +167,16 @@ GET /yandex/reports/search-queries?campaign_id=<campaign_id>&date_from=YYYY-MM-D
 Если `partial_failure=true` или `has_errors=true` у отдельных item, ставки не применены.
 Item-ошибки редиректятся (только `code`/`message`/`details`), сырой v5 payload не показывается.
 Предупреждения (код 10160 и др.) дублируются в `provider_warnings` и `set_results[].warnings`.
+
+### Auction forecast read (per-keyword)
+
+Use `GET /yandex/campaigns/{campaign_id}/auction-forecast` before making bid recommendations. It is read-only: DirectPilot reads a keyword page with `keywords.get`, reads campaign search strategy, then requests `keywordbids.get` auction levels only for manual keyword rows.
+
+Operational notes:
+- pass repeated `keyword_ids` only when narrowing to known keywords; invalid or >1000 deduplicated IDs are rejected before provider reads;
+- `page_token` is an offset token and must be a non-negative decimal string;
+- sort/display `auction_bids` by integer `traffic_volume`; use `bid_rub`/`price_rub` for human display and micros for exact comparisons;
+- do not treat missing auction data as zero CPC. Use `forecast_status` and `forecast_reason` (`AUTOTARGETING`, `RARELY_SERVED`, `SEARCH_SERVING_OFF`, `NO_AUCTION_DATA`, `INVALID_AUCTION_DATA`, etc.).
 
 ### Корректировки ставок по возрасту/демографии
 

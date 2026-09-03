@@ -491,6 +491,210 @@
         "title": "ApprovalResult",
         "type": "object"
       },
+      "AuctionForecastAuctionBid": {
+        "description": "One valid, integer-valued search auction level.",
+        "properties": {
+          "bid_micros": {
+            "title": "Bid Micros",
+            "type": "integer"
+          },
+          "bid_rub": {
+            "title": "Bid Rub",
+            "type": "number"
+          },
+          "price_micros": {
+            "title": "Price Micros",
+            "type": "integer"
+          },
+          "price_rub": {
+            "title": "Price Rub",
+            "type": "number"
+          },
+          "traffic_volume": {
+            "title": "Traffic Volume",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "traffic_volume",
+          "bid_micros",
+          "bid_rub",
+          "price_micros",
+          "price_rub"
+        ],
+        "title": "AuctionForecastAuctionBid",
+        "type": "object"
+      },
+      "AuctionForecastItem": {
+        "description": "Marketer-facing auction forecast for one keyword page row.",
+        "properties": {
+          "ad_group_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "auction_bids": {
+            "items": {
+              "$ref": "#/components/schemas/AuctionForecastAuctionBid"
+            },
+            "title": "Auction Bids",
+            "type": "array"
+          },
+          "current_search_bid_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Search Bid Micros"
+          },
+          "current_search_bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Search Bid Rub"
+          },
+          "forecast_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forecast Reason"
+          },
+          "forecast_status": {
+            "enum": [
+              "AVAILABLE",
+              "NOT_APPLICABLE",
+              "UNAVAILABLE",
+              "ERROR"
+            ],
+            "title": "Forecast Status",
+            "type": "string"
+          },
+          "keyword_id": {
+            "title": "Keyword Id",
+            "type": "integer"
+          },
+          "phrase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phrase"
+          },
+          "serving_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Serving Status"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          }
+        },
+        "required": [
+          "keyword_id",
+          "forecast_status"
+        ],
+        "title": "AuctionForecastItem",
+        "type": "object"
+      },
+      "AuctionForecastResult": {
+        "description": "Read-only response for ``GET .../auction-forecast``.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuctionForecastItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_page_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Page Token"
+          },
+          "read_only": {
+            "default": true,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "AuctionForecastResult",
+        "type": "object"
+      },
       "AuditCheck": {
         "properties": {
           "code": {
@@ -9061,6 +9265,113 @@
           }
         },
         "summary": "Yandex Ads"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/auction-forecast": {
+      "get": {
+        "description": "Return a typed, read-only search auction forecast per keyword.\n\nRequested keyword IDs not returned by documented ``keywords.get`` semantics\nare silently absent; this endpoint never fabricates ownership or forecast\ndata for them.",
+        "operationId": "yandex_auction_forecast_yandex_campaigns__campaign_id__auction_forecast_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "keyword_ids",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Keyword Ids"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_token",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Page Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuctionForecastResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "Yandex Direct upstream error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            },
+            "description": "YANDEX_OAUTH_TOKEN is not configured"
+          }
+        },
+        "summary": "Yandex Auction Forecast"
       }
     },
     "/yandex/campaigns/{campaign_id}/audience-targets": {

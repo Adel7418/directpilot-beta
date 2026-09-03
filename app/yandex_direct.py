@@ -198,26 +198,46 @@ class YandexDirectClient:
         }
         return self._call("ads", payload)
 
-    def keywords_get(self, campaign_id: int | str) -> dict[str, Any]:
+    def keywords_get(
+        self,
+        campaign_id: int | str,
+        *,
+        keyword_ids: list[int] | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> dict[str, Any]:
+        """Read keywords with optional typed ID selection and paging.
+
+        Calling this helper with no optional arguments preserves the existing
+        payload shape used by legacy callers.  The optional selectors are kept
+        typed so route code cannot pass raw provider payloads through.
+        """
+
         campaign_id = self._direct_id(campaign_id)
-        payload = {
-            "method": "get",
-            "params": {
-                "SelectionCriteria": {"CampaignIds": [campaign_id]},
-                "FieldNames": [
-                    "Id",
-                    "AdGroupId",
-                    "CampaignId",
-                    "Keyword",
-                    "Bid",
-                    "ContextBid",
-                    "StrategyPriority",
-                    "State",
-                    "Status",
-                    "ServingStatus",
-                ],
-            },
+        selection: dict[str, Any] = {"CampaignIds": [campaign_id]}
+        if keyword_ids:
+            selection["Ids"] = [self._direct_id(item) for item in keyword_ids]
+        params: dict[str, Any] = {
+            "SelectionCriteria": selection,
+            "FieldNames": [
+                "Id",
+                "AdGroupId",
+                "CampaignId",
+                "Keyword",
+                "Bid",
+                "ContextBid",
+                "StrategyPriority",
+                "State",
+                "Status",
+                "ServingStatus",
+            ],
         }
+        if limit is not None or offset is not None:
+            params["Page"] = {
+                "Limit": 1000 if limit is None else limit,
+                "Offset": 0 if offset is None else offset,
+            }
+        payload = {"method": "get", "params": params}
         return self._call("keywords", payload)
 
     def keywords_get_autotargeting(self, campaign_id: int | str) -> dict[str, Any]:
@@ -318,6 +338,55 @@ class YandexDirectClient:
         return self._call(
             "keywordbids",
             {"method": "set", "params": {"KeywordBids": list(items)}},
+        )
+
+    def keywordbids_get(
+        self,
+        campaign_id: int | str,
+        *,
+        ad_group_ids: list[int] | None = None,
+        keyword_ids: list[int] | None = None,
+        serving_statuses: list[str] | None = None,
+        limit: int = 1000,
+        offset: int = 0,
+        include_auction_bids: bool = True,
+        include_coverage: bool = True,
+    ) -> dict[str, Any]:
+        """Read current v5 ``keywordbids.get`` rows with controlled fields."""
+
+        selection: dict[str, Any] = {"CampaignIds": [self._direct_id(campaign_id)]}
+        if ad_group_ids:
+            selection["AdGroupIds"] = [self._direct_id(item) for item in ad_group_ids]
+        if keyword_ids:
+            selection["KeywordIds"] = [self._direct_id(item) for item in keyword_ids]
+        if serving_statuses:
+            selection["ServingStatuses"] = list(serving_statuses)
+
+        search_fields = ["Bid", "AutotargetingSearchBidIsAuto"]
+        if include_auction_bids:
+            search_fields.append("AuctionBids")
+        network_fields = ["Bid"]
+        if include_coverage:
+            network_fields.append("Coverage")
+
+        return self._call(
+            "keywordbids",
+            {
+                "method": "get",
+                "params": {
+                    "SelectionCriteria": selection,
+                    "FieldNames": [
+                        "KeywordId",
+                        "AdGroupId",
+                        "CampaignId",
+                        "ServingStatus",
+                        "StrategyPriority",
+                    ],
+                    "SearchFieldNames": search_fields,
+                    "NetworkFieldNames": network_fields,
+                    "Page": {"Limit": limit, "Offset": offset},
+                },
+            },
         )
 
     def changes_check(self) -> dict[str, Any]:

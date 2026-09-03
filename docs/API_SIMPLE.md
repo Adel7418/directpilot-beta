@@ -499,6 +499,19 @@ write и без утечки тела/токена в ошибке).
 - top-level failure от `keywordbids.set` / upstream Direct error → HTTP 502 с редактированными diagnostics.
 - `dry_run=true` всегда разрешён, никогда не пишет.
 
+### Live Direct: прогноз аукциона по ключам (read-only)
+
+```http
+GET /yandex/campaigns/{campaign_id}/auction-forecast
+```
+
+Query:
+- `keyword_ids` — optional repeated keyword IDs; duplicates are deduplicated; max 1000.
+- `limit` — page size 1..1000, default 200.
+- `page_token` — non-negative decimal offset from the previous response.
+
+Response is read-only and never fabricates missing rows. Each item includes the keyword identity, current API search bid in micros/RUB, sorted integer `auction_bids` levels (`traffic_volume`, `bid_micros`, `price_micros`) and normalized `forecast_status`: `AVAILABLE`, `NOT_APPLICABLE`, `UNAVAILABLE`, or `ERROR`. Autotargeting rows are `NOT_APPLICABLE`; unavailable/invalid provider data is marked with `forecast_reason` instead of fake zero prices.
+
 ### Live Direct: изменить корректировки ставок по возрасту/демографии
 
 ```http

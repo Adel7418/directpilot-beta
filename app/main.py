@@ -113,6 +113,7 @@ from app.models import (
     KeywordBidItem,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
+    AuctionForecastResult,
     # Bid modifiers
     BidModifiersUpdateRequest,
     BidModifiersUpdateResult,
@@ -1025,6 +1026,47 @@ def yandex_bids(
     client: YandexDirectClient | None = Depends(get_yandex_client),
 ) -> YandexRawResult:
     return _call_raw_read(settings, client, "bids", "get", lambda c: c.bids_get(campaign_id))
+
+
+@app.get(
+    "/yandex/campaigns/{campaign_id}/auction-forecast",
+    response_model=AuctionForecastResult,
+    responses=YANDEX_DIRECT_ERROR_RESPONSES,
+)
+def yandex_auction_forecast(
+    campaign_id: str,
+    keyword_ids: list[int] | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    page_token: str | None = Query(default=None),
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> AuctionForecastResult:
+    """Return a typed, read-only search auction forecast per keyword.
+
+    Requested keyword IDs not returned by documented ``keywords.get`` semantics
+    are silently absent; this endpoint never fabricates ownership or forecast
+    data for them.
+    """
+
+    if page_token is None:
+        offset = 0
+    elif not page_token.isascii() or not page_token.isdecimal():
+        raise HTTPException(status_code=422, detail="page_token must be a non-negative decimal offset")
+    else:
+        offset = int(page_token)
+    direct = _require_yandex_read_client(settings, client)
+    try:
+        return store.yandex_auction_forecast(
+            campaign_id,
+            client=direct,
+            keyword_ids=keyword_ids,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        raise _yandex_error_to_502(exc) from exc
 
 
 @app.get("/yandex/changes/check", response_model=YandexRawResult)
