@@ -53,6 +53,7 @@ For read-only marketing work:
    - `GET /yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
    - `POST /yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
    - `GET /yandex/campaigns/{campaign_id}/keyword-bids` — canonical typed `keywordbids.get` read; legacy `GET .../bids` is deprecated raw `bids.get`
+   - `GET /yandex/campaigns/{campaign_id}/auction-forecast` — read-only auction forecast (`forecast_status`, `forecast_reason`, int `traffic_volume`)
    - `POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto` — `keywordbids.setAuto` bid calculation, dry-run default, gated apply; not autotargeting or strategy conversion
    - `GET /yandex/campaigns/{campaign_id}/bid-modifiers`
    - `POST /yandex/campaigns/{campaign_id}/bid-modifiers` (dry_run/apply)
@@ -270,6 +271,25 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
   broad (`campaign`/`ad_group`) readback, returns `applied=false`,
   `partial_failure=true`, `readback_failed=true`, and a concrete sanitized
   verification error; do not claim rollback or fabricate bid values.
+
+### Auction forecast read (read-only)
+
+- `GET /yandex/campaigns/{campaign_id}/auction-forecast`
+- Read-only read for per-keyword auction levels (marketing diagnostics).
+- Query: optional `keyword_ids` (list[int], deduplicated), optional `limit`
+  (`1..1000`, default `200`), optional `page_token` (non-negative decimal
+  offset string).
+- Response: `campaign_id`, `source="yandex"`, `read_only=true`, `items`,
+  `next_page_token`.
+- `forecast_status`: `AVAILABLE | NOT_APPLICABLE | UNAVAILABLE | ERROR`.
+- `forecast_reason` includes normalized safe codes: `AUTOTARGETING`,
+  `SEARCH_SERVING_OFF`, `RARELY_SERVED`, `KEYWORD_NOT_SERVING`, `NO_AUCTION_DATA`,
+  `UPSTREAM_BATCH_ERROR`, `AUCTION_ROW_MISSING`, `INVALID_AUCTION_DATA`.
+- `auction_bids[].traffic_volume` is integer official contract.
+- `bid`/`price` are returned as both micros and RUB projection values.
+- Manual keyword ids are batched by up to 200 for `keywordbids.get`. If one batch
+  fails, only that batch is marked as `ERROR` with `UPSTREAM_BATCH_ERROR`.
+- Pass `next_page_token` from response to next request as `page_token`.
 
 ### Existing and new bid modifiers (demographic, weather, etc.)
 

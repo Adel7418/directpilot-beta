@@ -76,6 +76,9 @@ from app.models import (
     KeywordBidSetItemResult,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
+    AuctionForecastAuctionBid,
+    AuctionForecastItem,
+    AuctionForecastResult,
     KeywordBidsAuctionBidItem,
     KeywordBidsCoverageItem,
     KeywordBidsGetItem,
@@ -124,6 +127,7 @@ from app.yandex_facade import mock_yandex
 
 
 _KEYWORD_BIDS_MAX_PAGE_LIMIT = 10_000
+_AUCTION_FORECAST_BATCH_SIZE = 200
 _URL_MIGRATION_MAX_REDIRECTS = 3
 _URL_MIGRATION_BATCH_SIZE = 1_000
 _URL_MIGRATION_AUDIT_FIELDS = (
@@ -7211,6 +7215,330 @@ class MockStore:
             limit=limit,
             offset=offset,
         )
+        return result
+
+    @staticmethod
+    def _auction_forecast_strict_int(value: Any) -> int | None:
+        """Accept only JSON integer values, never bools, floats, or strings."""
+
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _auction_forecast_unavailable_reason(item: AuctionForecastItem) -> str:
+        if item.serving_status == "RARELY_SERVED":
+            return "RARELY_SERVED"
+        if item.state != "ON" or item.status != "ACCEPTED":
+            return "KEYWORD_NOT_SERVING"
+        return "NO_AUCTION_DATA"
+
+    @staticmethod
+    def _set_auction_forecast_status(
+        items_by_keyword_id: dict[int, list[AuctionForecastItem]],
+        keyword_id: int,
+        *,
+        status: Literal["AVAILABLE", "NOT_APPLICABLE", "UNAVAILABLE", "ERROR"],
+        reason: str | None,
+        auction_bids: list[AuctionForecastAuctionBid] | None = None,
+    ) -> None:
+        for item in items_by_keyword_id.get(keyword_id, []):
+            item.forecast_status = status
+            item.forecast_reason = reason
+            item.auction_bids = list(auction_bids or [])
+
+    def yandex_auction_forecast(
+        self,
+        campaign_id: str,
+        *,
+        client: YandexDirectClient,
+        keyword_ids: list[int] | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> AuctionForecastResult:
+        """Build a read-only, page-scoped forecast from Direct v5 data."""
+
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if offset < 0:
+            raise ValueError("page_token must be a non-negative decimal offset")
+        if not campaign_id.isascii() or not campaign_id.isdecimal() or int(campaign_id) <= 0:
+            raise ValueError("campaign_id must be a positive integer")
+        expected_campaign_id = int(campaign_id)
+
+        requested_ids: list[int] = []
+        seen_requested_ids: set[int] = set()
+        for keyword_id in keyword_ids or []:
+            if self._auction_forecast_strict_int(keyword_id) is None or keyword_id <= 0:
+                raise ValueError("keyword_ids must contain positive integers")
+            if keyword_id not in seen_requested_ids:
+                requested_ids.append(keyword_id)
+                seen_requested_ids.add(keyword_id)
+        if len(requested_ids) > 1000:
+            raise ValueError("keyword_ids must contain at most 1000 ids")
+
+        keywords_response = client.keywords_get(
+            campaign_id,
+            keyword_ids=requested_ids or None,
+            limit=limit,
+            offset=offset,
+        )
+        if not keywords_response.get("ok"):
+            raise YandexDirectError("keywords.get failed before auction forecast")
+        keyword_result = keywords_response.get("result")
+        if not isinstance(keyword_result, dict):
+            raise YandexDirectError("keywords.get returned an invalid result envelope")
+        raw_keywords = keyword_result.get("Keywords")
+        if not isinstance(raw_keywords, list):
+            raise YandexDirectError("keywords.get did not enumerate a keyword page")
+
+        items: list[AuctionForecastItem] = []
+        items_by_keyword_id: dict[int, list[AuctionForecastItem]] = {}
+        manual_ids: list[int] = []
+        seen_manual_ids: set[int] = set()
+        for raw_keyword in raw_keywords:
+            if not isinstance(raw_keyword, dict):
+                raise YandexDirectError("keywords.get returned an invalid keyword row")
+            keyword_id = self._auction_forecast_strict_int(raw_keyword.get("Id"))
+            if keyword_id is None:
+                raise YandexDirectError("keywords.get returned a keyword without an integer id")
+            current_bid = self._auction_forecast_strict_int(raw_keyword.get("Bid"))
+            phrase = raw_keyword.get("Keyword") if isinstance(raw_keyword.get("Keyword"), str) else None
+            is_autotargeting = phrase == "---autotargeting"
+            item = AuctionForecastItem(
+                keyword_id=keyword_id,
+                ad_group_id=self._auction_forecast_strict_int(raw_keyword.get("AdGroupId")),
+                phrase=None if is_autotargeting else phrase,
+                state=raw_keyword.get("State") if isinstance(raw_keyword.get("State"), str) else None,
+                status=raw_keyword.get("Status") if isinstance(raw_keyword.get("Status"), str) else None,
+                serving_status=(
+                    raw_keyword.get("ServingStatus")
+                    if isinstance(raw_keyword.get("ServingStatus"), str)
+                    else None
+                ),
+                current_search_bid_micros=current_bid,
+                current_search_bid_rub=(current_bid / 1_000_000 if current_bid is not None else None),
+                forecast_status="ERROR",
+                forecast_reason="INVALID_AUCTION_DATA",
+            )
+            items.append(item)
+            items_by_keyword_id.setdefault(keyword_id, []).append(item)
+
+            source_campaign_id = self._auction_forecast_strict_int(raw_keyword.get("CampaignId"))
+            if source_campaign_id != expected_campaign_id:
+                continue
+            if is_autotargeting:
+                self._set_auction_forecast_status(
+                    items_by_keyword_id,
+                    keyword_id,
+                    status="NOT_APPLICABLE",
+                    reason="AUTOTARGETING",
+                )
+                continue
+            if keyword_id not in seen_manual_ids:
+                manual_ids.append(keyword_id)
+                seen_manual_ids.add(keyword_id)
+
+        limited_by = self._auction_forecast_strict_int(keyword_result.get("LimitedBy"))
+        next_page_token = str(limited_by) if limited_by is not None and limited_by > offset else None
+        result = AuctionForecastResult(
+            campaign_id=campaign_id,
+            items=items,
+            next_page_token=next_page_token,
+        )
+        if not manual_ids:
+            return result
+
+        strategy_response = client.campaigns_get_strategy(campaign_id)
+        if not strategy_response.get("ok"):
+            raise YandexDirectError("campaign strategy read failed before auction forecast")
+        strategy_result = strategy_response.get("result")
+        campaigns = strategy_result.get("Campaigns") if isinstance(strategy_result, dict) else None
+        campaign = campaigns[0] if isinstance(campaigns, list) and campaigns else None
+        if not isinstance(campaign, dict):
+            raise YandexDirectError("campaign strategy result is unavailable before auction forecast")
+        strategy = campaign.get("TextCampaign", {}).get("BiddingStrategy", {})
+        search = strategy.get("Search") if isinstance(strategy, dict) else None
+        search_type = (
+            search.get("BiddingStrategyType") or search.get("Type")
+            if isinstance(search, dict)
+            else None
+        )
+        if search_type == "SERVING_OFF":
+            for keyword_id in manual_ids:
+                self._set_auction_forecast_status(
+                    items_by_keyword_id,
+                    keyword_id,
+                    status="UNAVAILABLE",
+                    reason="SEARCH_SERVING_OFF",
+                )
+            return result
+
+        for start in range(0, len(manual_ids), _AUCTION_FORECAST_BATCH_SIZE):
+            batch = manual_ids[start : start + _AUCTION_FORECAST_BATCH_SIZE]
+            batch_ids = set(batch)
+            try:
+                batch_response = client.keywordbids_get(
+                    campaign_id,
+                    keyword_ids=batch,
+                    limit=_AUCTION_FORECAST_BATCH_SIZE,
+                    offset=0,
+                    include_auction_bids=True,
+                    include_coverage=False,
+                )
+            except YandexDirectError:
+                for keyword_id in batch:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="UPSTREAM_BATCH_ERROR",
+                    )
+                continue
+            if not batch_response.get("ok"):
+                for keyword_id in batch:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="UPSTREAM_BATCH_ERROR",
+                    )
+                continue
+            batch_result = batch_response.get("result")
+            raw_rows = batch_result.get("KeywordBids") if isinstance(batch_result, dict) else None
+            if not isinstance(raw_rows, list):
+                for keyword_id in batch:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="INVALID_AUCTION_DATA",
+                    )
+                continue
+
+            rows_by_keyword_id: dict[int, dict[str, Any]] = {}
+            duplicate_ids: set[int] = set()
+            for raw_row in raw_rows:
+                if not isinstance(raw_row, dict):
+                    continue
+                keyword_id = self._auction_forecast_strict_int(raw_row.get("KeywordId"))
+                if keyword_id not in batch_ids:
+                    continue
+                if keyword_id in rows_by_keyword_id:
+                    duplicate_ids.add(keyword_id)
+                    continue
+                rows_by_keyword_id[keyword_id] = raw_row
+
+            for keyword_id in duplicate_ids:
+                self._set_auction_forecast_status(
+                    items_by_keyword_id,
+                    keyword_id,
+                    status="ERROR",
+                    reason="INVALID_AUCTION_DATA",
+                )
+            for keyword_id in batch_ids - set(rows_by_keyword_id):
+                self._set_auction_forecast_status(
+                    items_by_keyword_id,
+                    keyword_id,
+                    status="ERROR",
+                    reason="AUCTION_ROW_MISSING",
+                )
+
+            for keyword_id, raw_row in rows_by_keyword_id.items():
+                if keyword_id in duplicate_ids:
+                    continue
+                if self._auction_forecast_strict_int(raw_row.get("CampaignId")) != expected_campaign_id:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="INVALID_AUCTION_DATA",
+                    )
+                    continue
+                raw_search = raw_row.get("Search")
+                if not isinstance(raw_search, dict):
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="INVALID_AUCTION_DATA",
+                    )
+                    continue
+                raw_auction = raw_search.get("AuctionBids")
+                if raw_auction is None:
+                    for item in items_by_keyword_id.get(keyword_id, []):
+                        self._set_auction_forecast_status(
+                            items_by_keyword_id,
+                            keyword_id,
+                            status="UNAVAILABLE",
+                            reason=self._auction_forecast_unavailable_reason(item),
+                        )
+                    continue
+                if not isinstance(raw_auction, dict):
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="INVALID_AUCTION_DATA",
+                    )
+                    continue
+                raw_auction_items = raw_auction.get("AuctionBidItems")
+                if not isinstance(raw_auction_items, list):
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="INVALID_AUCTION_DATA",
+                    )
+                    continue
+                auction_bids: list[AuctionForecastAuctionBid] = []
+                malformed = False
+                for raw_auction_item in raw_auction_items:
+                    if not isinstance(raw_auction_item, dict):
+                        malformed = True
+                        break
+                    traffic_volume = self._auction_forecast_strict_int(raw_auction_item.get("TrafficVolume"))
+                    bid_micros = self._auction_forecast_strict_int(raw_auction_item.get("Bid"))
+                    price_micros = self._auction_forecast_strict_int(raw_auction_item.get("Price"))
+                    if (
+                        traffic_volume is None
+                        or bid_micros is None
+                        or price_micros is None
+                        or traffic_volume < 0
+                        or bid_micros < 0
+                        or price_micros < 0
+                    ):
+                        malformed = True
+                        break
+                    auction_bids.append(
+                        AuctionForecastAuctionBid(
+                            traffic_volume=traffic_volume,
+                            bid_micros=bid_micros,
+                            bid_rub=bid_micros / 1_000_000,
+                            price_micros=price_micros,
+                            price_rub=price_micros / 1_000_000,
+                        )
+                    )
+                if malformed:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="ERROR",
+                        reason="INVALID_AUCTION_DATA",
+                    )
+                elif auction_bids:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="AVAILABLE",
+                        reason=None,
+                        auction_bids=sorted(auction_bids, key=lambda item: item.traffic_volume),
+                    )
+                else:
+                    self._set_auction_forecast_status(
+                        items_by_keyword_id,
+                        keyword_id,
+                        status="UNAVAILABLE",
+                        reason="NO_AUCTION_DATA",
+                    )
         return result
 
     def _set_auto_ownership_blockers(
