@@ -679,3 +679,116 @@ def test_search_queries_sandbox_mode_also_uses_live_report(
         "https://api-sandbox.direct.yandex.com/json/v5/reports"
     )
     assert "SBX-SECRET" not in response.text
+
+
+def test_search_queries_live_readonly_polls_queued_report_with_required_headers(
+    client_with_client: TestClient,
+):
+    """Reports queued by Direct are polled until a 200 TSV response arrives."""
+    requests: list[dict[str, str]] = []
+    queued_responses = iter(
+        [
+            httpx.Response(201, headers={"retryIn": "0"}),
+            httpx.Response(202, headers={"retryIn": "0"}),
+            httpx.Response(200, content=_search_query_tsv()),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append({name.lower(): value for name, value in request.headers.items()})
+        return next(queued_responses)
+
+    settings = _settings_for("live_readonly", token="TEST-TOKEN")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/search-queries")
+    finally:
+        cleanup()
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["items"]) == 2
+    assert len(requests) == 3
+    headers = requests[0]
+    assert headers["processingmode"] == "offline"
+    assert headers["returnmoneyinmicros"] == "false"
+    assert headers["skipreportheader"] == "true"
+    assert headers["skipreportsummary"] == "true"
+    assert "skipcolumnheader" not in headers
+
+
+def test_search_queries_live_readonly_rejects_tsv_missing_query_column(
+    client_with_client: TestClient,
+):
+    """A nonempty 200 TSV without Query is a structural provider error."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=(
+                "CampaignId\tAdGroupId\tImpressions\tClicks\tCtr\tCost\n"
+                "710691939\t1001\t540\t22\t4.07\t660.00\n"
+            ),
+        )
+
+    settings = _settings_for("live_readonly", token="TEST-TOKEN")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/search-queries")
+    finally:
+        cleanup()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    assert "items" not in body
+    assert "TEST-TOKEN" not in response.text
+
+
+@pytest.mark.parametrize("upstream_status", [400, 500, 502])
+def test_search_queries_live_readonly_returns_redacted_error_for_report_failures(
+    client_with_client: TestClient,
+    upstream_status: int,
+):
+    """Provider HTTP failures never serialize an empty successful report."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(upstream_status, text="TEST-TOKEN must not be exposed")
+
+    settings = _settings_for("live_readonly", token="TEST-TOKEN")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/search-queries")
+    finally:
+        cleanup()
+
+    assert response.status_code == 502, response.text
+    body = response.json()
+    assert "items" not in body
+    assert "TEST-TOKEN" not in response.text
+
+
+def test_search_queries_live_readonly_stops_after_bounded_report_polling(
+    client_with_client: TestClient,
+):
+    """A report that remains pending cannot cause an unbounded request loop."""
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(202, headers={"retryIn": "0"})
+
+    settings = _settings_for("live_readonly", token="TEST-TOKEN")
+    client_obj = _make_client(settings, handler)
+    cleanup = _install_overrides(settings, client_obj)
+    try:
+        response = client_with_client.get("/yandex/reports/search-queries")
+    finally:
+        cleanup()
+
+    assert response.status_code == 502, response.text
+    assert "items" not in response.json()
+    assert calls == 5
+    assert "TEST-TOKEN" not in response.text

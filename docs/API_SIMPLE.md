@@ -592,6 +592,31 @@ Direct payload будет минимальным и безопасным:
 
 Где `SearchBid` = `250 000 000` micros = `250 ₽`.
 
+### Как интерпретировать API-ставки
+
+`SearchBid` / `KeywordBid` — это **назначенная ставка** фразы или автотаргетинга
+в API, а не фактический CPC.
+
+- Не трактуйте `SearchBid` / `KeywordBid` как UI-поле «Максимальная ставка
+  для новых и изменённых условий показа».
+- Не используйте это значение как доказанный лимит расходов или как прямое
+  подтверждение фактической цены клика.
+- Для маркетингового отчёта показывайте отдельно:
+  1. `API bid` — значение `SearchBid` / `KeywordBid` из Direct API;
+  2. `UI maximum bid` — только если оператор отдельно подтвердил значение в UI;
+  3. `modifiers` — корректировки ставок и связанные условия;
+  4. `actual CPC` — фактическую стоимость клика из отчётов.
+- Не делайте противоречивых выводов о поведении лимитов при корректировках:
+  лимиты, bid ceiling, modifiers и фактический CPC нужно интерпретировать
+  раздельно по данным API, UI и отчётности.
+
+Официальные источники:
+- https://yandex.ru/dev/direct/doc/ru/keywordbids/set.md
+- https://yandex.ru/dev/direct/doc/ru/keywordbids/get.md
+- https://yandex.ru/dev/direct/doc/ru/keywordbids/setAuto.md
+- https://yandex.ru/support/direct/ru/strategies/manual-strategy
+- https://yandex.ru/support/direct/ru/impressions/bids-adjustment
+
 **Pitfalls:**
 - Не смешивайте `CampaignId` + `AdGroupId` + `KeywordId` в одном item —
   Direct возвращает `error_code=9300`.

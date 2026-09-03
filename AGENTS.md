@@ -52,9 +52,7 @@ sequence:
 5. **Readback** — verify what changed using the operation readback in the
    response or a dedicated follow-up read endpoint.
 
-Marketers do NOT apply live writes themselves. They prepare recommendations and
-read-only/dry-run outputs only. The apply step is performed by an operator or
-orchestrator after explicit user approval.
+Marketers may apply live DirectPilot writes when the user has explicitly approved the exact preview. They must retain every write gate: `DIRECTPILOT_MODE=live_write`, `approved=true`, a fresh idempotency key, `dry_run=false`, and mandatory readback. They must restore the known-good `live_readonly` runtime immediately after the bounded operation.
 
 ## UTM workflow for external agents (summary)
 

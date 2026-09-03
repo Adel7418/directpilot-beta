@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any
 
 import httpx
@@ -1347,27 +1348,43 @@ class YandexDirectClient:
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
 
-        try:
-            response = self._client.post(
-                f"{self.base_url}/reports",
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
-                    "Accept-Language": "ru",
-                    "processingMode": "auto",
-                    "returnMoneyInMicros": "false",
-                    "skipReportHeader": "true",
-                    "skipColumnHeader": "false",
-                    "skipReportSummary": "true",
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise YandexDirectError(
-                f"Yandex Direct report transport error: {type(exc).__name__}"
-            ) from exc
+        headers = {
+            "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
+            "Accept-Language": "ru",
+            "processingMode": "offline",
+            "returnMoneyInMicros": "false",
+            "skipReportHeader": "true",
+            "skipReportSummary": "true",
+        }
+        response: httpx.Response | None = None
+        for poll_attempt in range(5):
+            try:
+                response = self._client.post(
+                    f"{self.base_url}/reports",
+                    json=payload,
+                    headers=headers,
+                )
+            except httpx.HTTPError as exc:
+                raise YandexDirectError(
+                    f"Yandex Direct report transport error: {type(exc).__name__}"
+                ) from exc
 
-        if response.status_code >= 400:
-            raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
+            if response.status_code == 200:
+                break
+            if response.status_code not in {201, 202}:
+                # Do not include the raw body or headers: either could include
+                # sensitive provider data. Only an HTTP status is safe to expose.
+                raise YandexDirectError(f"Yandex Direct reports HTTP {response.status_code}")
+            if poll_attempt == 4:
+                raise YandexDirectError("Yandex Direct reports polling timed out")
+
+            try:
+                retry_seconds = float(response.headers.get("retryIn", "1"))
+            except ValueError:
+                retry_seconds = 1.0
+            time.sleep(min(max(retry_seconds, 0.0), 60.0))
+
+        assert response is not None
 
         # Reports usually return TSV, but Direct can still return a JSON error
         # envelope with HTTP 200. Do not let that masquerade as an empty TSV

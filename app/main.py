@@ -1955,9 +1955,10 @@ def _aggregate_search_query_tsv(
 
     header_map: dict[str, int] | None = None
     first_columns = rows[0].split("\t")
-    if first_columns and first_columns[0].lower() == "query":
-        header_map = {name: idx for idx, name in enumerate(first_columns) if name}
-        rows = rows[1:]
+    if "Query" not in first_columns:
+        raise ValueError("Yandex Direct reports TSV is missing required Query column")
+    header_map = {name: idx for idx, name in enumerate(first_columns) if name}
+    rows = rows[1:]
 
     items: list[YandexSearchQuery] = []
     for cols in [row.split("\t") for row in rows]:
@@ -2104,7 +2105,16 @@ def yandex_search_queries(
     # The client returns the raw TSV text in ``result``. NEVER log it
     # (it contains customer search query data); parse and aggregate.
     tsv_text = response.get("result") or ""
-    items = _aggregate_search_query_tsv(tsv_text, campaign_id=campaign_id)
+    try:
+        items = _aggregate_search_query_tsv(tsv_text, campaign_id=campaign_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": "Yandex Direct returned an invalid reports TSV",
+            },
+        ) from exc
     missing_campaign_name_ids = {
         item.campaign_id for item in items if not item.campaign_name
     }
