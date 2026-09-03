@@ -2538,6 +2538,43 @@ class KeywordBidsGetResult(BaseModel):
     warnings: list[ProviderWarning] = Field(default_factory=list)
 
 
+class AuctionForecastAuctionBid(BaseModel):
+    """One valid, integer-valued search auction level."""
+
+    traffic_volume: int
+    bid_micros: int
+    bid_rub: float
+    price_micros: int
+    price_rub: float
+
+
+class AuctionForecastItem(BaseModel):
+    """Marketer-facing auction forecast for one keyword page row."""
+
+    keyword_id: int
+    ad_group_id: int | None = None
+    phrase: str | None = None
+    state: str | None = None
+    status: str | None = None
+    serving_status: str | None = None
+    current_search_bid_micros: int | None = None
+    current_search_bid_rub: float | None = None
+    auction_bids: list[AuctionForecastAuctionBid] = Field(default_factory=list)
+    forecast_status: Literal["AVAILABLE", "NOT_APPLICABLE", "UNAVAILABLE", "ERROR"]
+    forecast_reason: str | None = None
+
+
+class AuctionForecastResult(BaseModel):
+    """Read-only response for ``GET .../auction-forecast``."""
+
+    campaign_id: str
+    source: Literal["yandex"] = "yandex"
+    read_only: bool = True
+    items: list[AuctionForecastItem] = Field(default_factory=list)
+    next_page_token: str | None = None
+    warnings: list[ProviderWarning] = Field(default_factory=list)
+
+
 class SearchByTrafficVolumeRule(BaseModel):
     type: Literal["search_by_traffic_volume"] = "search_by_traffic_volume"
     target_traffic_volume: int = Field(..., ge=5, le=100)

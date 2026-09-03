@@ -31,6 +31,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
 | Посмотреть ставки ключей кампании | `GET /yandex/campaigns/{campaign_id}/keyword-bids` | canonical typed `keywordbids.get`; use this instead of deprecated raw `GET .../bids` |
+| Посмотреть прогноз аукциона по ключам | `GET /yandex/campaigns/{campaign_id}/auction-forecast` | read-only per-keyword `TrafficVolume` levels + `forecast_status`/`forecast_reason` normalization |
 | Рассчитать авто-ставки для ключей | `POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto` | `keywordbids.setAuto` bid calculation only; dry-run default; apply requires explicit human approval + `live_write` + `approved=true` + idempotency |
 | Посмотреть демографические ставки кампании | `GET /yandex/campaigns/{campaign_id}/bid-modifiers` | текущие `AgeRange`/`BidModifier` для `Age` сегментов |
 | Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; read existing rows через GET и передавайте `modifier_id` |
@@ -137,6 +138,7 @@ GET /yandex/reports/search-queries?campaign_id=<campaign_id>&date_from=YYYY-MM-D
 - `/yandex/campaigns/{campaign_id}/bid-modifiers`
 - `/yandex/campaigns/{campaign_id}/negative-keywords`
 - `/yandex/campaigns/{campaign_id}/ad-groups/negative-keywords`
+- `/yandex/campaigns/{campaign_id}/auction-forecast`
 - `/yandex/campaigns/{campaign_id}/ad-groups/{ad_group_id}/negative-keywords`
 - `/yandex/campaigns/{campaign_id}/ad-groups`
 - `/yandex/changes`, `/yandex/changes/check`
@@ -169,6 +171,32 @@ GET /yandex/reports/search-queries?campaign_id=<campaign_id>&date_from=YYYY-MM-D
 Если `partial_failure=true` или `has_errors=true` у отдельных item, ставки не применены.
 Item-ошибки редиректятся (только `code`/`message`/`details`), сырой v5 payload не показывается.
 Предупреждения (код 10160 и др.) дублируются в `provider_warnings` и `set_results[].warnings`.
+
+
+### Auction forecast read (per-keyword)
+
+Use `GET /yandex/campaigns/{campaign_id}/auction-forecast` for search-auction competitiveness diagnostics:
+
+- read-only, zero mutation (`read_only=true`, `source="yandex"`)
+- query params: repeated `keyword_ids`, `limit` (1..1000, default 200), `page_token` (decimal non-negative string)
+- paginates by `next_page_token` string; pass it as `page_token` on next call
+- safe batch shape: manual keyword ids are fetched from `keywords.get`, then `keywordbids.get` for auction rows by batches of at most **200** ids
+
+`forecast_status` output values:
+
+- `AVAILABLE` — valid auction data for the keyword (`auction_bids` non-empty)
+- `NOT_APPLICABLE` — autotargeting row (`---autotargeting`) with reason `AUTOTARGETING`
+- `UNAVAILABLE` — no data currently available / not serving / search-off
+- `ERROR` — malformed data or upstream row mismatch
+
+`forecast_reason` is normalized and safe (examples: `RARELY_SERVED`, `KEYWORD_NOT_SERVING`, `SEARCH_SERVING_OFF`, `NO_AUCTION_DATA`, `UPSTREAM_BATCH_ERROR`, `AUCTION_ROW_MISSING`, `INVALID_AUCTION_DATA`).
+
+Field interpretation:
+
+- `current_search_bid_rub/micros` — current keyword search bid from `keywords.get` (`Bid`) for the row.
+- `auction_bids[].bid` / `auction_bids[].price` — from `keywordbids.get` `AuctionBidItems[].Bid/.Price` at each `traffic_volume` level.
+- `auction_bids[].traffic_volume` — **integer only**. Do not treat it as percent and do not round/fabricate it.
+- Values like `83,86`, `130,75` are RUB examples from `Bid`/`Price` micros (`83_860_000` etc.) when returned in rubles, not `TrafficVolume`.
 
 
 ### Reading and calculating keyword bids

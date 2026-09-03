@@ -533,11 +533,101 @@ coverage when Network is `SERVING_OFF`. Row kind is enriched from `keywords.get`
 (`Keyword == "---autotargeting"`); unresolved rows are reported as `unknown`,
 not guessed from missing auction/coverage fields. Provider errors are sanitized.
 
+### Live Direct: read keyword auction forecast (AuctionForecast)
+
+```http
+GET /yandex/campaigns/{campaign_id}/auction-forecast
+```
+
+Use this read-only endpoint to get search-auction competitiveness diagnostics per keyword:
+
+- `keyword_ids` (optional): repeated query parameter, `list[int]`; duplicates are deduplicated;
+- `limit`: optional, default `200`, allowed `1..1000`;
+- `page_token` (optional): decimal non-negative string offset used as `keywords.get` page offset.
+
+Query contract and behavior:
+
+1. `keywords.get` is called first with campaign filter, requested ids, `limit`, and `offset`.
+2. The result is canonicalized per returned row:
+   - `keyword_id`
+   - `ad_group_id`
+   - `phrase` (hidden for `---autotargeting` rows)
+   - `state` / `status` / `serving_status`
+   - `current_search_bid_micros` and `current_search_bid_rub` from current bid (`Bid` field)
+   - default `forecast_status="ERROR"` with fallback reasons when source data is invalid.
+3. Campaign strategy is read once. If Search strategy is `SERVING_OFF`, every manual keyword is marked `UNAVAILABLE` with reason `SEARCH_SERVING_OFF`.
+4. For manual (non-autotargeting) keyword ids, forecast calls are made to `keywordbids.get` in **batches of up to 200** ids (`_AUCTION_FORECAST_BATCH_SIZE`).
+5. Each batch is processed independently: if one batch fails (`exception` or `ok=false`) only those rows become `ERROR` + `UPSTREAM_BATCH_ERROR`, successful batches continue.
+
+Response model (`AuctionForecastResult`):
+
+- `campaign_id`
+- `source: "yandex"`
+- `read_only: true`
+- `items[]`
+- `next_page_token`
+- `warnings` (sanitized)
+
+Each `AuctionForecastItem` includes:
+
+- `keyword_id` (required)
+- `ad_group_id`
+- `phrase`
+- `state`
+- `status`
+- `serving_status`
+- `current_search_bid_micros`
+- `current_search_bid_rub`
+- `auction_bids[]` (sorted ascending by `traffic_volume`)
+- `forecast_status`: `AVAILABLE | NOT_APPLICABLE | UNAVAILABLE | ERROR`
+- `forecast_reason`: normalized string or `null`
+
+`AuctionForecastAuctionBid` item fields:
+
+- `traffic_volume`: integer (не процент, не дробь, это уровень трафика)
+- `bid_micros` + `bid_rub`
+- `price_micros` + `price_rub`
+
+Why `traffic_volume` is integer:
+
+- Officially `TrafficVolume` is integer.
+- Values like `83,86` or `130,75` can only be RUB amounts for `Bid`/`Price` when returned as micros (`83.86 ₽` ⇢ `83_860_000` micros), not `TrafficVolume`.
+- `TrafficVolume` must never be rounded, never treated as percentage, and never rewritten.
+
+Forecast status mapping:
+
+- `AVAILABLE` — valid auction rows exist (`auction_bids[]` non-empty), reason `null`.
+- `NOT_APPLICABLE` — row is `---autotargeting`, reason `AUTOTARGETING`.
+- `UNAVAILABLE` — no auction data or not eligible:
+  - `RARELY_SERVED`
+  - `KEYWORD_NOT_SERVING` (when `state != "ON"` or `status != "ACCEPTED"`)
+  - `SEARCH_SERVING_OFF` (campaign search strategy disabled)
+  - `NO_AUCTION_DATA` (no auction rows)
+- `ERROR` — malformed/invalid provider row/processing:
+  - `INVALID_AUCTION_DATA`
+  - `AUCTION_ROW_MISSING`
+  - `UPSTREAM_BATCH_ERROR`
+
+`forecast_reason` is always provider-normalized (safe, short), never raw provider text.
+
+Pagination:
+
+- `next_page_token` equals `LimitedBy` as string when `LimitedBy > page_token/offset`;
+- `next_page_token is None` when pagination is finished.
+- Pass `next_page_token` as next request `page_token`.
+
+Safety notes:
+
+- Read-only by contract: `read_only=true`, no mutation path.
+- Applicable in `live_readonly` and `live_write` modes for reads.
+- Endpoint does not fabricate ownership or forecast data: requested ids missing from canonical `keywords.get` are absent.
+
 ### Live Direct: calculate automatic keyword bids (KeywordBids.setAuto)
 
 ```http
 POST /yandex/campaigns/{campaign_id}/keyword-bids/set-auto
 ```
+
 
 Typed wrapper for Yandex Direct v5 `keywordbids.setAuto`. This endpoint asks
 Direct to **calculate bids** for existing campaign/ad-group/keyword targets. It
