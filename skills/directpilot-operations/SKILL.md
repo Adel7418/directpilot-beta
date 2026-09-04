@@ -196,9 +196,12 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - Minimal v5 item shape for known keyword ids: `KeywordId + SearchBid` /
   `KeywordId + ContextBid`. Do NOT include `CampaignId` / `AdGroupId` in
   the item — Direct returns `error_code=9300` for that form on batch updates.
-- For autotargeting rows, `AutotargetingSearchBidIsAuto="NO"` is added
-  automatically when setting a manual search bid. Set
-  `autotargeting_search_bid_is_auto=true` explicitly to suppress.
+- For autotargeting rows, `AutotargetingSearchBidIsAuto` is sent only when
+  the caller explicitly selects manual (`false` → `"NO"`) or automatic
+  (`true` → `"YES"`) behavior and `keywords.get` has positively identified
+  `Keyword == "---autotargeting"`. Requests for this field on ordinary or
+  ambiguous rows are rejected before `keywordbids.set`; ordinary keyword
+  payloads never receive this field.
 - Do not set `NetworkBid` / `context_bid_rub` when the campaign must remain
   search-only (`Network.BiddingStrategyType=SERVING_OFF`).
 - After fully successful apply, endpoint reads back keyword bids via `keywords.get` and returns

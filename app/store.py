@@ -6762,6 +6762,54 @@ class MockStore:
     # After apply, read back keyword bids for the campaign and return
     # the changed keyword ids with current Bid/ContextBid.
 
+    def _classify_explicit_autotargeting_keyword_ids(
+        self,
+        campaign_id: str,
+        keyword_ids: list[int],
+        *,
+        client: YandexDirectClient,
+    ) -> dict[int, bool]:
+        """Return verified autotargeting classification for explicit field use."""
+        response = client.keywords_get(campaign_id, keyword_ids=keyword_ids)
+        if not response.get("ok"):
+            raise YandexDirectError(
+                "keywords.get failed before autotargeting bid-field classification"
+            )
+        result = response.get("result")
+        raw_keywords = result.get("Keywords") if isinstance(result, dict) else None
+        if not isinstance(raw_keywords, list):
+            raise YandexDirectError(
+                "keywords.get did not provide a safe autotargeting classification"
+            )
+
+        requested_ids = set(keyword_ids)
+        classifications: dict[int, bool] = {}
+        duplicate_ids: set[int] = set()
+        for raw_keyword in raw_keywords:
+            if not isinstance(raw_keyword, dict):
+                continue
+            keyword_id = self._auction_forecast_strict_int(raw_keyword.get("Id"))
+            if keyword_id not in requested_ids:
+                continue
+            if keyword_id in classifications:
+                duplicate_ids.add(keyword_id)
+                continue
+            source_campaign_id = raw_keyword.get("CampaignId")
+            if source_campaign_id is not None and str(source_campaign_id) != campaign_id:
+                raise YandexDirectError(
+                    "keywords.get returned a keyword outside the requested campaign"
+                )
+            phrase = raw_keyword.get("Keyword")
+            if not isinstance(phrase, str):
+                continue
+            classifications[keyword_id] = phrase == "---autotargeting"
+
+        if duplicate_ids or set(classifications) != requested_ids:
+            raise YandexDirectError(
+                "keyword type could not be determined safely before keywordbids.set"
+            )
+        return classifications
+
     def yandex_keyword_bids_update(
         self,
         campaign_id: str,
@@ -6778,14 +6826,45 @@ class MockStore:
         mode = settings.directpilot_mode if settings is not None else "mock"
         is_live = mode in ("sandbox", "live_readonly", "live_write")
         can_write = mode == "live_write"
+        if not payload.dry_run and not can_write:
+            raise YandexDirectError(
+                "Live writes are not allowed in live_readonly mode; use live_write"
+            )
 
         # --- Idempotency cache check ----------------------------------------
         cache_key = f"keyword_bids:{campaign_id}:{payload.idempotency_key}"
 
         # --- Build v5 payload -----------------------------------------------
-        v5_items: list[dict[str, Any]] = [
-            item.to_direct_micros_item() for item in payload.items
+        explicit_autotargeting_keyword_ids = [
+            item.keyword_id
+            for item in payload.items
+            if item.autotargeting_search_bid_is_auto is not None
         ]
+        if explicit_autotargeting_keyword_ids:
+            if not is_live or client is None:
+                raise YandexDirectError(
+                    "A Yandex Direct client is required to verify autotargeting "
+                    "keyword type before using autotargeting_search_bid_is_auto"
+                )
+            is_autotargeting_by_keyword_id = (
+                self._classify_explicit_autotargeting_keyword_ids(
+                    campaign_id,
+                    explicit_autotargeting_keyword_ids,
+                    client=client,
+                )
+            )
+            v5_items: list[dict[str, Any]] = [
+                item.to_direct_micros_item(
+                    is_autotargeting=(
+                        is_autotargeting_by_keyword_id[item.keyword_id]
+                        if item.autotargeting_search_bid_is_auto is not None
+                        else None
+                    )
+                )
+                for item in payload.items
+            ]
+        else:
+            v5_items = [item.to_direct_micros_item() for item in payload.items]
         payload_preview: dict = {"method": "set", "params": {"KeywordBids": v5_items}}
         payload_fingerprint = _keyword_bids_request_fingerprint(v5_items)
 
@@ -6869,11 +6948,6 @@ class MockStore:
             return result
 
         # --- Write gate -----------------------------------------------------
-        if not can_write:
-            raise YandexDirectError(
-                "Live writes are not allowed in live_readonly mode; use live_write"
-            )
-
         if client is None:
             raise YandexDirectError(
                 "Yandex Direct client is required for live keyword bids updates"

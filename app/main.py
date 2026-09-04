@@ -3702,7 +3702,11 @@ def yandex_keyword_bids_update(
     Request items use RUBLES at the REST boundary; the store converts to
     Direct micros (× 1 000 000). The minimal v5 item shape is
     ``KeywordId + SearchBid`` / ``KeywordId + ContextBid`` — no
-    CampaignId / AdGroupId in the item.
+    CampaignId / AdGroupId in the item. An ordinary keyword never receives
+    ``AutotargetingSearchBidIsAuto``. That field is emitted only when the
+    caller explicitly selects it and a ``keywords.get`` pre-read positively
+    identifies ``Keyword == "---autotargeting"``; ambiguous classification
+    blocks a live writer call.
 
     After apply, the endpoint reads back keyword bids for the campaign
     and returns the changed keyword ids with current Bid/ContextBid.

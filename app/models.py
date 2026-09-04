@@ -2308,11 +2308,11 @@ class KeywordBidItem(BaseModel):
     ``search_bid_rub`` / ``context_bid_rub`` are in RUBLES at the
     REST boundary — the store converts to Direct micros.
 
-    ``autotargeting_search_bid_is_auto`` is optional; when the item
-    targets an autotargeting row and the caller sets a manual
-    ``search_bid_rub``, DirectPilot adds
-    ``AutotargetingSearchBidIsAuto=\"NO\"`` by default. Set it to
-    ``True`` explicitly to keep auto mode.
+    ``autotargeting_search_bid_is_auto`` is optional. It is sent only after
+    DirectPilot has positively identified the target as an autotargeting row
+    and the caller explicitly chooses automatic (``True``) or manual
+    (``False``) search-bid behavior. Ordinary keywords never receive this
+    autotargeting-only field.
     """
 
     keyword_id: int = Field(..., ge=1, description="Yandex Direct KeywordId")
@@ -2329,9 +2329,9 @@ class KeywordBidItem(BaseModel):
     autotargeting_search_bid_is_auto: bool | None = Field(
         default=None,
         description=(
-            "If the item targets an autotargeting row and this is unset, "
-            "``AutotargetingSearchBidIsAuto=\"NO\"`` is added when "
-            "``search_bid_rub`` is supplied. Set to ``True`` to keep auto mode."
+            "For a positively identified autotargeting row with ``search_bid_rub``, "
+            "send ``YES`` for automatic or ``NO`` for manual search bidding. "
+            "Ordinary keywords reject this autotargeting-only option."
         ),
     )
 
@@ -2343,18 +2343,28 @@ class KeywordBidItem(BaseModel):
             )
         return self
 
-    def to_direct_micros_item(self) -> dict:
-        """Build the minimal v5 ``KeywordBids`` item for this keyword."""
+    def to_direct_micros_item(
+        self, *, is_autotargeting: bool | None = None
+    ) -> dict:
+        """Build the scoped v5 ``KeywordBids`` item for this keyword."""
         item: dict = {"KeywordId": self.keyword_id}
         if self.search_bid_rub is not None:
             item["SearchBid"] = int(round(self.search_bid_rub * _MICROS_PER_RUBLE))
-            # When setting manual search bid on an autotargeting row,
-            # include AutotargetingSearchBidIsAuto="NO" unless
-            # explicitly opted out.
-            if self.autotargeting_search_bid_is_auto is not True:
-                item["AutotargetingSearchBidIsAuto"] = "NO"
         if self.context_bid_rub is not None:
             item["ContextBid"] = int(round(self.context_bid_rub * _MICROS_PER_RUBLE))
+        if self.autotargeting_search_bid_is_auto is not None:
+            if self.search_bid_rub is None:
+                raise ValueError(
+                    "autotargeting_search_bid_is_auto requires search_bid_rub"
+                )
+            if is_autotargeting is not True:
+                raise ValueError(
+                    "autotargeting_search_bid_is_auto requires a positively "
+                    "identified autotargeting keyword"
+                )
+            item["AutotargetingSearchBidIsAuto"] = (
+                "YES" if self.autotargeting_search_bid_is_auto else "NO"
+            )
         return item
 
 

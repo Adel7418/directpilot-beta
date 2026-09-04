@@ -100,7 +100,6 @@ class TestRublesToMicrosConversion:
         assert result == {
             "KeywordId": 123,
             "SearchBid": 250_000_000,
-            "AutotargetingSearchBidIsAuto": "NO",
         }
 
     def test_context_bid_only(self):
@@ -125,9 +124,9 @@ class TestRublesToMicrosConversion:
         assert result["KeywordId"] == 789
         assert result["SearchBid"] == 50_000_000
         assert result["ContextBid"] == 30_000_000
-        assert result["AutotargetingSearchBidIsAuto"] == "NO"
+        assert "AutotargetingSearchBidIsAuto" not in result
 
-    def test_autotargeting_auto_true_suppresses_flag(self):
+    def test_autotargeting_auto_true_adds_yes_after_identification(self):
         from app.models import KeywordBidItem
 
         item = KeywordBidItem(
@@ -135,10 +134,10 @@ class TestRublesToMicrosConversion:
             search_bid_rub=100.0,
             autotargeting_search_bid_is_auto=True,
         )
-        result = item.to_direct_micros_item()
-        assert "AutotargetingSearchBidIsAuto" not in result
+        result = item.to_direct_micros_item(is_autotargeting=True)
+        assert result["AutotargetingSearchBidIsAuto"] == "YES"
 
-    def test_autotargeting_explicit_no_still_adds_no(self):
+    def test_autotargeting_explicit_no_adds_no_after_identification(self):
         from app.models import KeywordBidItem
 
         item = KeywordBidItem(
@@ -146,7 +145,7 @@ class TestRublesToMicrosConversion:
             search_bid_rub=100.0,
             autotargeting_search_bid_is_auto=False,
         )
-        result = item.to_direct_micros_item()
+        result = item.to_direct_micros_item(is_autotargeting=True)
         assert result["AutotargetingSearchBidIsAuto"] == "NO"
 
     def test_fractional_rubles_rounds_correctly(self):
@@ -290,6 +289,291 @@ class TestPayloadShape:
             assert "AdGroupId" not in item2
 
             _assert_no_token_in_response(data)
+        finally:
+            _reset_overrides()
+
+    def test_two_manual_keywords_dry_run_only_changes_search_bid(self):
+        """Manual keyword previews must not acquire autotargeting-only fields."""
+        app.dependency_overrides[get_settings] = lambda: _settings("mock")
+        body = {
+            "approved": True,
+            "idempotency_key": "manual-preview-500-001",
+            "dry_run": True,
+            "items": [
+                {"keyword_id": 57373960029, "search_bid_rub": 500.0},
+                {"keyword_id": 57373960030, "search_bid_rub": 500.0},
+            ],
+        }
+        try:
+            response = client.post(
+                f"/yandex/campaigns/{MOCK_CAMPAIGN_ID}/bids", json=body
+            )
+            assert response.status_code == 200
+            assert response.json()["payload_preview"] == {
+                "method": "set",
+                "params": {
+                    "KeywordBids": [
+                        {"KeywordId": 57373960029, "SearchBid": 500_000_000},
+                        {"KeywordId": 57373960030, "SearchBid": 500_000_000},
+                    ]
+                },
+            }
+        finally:
+            _reset_overrides()
+
+    def test_two_manual_keywords_apply_only_changes_search_bid(self):
+        """The mocked writer and readback retain the manual-keyword field scope."""
+        settings = _settings("live_write")
+        calls = {"set": 0, "get": 0}
+
+        def set_handler(request: httpx.Request) -> httpx.Response:
+            calls["set"] += 1
+            body = json.loads(request.content)
+            assert body == {
+                "method": "set",
+                "params": {
+                    "KeywordBids": [
+                        {"KeywordId": 57373960029, "SearchBid": 500_000_000},
+                        {"KeywordId": 57373960030, "SearchBid": 500_000_000},
+                    ]
+                },
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "result": {
+                        "SetResults": [
+                            {"Id": 57373960029},
+                            {"Id": 57373960030},
+                        ]
+                    }
+                },
+                request=request,
+            )
+
+        def get_handler(request: httpx.Request) -> httpx.Response:
+            calls["get"] += 1
+            return _build_keywords_get_handler(
+                [
+                    {"Id": 57373960029, "Bid": 500_000_000, "ContextBid": 0},
+                    {"Id": 57373960030, "Bid": 500_000_000, "ContextBid": 0},
+                ]
+            )(request)
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = (
+            lambda: _client_with_handler(
+                settings, _build_multi_handler(set_handler, get_handler=get_handler)
+            )
+        )
+        body = {
+            "approved": True,
+            "idempotency_key": "manual-apply-500-001",
+            "dry_run": False,
+            "items": [
+                {"keyword_id": 57373960029, "search_bid_rub": 500.0},
+                {"keyword_id": 57373960030, "search_bid_rub": 500.0},
+            ],
+        }
+        try:
+            response = client.post(
+                f"/yandex/campaigns/{MOCK_CAMPAIGN_ID}/bids", json=body
+            )
+            assert response.status_code == 200
+            assert response.json()["applied"] is True
+            assert response.json()["readback"] == [
+                {"KeywordId": 57373960029, "Bid": 500_000_000, "ContextBid": 0},
+                {"KeywordId": 57373960030, "Bid": 500_000_000, "ContextBid": 0},
+            ]
+            assert calls == {"set": 1, "get": 1}
+        finally:
+            _reset_overrides()
+
+
+class TestAutotargetingBidFieldScope:
+    """Autotargeting-only bid fields require an explicit, verified target."""
+
+    @pytest.mark.parametrize(
+        ("requested_auto", "expected_value"),
+        [(False, "NO"), (True, "YES")],
+    )
+    def test_explicit_autotargeting_choice_is_verified_before_writer(
+        self, requested_auto: bool, expected_value: str
+    ):
+        settings = _settings("live_write")
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            url = str(request.url)
+            if "/keywords" in url and body["method"] == "get":
+                calls.append("classify" if not calls else "readback")
+                if calls[-1] == "classify":
+                    return httpx.Response(
+                        200,
+                        json={
+                            "result": {
+                                "Keywords": [
+                                    {
+                                        "Id": 7001,
+                                        "Keyword": "---autotargeting",
+                                    }
+                                ]
+                            }
+                        },
+                        request=request,
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "result": {
+                            "Keywords": [
+                                {
+                                    "Id": 7001,
+                                    "Bid": 500_000_000,
+                                    "ContextBid": 0,
+                                }
+                            ]
+                        }
+                    },
+                    request=request,
+                )
+            if "/keywordbids" in url and body["method"] == "set":
+                assert calls == ["classify"]
+                calls.append("set")
+                assert body == {
+                    "method": "set",
+                    "params": {
+                        "KeywordBids": [
+                            {
+                                "KeywordId": 7001,
+                                "SearchBid": 500_000_000,
+                                "AutotargetingSearchBidIsAuto": expected_value,
+                            }
+                        ]
+                    },
+                }
+                return httpx.Response(
+                    200,
+                    json={"result": {"SetResults": [{"Id": 7001}]}},
+                    request=request,
+                )
+            pytest.fail(f"Unexpected request: {url} {body['method']}")
+            return httpx.Response(500, json={}, request=request)
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = (
+            lambda: _client_with_handler(settings, handler)
+        )
+        try:
+            response = client.post(
+                f"/yandex/campaigns/{MOCK_CAMPAIGN_ID}/bids",
+                json={
+                    "approved": True,
+                    "idempotency_key": f"auto-explicit-{expected_value.lower()}-001",
+                    "dry_run": False,
+                    "items": [
+                        {
+                            "keyword_id": 7001,
+                            "search_bid_rub": 500.0,
+                            "autotargeting_search_bid_is_auto": requested_auto,
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["applied"] is True
+            assert calls == ["classify", "set", "readback"]
+        finally:
+            _reset_overrides()
+
+    def test_explicit_autotargeting_choice_rejects_ordinary_keyword(self):
+        settings = _settings("live_write")
+        calls = {"classify": 0, "set": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            url = str(request.url)
+            if "/keywords" in url and body["method"] == "get":
+                calls["classify"] += 1
+                return httpx.Response(
+                    200,
+                    json={"result": {"Keywords": [{"Id": 7002, "Keyword": "manual key"}]}},
+                    request=request,
+                )
+            if "/keywordbids" in url and body["method"] == "set":
+                calls["set"] += 1
+                pytest.fail("ordinary keyword must be rejected before keywordbids.set")
+            pytest.fail(f"Unexpected request: {url} {body['method']}")
+            return httpx.Response(500, json={}, request=request)
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = (
+            lambda: _client_with_handler(settings, handler)
+        )
+        try:
+            response = client.post(
+                f"/yandex/campaigns/{MOCK_CAMPAIGN_ID}/bids",
+                json={
+                    "approved": True,
+                    "idempotency_key": "ordinary-auto-choice-001",
+                    "dry_run": False,
+                    "items": [
+                        {
+                            "keyword_id": 7002,
+                            "search_bid_rub": 500.0,
+                            "autotargeting_search_bid_is_auto": False,
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 409
+            assert calls == {"classify": 1, "set": 0}
+        finally:
+            _reset_overrides()
+
+    def test_ambiguous_autotargeting_classification_blocks_writer(self):
+        settings = _settings("live_write")
+        calls = {"classify": 0, "set": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            url = str(request.url)
+            if "/keywords" in url and body["method"] == "get":
+                calls["classify"] += 1
+                return httpx.Response(
+                    200,
+                    json={"result": {"Keywords": []}},
+                    request=request,
+                )
+            if "/keywordbids" in url and body["method"] == "set":
+                calls["set"] += 1
+                pytest.fail("ambiguous target classification must block keywordbids.set")
+            pytest.fail(f"Unexpected request: {url} {body['method']}")
+            return httpx.Response(500, json={}, request=request)
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = (
+            lambda: _client_with_handler(settings, handler)
+        )
+        try:
+            response = client.post(
+                f"/yandex/campaigns/{MOCK_CAMPAIGN_ID}/bids",
+                json={
+                    "approved": True,
+                    "idempotency_key": "ambiguous-auto-choice-001",
+                    "dry_run": False,
+                    "items": [
+                        {
+                            "keyword_id": 7003,
+                            "search_bid_rub": 500.0,
+                            "autotargeting_search_bid_is_auto": False,
+                        }
+                    ],
+                },
+            )
+            assert response.status_code == 502
+            assert calls == {"classify": 1, "set": 0}
         finally:
             _reset_overrides()
 

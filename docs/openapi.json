@@ -1792,7 +1792,7 @@
         "type": "object"
       },
       "KeywordBidItem": {
-        "description": "A single keyword bid update item in a batch request.\n\nAt minimum ``keyword_id`` + ``search_bid_rub`` and/or\n``context_bid_rub`` must be supplied.\n\n``search_bid_rub`` / ``context_bid_rub`` are in RUBLES at the\nREST boundary — the store converts to Direct micros.\n\n``autotargeting_search_bid_is_auto`` is optional; when the item\ntargets an autotargeting row and the caller sets a manual\n``search_bid_rub``, DirectPilot adds\n``AutotargetingSearchBidIsAuto=\"NO\"`` by default. Set it to\n``True`` explicitly to keep auto mode.",
+        "description": "A single keyword bid update item in a batch request.\n\nAt minimum ``keyword_id`` + ``search_bid_rub`` and/or\n``context_bid_rub`` must be supplied.\n\n``search_bid_rub`` / ``context_bid_rub`` are in RUBLES at the\nREST boundary — the store converts to Direct micros.\n\n``autotargeting_search_bid_is_auto`` is optional. It is sent only after\nDirectPilot has positively identified the target as an autotargeting row\nand the caller explicitly chooses automatic (``True``) or manual\n(``False``) search-bid behavior. Ordinary keywords never receive this\nautotargeting-only field.",
         "properties": {
           "autotargeting_search_bid_is_auto": {
             "anyOf": [
@@ -1803,7 +1803,7 @@
                 "type": "null"
               }
             ],
-            "description": "If the item targets an autotargeting row and this is unset, ``AutotargetingSearchBidIsAuto=\"NO\"`` is added when ``search_bid_rub`` is supplied. Set to ``True`` to keep auto mode.",
+            "description": "For a positively identified autotargeting row with ``search_bid_rub``, send ``YES`` for automatic or ``NO`` for manual search bidding. Ordinary keywords reject this autotargeting-only option.",
             "title": "Autotargeting Search Bid Is Auto"
           },
           "context_bid_rub": {
@@ -9916,7 +9916,7 @@
         "summary": "Yandex Bids"
       },
       "post": {
-        "description": "Update SearchBid / ContextBid for existing keywords via v5 ``keywordbids.set``.\n\nStandard product gate contract:\n``dry_run=True`` (default) is preview-only and never performs a network\nwrite; the response includes the exact v5 ``keywordbids.set`` payload\nthat WOULD be sent, with ``applied=False``.\n\n``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,\n``approved=True`` and a valid ``idempotency_key``.\n\nRequest items use RUBLES at the REST boundary; the store converts to\nDirect micros (× 1 000 000). The minimal v5 item shape is\n``KeywordId + SearchBid`` / ``KeywordId + ContextBid`` — no\nCampaignId / AdGroupId in the item.\n\nAfter apply, the endpoint reads back keyword bids for the campaign\nand returns the changed keyword ids with current Bid/ContextBid.",
+        "description": "Update SearchBid / ContextBid for existing keywords via v5 ``keywordbids.set``.\n\nStandard product gate contract:\n``dry_run=True`` (default) is preview-only and never performs a network\nwrite; the response includes the exact v5 ``keywordbids.set`` payload\nthat WOULD be sent, with ``applied=False``.\n\n``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,\n``approved=True`` and a valid ``idempotency_key``.\n\nRequest items use RUBLES at the REST boundary; the store converts to\nDirect micros (× 1 000 000). The minimal v5 item shape is\n``KeywordId + SearchBid`` / ``KeywordId + ContextBid`` — no\nCampaignId / AdGroupId in the item. An ordinary keyword never receives\n``AutotargetingSearchBidIsAuto``. That field is emitted only when the\ncaller explicitly selects it and a ``keywords.get`` pre-read positively\nidentifies ``Keyword == \"---autotargeting\"``; ambiguous classification\nblocks a live writer call.\n\nAfter apply, the endpoint reads back keyword bids for the campaign\nand returns the changed keyword ids with current Bid/ContextBid.",
         "operationId": "yandex_keyword_bids_update_yandex_campaigns__campaign_id__bids_post",
         "parameters": [
           {

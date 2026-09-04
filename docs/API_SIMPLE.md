@@ -728,8 +728,15 @@ Direct payload будет минимальным и безопасным:
 **Pitfalls:**
 - Не смешивайте `CampaignId` + `AdGroupId` + `KeywordId` в одном item —
   Direct возвращает `error_code=9300`.
-- Для автотаргетинга `AutotargetingSearchBidIsAuto="NO"` добавляется
-  автоматически при ручной search-ставке (можно переопределить явно).
+- Для обычного ключа writer item при `search_bid_rub` содержит только
+  `KeywordId + SearchBid`. `AutotargetingSearchBidIsAuto` никогда не добавляется
+  неявно.
+- Этот autotargeting-only field допускается только при явном
+  `autotargeting_search_bid_is_auto` и только после того, как DirectPilot через
+  `keywords.get` подтвердил строку `Keyword == "---autotargeting"`: `false`
+  мапится в `"NO"`, `true` — в `"YES"`. Запрос этого field для обычной или
+  неоднозначно классифицированной строки live apply отклоняется до
+  `keywordbids.set`.
 - Не меняйте `NetworkBid`, если РСЯ выключена (`SERVING_OFF`).
 - При автостратегии (`WB_MAXIMUM_CONVERSION_RATE`) Direct может
   проигнорировать per-keyword ставки с warning 10160 —
