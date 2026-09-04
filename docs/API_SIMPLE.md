@@ -1371,6 +1371,54 @@ POST /yandex/campaigns/{campaign_id}/strategy
 - после apply выполняется readback через `campaigns_get_full_strategy` для верификации;
 - ответ включает `strategy_applied` (нормализованная конфигурация), `payload_preview` (на dry-run), `readback` (после apply), `provider_warnings`, `yandex_units`.
 
+### Изменить только ценность существующей priority goal в ручном поиске
+
+```http
+POST /yandex/campaigns/{campaign_id}/priority-goals
+```
+
+Этот отдельный endpoint меняет только денежную **ценность цели**
+(`priority goal value`, ₽), а не фактический CPA. Он не переключает стратегию,
+не меняет ставки, бюджет, РСЯ, ключи, минус-фразы или набор целей.
+
+```json
+{
+  "goal_id": 516513575,
+  "value_rub": 700.0,
+  "dry_run": true,
+  "approved": true,
+  "idempotency_key": "priority-goal-preview-001",
+  "reason": "Повышаем ценность подтверждённой заявки"
+}
+```
+
+Контракт первой версии:
+
+- только `TEXT_CAMPAIGN` с
+  `Search.BiddingStrategyType="HIGHEST_POSITION"` и
+  `Network.BiddingStrategyType="SERVING_OFF"`;
+- `goal_id` должен уже существовать в `TextCampaign.PriorityGoals.Items`;
+  endpoint не создаёт новую goal и не меняет список целей;
+- `value_rub` — положительное JSON-число в ₽, точно представимое в Direct
+  micros (не более шести знаков после запятой); в v5 отправляется как
+  `Value = value_rub × 1_000_000` без float-rounding;
+- dry-run сначала читает кампанию, возвращает `before_value_rub` →
+  `after_value_rub`, `payload_preview` и `preserved_fields`; внешней записи
+  при этом нет;
+- в payload `campaigns.update` повторно передаются сохранённые Search, Network,
+  CounterIds, `DailyBudget={Amount, Mode:"STANDARD"}` и все PriorityGoals;
+  меняется только `Value` выбранного `GoalId`. Каждый write-item использует
+  documented `Operation="SET"`;
+- apply требует `DIRECTPILOT_MODE=live_write`, `approved=true`, valid
+  `idempotency_key` и `dry_run=false`. После единственного `campaigns.update`
+  endpoint обязательно делает `campaigns.get` readback и подтверждает выбранное
+  значение, другие goal values, Search, Network, CounterIds и DailyBudget;
+- null/weekly либо malformed `DailyBudget` не нормализуется и не дополняется:
+  ручной endpoint отказоустойчиво завершится до writer. Автостратегия возвращает
+  `INCOMPATIBLE_CAMPAIGN_STRATEGY`; отсутствующая goal —
+  `PRIORITY_GOAL_NOT_FOUND`; malformed/provider/readback errors — HTTP 502.
+  При любом таком отказе retry не выполняется автоматически.
+
 ### Выбор цели Метрики
 
 Для выбора `goal_id` используйте существующий read-only эндпоинт Метрики:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
@@ -2025,6 +2026,78 @@ class YandexStrategyResult(BaseModel):
     provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
     yandex_units: int | None = None
     yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Existing manual-strategy priority goal value update
+# ---------------------------------------------------------------------------
+
+
+class PriorityGoalValueUpdateRequest(BaseModel):
+    """Change only the value of one existing priority goal in RUBLES.
+
+    The endpoint is intentionally separate from strategy management: it never
+    switches a campaign to an automatic strategy and only supports an existing
+    ``HIGHEST_POSITION`` search strategy with ``SERVING_OFF`` network traffic.
+    ``value_rub`` is converted to Direct micros exactly; sub-microruble values
+    are rejected instead of rounded.
+    """
+
+    goal_id: int = Field(..., ge=1, description="Existing Metrika goal id.")
+    value_rub: Decimal = Field(
+        ...,
+        description=(
+            "New priority-goal value in RUBLES. Must be a positive numeric "
+            "amount representable exactly in Direct micros."
+        ),
+    )
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    dry_run: bool = True
+    reason: str | None = None
+
+    @field_validator("value_rub", mode="before")
+    @classmethod
+    def _require_numeric_value(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+            raise ValueError("value_rub must be a JSON numeric value")
+        return value
+
+    @field_validator("value_rub")
+    @classmethod
+    def _require_exact_positive_micros(cls, value: Decimal) -> Decimal:
+        if not value.is_finite() or value <= 0:
+            raise ValueError("value_rub must be a positive finite amount")
+        micros = value * Decimal(1_000_000)
+        if micros != micros.to_integral_value():
+            raise ValueError(
+                "value_rub must be representable exactly in Direct micros"
+            )
+        return value
+
+    @property
+    def value_micros(self) -> int:
+        return int(self.value_rub * Decimal(1_000_000))
+
+
+class PriorityGoalValueUpdateResult(BaseModel):
+    """Preview or verified result for one existing priority-goal value."""
+
+    campaign_id: str
+    goal_id: int
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["mock", "yandex"] = "yandex"
+    audit_id: str
+    before_value_rub: float
+    after_value_rub: float
+    before_value_micros: int
+    after_value_micros: int
+    payload_preview: dict | None = None
+    preserved_fields: list[str] = Field(default_factory=list)
+    readback: dict | None = None
+    yandex_units: int | None = None
 
 
 # ---------------------------------------------------------------------------

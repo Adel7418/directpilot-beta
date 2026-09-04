@@ -87,6 +87,8 @@ from app.models import (
     YandexStrategyReadResult,
     YandexStrategyRequest,
     YandexStrategyResult,
+    PriorityGoalValueUpdateRequest,
+    PriorityGoalValueUpdateResult,
     LiveAdCreateRequest,
     LiveAdCreateResult,
     YandexAdGroupNegativeKeywords,
@@ -3468,6 +3470,75 @@ def yandex_strategy_update(
                 ),
             },
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# Existing manual-strategy priority goal value update (POST)
+# ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/priority-goals",
+    response_model=PriorityGoalValueUpdateResult,
+    responses={
+        409: {
+            "description": "Safety gate, idempotency conflict, absent goal, or incompatible campaign strategy.",
+        },
+        502: {
+            "description": "Malformed or rejected Yandex Direct response; no update was dispatched.",
+        },
+    },
+)
+def yandex_priority_goal_value_update(
+    campaign_id: str,
+    payload: PriorityGoalValueUpdateRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> PriorityGoalValueUpdateResult:
+    """Preview a safe update of one existing manual priority-goal value.
+
+    The endpoint only supports ``HIGHEST_POSITION`` search and
+    ``SERVING_OFF`` network strategy. It reads the campaign first and refuses
+    missing or ambiguous state instead of creating a goal or changing a
+    bidding strategy.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "APPROVAL_REQUIRED",
+                "message": "Explicit approval is required",
+            },
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "LIVE_WRITE_REQUIRED",
+                "message": "Live priority-goal value updates require DIRECTPILOT_MODE=live_write",
+            },
+        )
+    try:
+        return store.yandex_priority_goal_value_update(
+            campaign_id, payload, settings=settings, client=client
+        )
+    except ValueError as exc:
+        code, _, message = str(exc).partition(":")
+        raise HTTPException(
+            status_code=409,
+            detail={"error_code": code, "message": message.strip() or code},
+        ) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        if "error_detail" in diagnostics:
+            detail["error_detail"] = diagnostics["error_detail"]
+        raise HTTPException(status_code=502, detail=detail) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -187,7 +187,7 @@ goes out. Rate-limit / units costs are returned in the
 
 - Included read operations (production): campaigns, ad-groups, ads, keywords, finance/report endpoints.
 - Included write operations (limited): controlled pause/resume-style controls.
-- Explicitly excluded for now: creating/updating live campaigns directly, blind budget/setting mutation without approvals, uncontrolled write endpoints.
+- Explicitly excluded for now: unscoped live campaign creation/update, blind budget/setting mutation without approvals, uncontrolled write endpoints. Narrow, documented read-before-write exceptions (for example the guarded priority-goal value endpoint) remain subject to the full `live_write` gate and mandatory readback.
 - Wordstat read path is split: Yandex Search API v2 in `/wordstat/*`; legacy report lifecycle from v4 is intentionally not pushed through Direct API v5 for those flows.
 
 ## OpenAPI locations

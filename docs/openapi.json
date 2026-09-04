@@ -3094,6 +3094,173 @@
         "title": "PriorityGoal",
         "type": "object"
       },
+      "PriorityGoalValueUpdateRequest": {
+        "description": "Change only the value of one existing priority goal in RUBLES.\n\nThe endpoint is intentionally separate from strategy management: it never\nswitches a campaign to an automatic strategy and only supports an existing\n``HIGHEST_POSITION`` search strategy with ``SERVING_OFF`` network traffic.\n``value_rub`` is converted to Direct micros exactly; sub-microruble values\nare rejected instead of rounded.",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "goal_id": {
+            "description": "Existing Metrika goal id.",
+            "minimum": 1.0,
+            "title": "Goal Id",
+            "type": "integer"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "value_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              }
+            ],
+            "description": "New priority-goal value in RUBLES. Must be a positive numeric amount representable exactly in Direct micros.",
+            "title": "Value Rub"
+          }
+        },
+        "required": [
+          "goal_id",
+          "value_rub",
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "PriorityGoalValueUpdateRequest",
+        "type": "object"
+      },
+      "PriorityGoalValueUpdateResult": {
+        "description": "Preview or verified result for one existing priority-goal value.",
+        "properties": {
+          "after_value_micros": {
+            "title": "After Value Micros",
+            "type": "integer"
+          },
+          "after_value_rub": {
+            "title": "After Value Rub",
+            "type": "number"
+          },
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "before_value_micros": {
+            "title": "Before Value Micros",
+            "type": "integer"
+          },
+          "before_value_rub": {
+            "title": "Before Value Rub",
+            "type": "number"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "goal_id": {
+            "title": "Goal Id",
+            "type": "integer"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "preserved_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Preserved Fields",
+            "type": "array"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback"
+          },
+          "source": {
+            "default": "yandex",
+            "enum": [
+              "mock",
+              "yandex"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "goal_id",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id",
+          "before_value_rub",
+          "after_value_rub",
+          "before_value_micros",
+          "after_value_micros"
+        ],
+        "title": "PriorityGoalValueUpdateResult",
+        "type": "object"
+      },
       "ProviderWarning": {
         "description": "Upstream Yandex Direct API v5 warning item.\n\nPreserved from the v5 ``Warnings[]`` response envelope with\n``code``, ``message``, and ``details`` (the per-warning text\nDirect attaches; redacted — never contains headers or tokens).",
         "properties": {
@@ -10160,6 +10327,62 @@
           }
         },
         "summary": "Yandex Pause"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/priority-goals": {
+      "post": {
+        "description": "Preview a safe update of one existing manual priority-goal value.\n\nThe endpoint only supports ``HIGHEST_POSITION`` search and\n``SERVING_OFF`` network strategy. It reads the campaign first and refuses\nmissing or ambiguous state instead of creating a goal or changing a\nbidding strategy.",
+        "operationId": "yandex_priority_goal_value_update_yandex_campaigns__campaign_id__priority_goals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriorityGoalValueUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriorityGoalValueUpdateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate, idempotency conflict, absent goal, or incompatible campaign strategy."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Malformed or rejected Yandex Direct response; no update was dispatched."
+          }
+        },
+        "summary": "Yandex Priority Goal Value Update"
       }
     },
     "/yandex/campaigns/{campaign_id}/resume": {

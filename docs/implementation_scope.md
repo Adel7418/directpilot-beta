@@ -47,6 +47,7 @@ All support `dry_run` in `live_readonly`; real Direct writes require `live_write
 
 - `POST /yandex/campaigns/{campaign_id}/pause`
 - `POST /yandex/campaigns/{campaign_id}/resume`
+- `POST /yandex/campaigns/{campaign_id}/priority-goals` — scoped `campaigns.update` of only an existing priority-goal value for `HIGHEST_POSITION` + `SERVING_OFF`; reads before write, preserves confirmed fields, and requires post-apply readback.
 - `POST /yandex/ad-groups/{ad_group_id}/ads`
 - `POST /yandex/ads/moderate`
 

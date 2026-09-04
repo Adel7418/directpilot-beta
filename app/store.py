@@ -57,6 +57,8 @@ from app.models import (
     YandexStrategyReadResult,
     YandexStrategyRequest,
     YandexStrategyResult,
+    PriorityGoalValueUpdateRequest,
+    PriorityGoalValueUpdateResult,
     MULTI_GOAL_STRATEGY_ID,
     # Autotargeting
     AUTOTARGETING_CATEGORIES,
@@ -651,6 +653,8 @@ class MockStore:
         # Strategy update results, keyed by (campaign_id, idempotency_key).
         # Mirrors time_targeting_results_by_key contract.
         self._strategy_results_by_key: dict[str, Any] = {}
+        # Priority-goal value results, keyed by (campaign_id, idempotency_key).
+        self._priority_goal_value_results_by_key: dict[str, Any] = {}
         # Autotargeting update results, keyed by (campaign_id, idempotency_key).
         # Mirrors time_targeting_results_by_key / _strategy_results_by_key contract.
         self._autotargeting_results_by_key: dict[str, Any] = {}
@@ -3341,6 +3345,448 @@ class MockStore:
                     "payload_preview": exc.diagnostics.get(
                         "payload_preview"
                     ),
+                },
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # Existing manual-strategy priority-goal value update
+    # ------------------------------------------------------------------
+
+    def yandex_priority_goal_value_update(
+        self,
+        campaign_id: str,
+        payload: "PriorityGoalValueUpdateRequest",
+        *,
+        settings: Settings | None = None,
+        client: YandexDirectClient | None = None,
+    ) -> "PriorityGoalValueUpdateResult":
+        """Preview a guarded update of one existing manual priority goal.
+
+        A live-backed ``campaigns.get`` is required even for dry-run so this
+        method can refuse absent goals and preserve the current write shape.
+        """
+
+        if not payload.approved:
+            raise ValueError("APPROVAL_REQUIRED: explicit approval is required")
+
+        mode = settings.directpilot_mode if settings is not None else "mock"
+        if client is None:
+            raise YandexDirectError(
+                "A YandexDirectClient is required to verify an existing priority goal"
+            )
+
+        cache_key = f"priority-goal-value:{campaign_id}:{payload.idempotency_key}"
+        cached = self._priority_goal_value_results_by_key.get(cache_key)
+        if cached is not None:
+            if cached.dry_run != payload.dry_run:
+                raise ValueError(
+                    "IDEMPOTENCY_CONFLICT: idempotency key was used with a different dry_run value"
+                )
+            if (
+                cached.goal_id != payload.goal_id
+                or cached.after_value_micros != payload.value_micros
+            ):
+                raise ValueError(
+                    "IDEMPOTENCY_CONFLICT: idempotency key was used with a different goal value"
+                )
+            return cached
+
+        response = client.campaigns_get_full_strategy(campaign_id)
+        if not isinstance(response, dict) or response.get("ok") is not True:
+            error = response.get("error") if isinstance(response, dict) else None
+            raise YandexDirectError(
+                "Yandex Direct rejected campaigns.get for priority-goal value update",
+                diagnostics={
+                    "error_code": error.get("error_code") if isinstance(error, dict) else None,
+                    "error_detail": error.get("error_detail") if isinstance(error, dict) else None,
+                },
+            )
+        raw_result = response.get("result")
+        campaigns = raw_result.get("Campaigns") if isinstance(raw_result, dict) else None
+        if not isinstance(campaigns, list) or len(campaigns) != 1:
+            raise YandexDirectError(
+                "Malformed campaigns.get response: expected exactly one campaign"
+            )
+        campaign = campaigns[0]
+        if not isinstance(campaign, dict) or str(campaign.get("Id")) != str(campaign_id):
+            raise YandexDirectError(
+                "Malformed campaigns.get response: unexpected campaign identity"
+            )
+        if campaign.get("Type") != "TEXT_CAMPAIGN":
+            raise ValueError(
+                "INCOMPATIBLE_CAMPAIGN_STRATEGY: only TEXT_CAMPAIGN manual search campaigns are supported"
+            )
+
+        text_campaign = campaign.get("TextCampaign")
+        if not isinstance(text_campaign, dict):
+            raise YandexDirectError(
+                "Malformed campaigns.get response: missing TextCampaign"
+            )
+        strategy = text_campaign.get("BiddingStrategy")
+        search = strategy.get("Search") if isinstance(strategy, dict) else None
+        network = strategy.get("Network") if isinstance(strategy, dict) else None
+        if (
+            not isinstance(search, dict)
+            or not isinstance(network, dict)
+            or search.get("BiddingStrategyType") != "HIGHEST_POSITION"
+            or network.get("BiddingStrategyType") != "SERVING_OFF"
+        ):
+            raise ValueError(
+                "INCOMPATIBLE_CAMPAIGN_STRATEGY: requires Search.HIGHEST_POSITION and Network.SERVING_OFF"
+            )
+
+        counter_ids = text_campaign.get("CounterIds")
+        if not isinstance(counter_ids, list):
+            raise YandexDirectError(
+                "Malformed campaigns.get response: CounterIds must be a list"
+            )
+
+        raw_budget = campaign.get("DailyBudget")
+        if not isinstance(raw_budget, dict):
+            raise YandexDirectError(
+                "Malformed campaigns.get response: manual strategy requires a DailyBudget object"
+            )
+        amount = raw_budget.get("Amount")
+        read_mode = raw_budget.get("Mode", raw_budget.get("SpendMode"))
+        if (
+            isinstance(amount, bool)
+            or not isinstance(amount, int)
+            or amount <= 0
+            or read_mode != "STANDARD"
+        ):
+            raise YandexDirectError(
+                "Malformed campaigns.get response: expected standard DailyBudget Amount and Mode"
+            )
+        daily_budget = {"Amount": amount, "Mode": read_mode}
+
+        raw_priority_goals = text_campaign.get("PriorityGoals")
+        items = raw_priority_goals.get("Items") if isinstance(raw_priority_goals, dict) else None
+        if not isinstance(items, list) or not items:
+            raise YandexDirectError(
+                "Malformed campaigns.get response: PriorityGoals.Items is required"
+            )
+
+        updated_items: list[dict[str, int | str]] = []
+        before_value_micros: int | None = None
+        preserved_fields = [
+            "TextCampaign.BiddingStrategy.Search",
+            "TextCampaign.BiddingStrategy.Network",
+            "TextCampaign.CounterIds",
+            "DailyBudget",
+        ]
+        for item in items:
+            if not isinstance(item, dict):
+                raise YandexDirectError(
+                    "Malformed campaigns.get response: priority-goal item must be an object"
+                )
+            goal_id = item.get("GoalId")
+            value = item.get("Value")
+            if (
+                isinstance(goal_id, bool)
+                or not isinstance(goal_id, int)
+                or goal_id <= 0
+                or isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+            ):
+                raise YandexDirectError(
+                    "Malformed campaigns.get response: priority-goal item has invalid GoalId or Value"
+                )
+            item_value = payload.value_micros if goal_id == payload.goal_id else value
+            if goal_id == payload.goal_id:
+                if before_value_micros is not None:
+                    raise YandexDirectError(
+                        "Malformed campaigns.get response: duplicate selected priority goal"
+                    )
+                before_value_micros = value
+            else:
+                preserved_fields.append(
+                    f"TextCampaign.PriorityGoals.Items[GoalId={goal_id}]"
+                )
+            updated_items.append(
+                {"GoalId": goal_id, "Value": item_value, "Operation": "SET"}
+            )
+        if before_value_micros is None:
+            raise ValueError(
+                "PRIORITY_GOAL_NOT_FOUND: selected goal_id is not an existing PriorityGoals item"
+            )
+
+        update_text_campaign = {
+            "BiddingStrategy": {
+                "Search": dict(search),
+                "Network": dict(network),
+            },
+            "CounterIds": list(counter_ids),
+            "PriorityGoals": {"Items": updated_items},
+        }
+        campaign_entry = {
+            "Id": YandexDirectClient._direct_id(campaign_id),
+            "DailyBudget": daily_budget,
+            "TextCampaign": update_text_campaign,
+        }
+        payload_preview = {
+            "method": "campaigns.update",
+            "params": {"Campaigns": [campaign_entry]},
+        }
+
+        result_fields = {
+            "campaign_id": campaign_id,
+            "goal_id": payload.goal_id,
+            "mode": mode,
+            "source": "yandex",
+            "before_value_rub": before_value_micros / self._MICROS_PER_RUBLE,
+            "after_value_rub": payload.value_micros / self._MICROS_PER_RUBLE,
+            "before_value_micros": before_value_micros,
+            "after_value_micros": payload.value_micros,
+            "preserved_fields": preserved_fields,
+        }
+        audit_details = {
+            "goal_id": payload.goal_id,
+            "before_value_micros": before_value_micros,
+            "after_value_micros": payload.value_micros,
+            "reason": payload.reason,
+            "source": "yandex",
+            "mode": mode,
+        }
+
+        if payload.dry_run:
+            audit = self.append_audit(
+                "yandex_priority_goal_value_requested",
+                campaign_id,
+                dry_run=True,
+                details=audit_details,
+            )
+            result_model = PriorityGoalValueUpdateResult(
+                **result_fields,
+                dry_run=True,
+                applied=False,
+                audit_id=audit.id,
+                payload_preview=payload_preview,
+                readback=None,
+            )
+            self._priority_goal_value_results_by_key[cache_key] = result_model
+            return result_model
+
+        if mode != "live_write":
+            raise ValueError(
+                "LIVE_WRITE_REQUIRED: priority-goal value apply requires live_write mode"
+            )
+
+        try:
+            update_response = client.campaigns_update_strategy(
+                campaign_id,
+                update_text_campaign,
+                daily_budget=daily_budget,
+            )
+            if not isinstance(update_response, dict) or update_response.get("ok") is not True:
+                error = (
+                    update_response.get("error")
+                    if isinstance(update_response, dict)
+                    else None
+                )
+                raise YandexDirectError(
+                    "Yandex Direct rejected campaigns.update for priority-goal value update",
+                    diagnostics={
+                        "error_code": error.get("error_code")
+                        if isinstance(error, dict)
+                        else None,
+                        "error_detail": error.get("error_detail")
+                        if isinstance(error, dict)
+                        else None,
+                        "payload_preview": payload_preview,
+                    },
+                )
+            update_result = update_response.get("result")
+            update_results = (
+                update_result.get("UpdateResults")
+                if isinstance(update_result, dict)
+                else None
+            )
+            if not isinstance(update_results, list) or len(update_results) != 1:
+                raise YandexDirectError(
+                    "Malformed campaigns.update response: expected one UpdateResults item",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            update_item = update_results[0]
+            if not isinstance(update_item, dict):
+                raise YandexDirectError(
+                    "Malformed campaigns.update response: update result must be an object",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            if (
+                str(update_item.get("Id")) != str(campaign_id)
+                or update_item.get("Error") is not None
+                or bool(update_item.get("Errors"))
+            ):
+                raise YandexDirectError(
+                    "Yandex Direct campaigns.update returned a failed per-item result",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+
+            readback_response = client.campaigns_get_full_strategy(campaign_id)
+            if (
+                not isinstance(readback_response, dict)
+                or readback_response.get("ok") is not True
+            ):
+                raise YandexDirectError(
+                    "Yandex Direct readback failed after priority-goal value update",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            readback_result = readback_response.get("result")
+            readback_campaigns = (
+                readback_result.get("Campaigns")
+                if isinstance(readback_result, dict)
+                else None
+            )
+            if not isinstance(readback_campaigns, list) or len(readback_campaigns) != 1:
+                raise YandexDirectError(
+                    "Malformed priority-goal value readback: expected one campaign",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            readback_campaign = readback_campaigns[0]
+            if (
+                not isinstance(readback_campaign, dict)
+                or str(readback_campaign.get("Id")) != str(campaign_id)
+                or readback_campaign.get("Type") != "TEXT_CAMPAIGN"
+            ):
+                raise YandexDirectError(
+                    "Malformed priority-goal value readback: unexpected campaign",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            readback_text_campaign = readback_campaign.get("TextCampaign")
+            if not isinstance(readback_text_campaign, dict):
+                raise YandexDirectError(
+                    "Malformed priority-goal value readback: missing TextCampaign",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            readback_strategy = readback_text_campaign.get("BiddingStrategy")
+            readback_search = (
+                readback_strategy.get("Search")
+                if isinstance(readback_strategy, dict)
+                else None
+            )
+            readback_network = (
+                readback_strategy.get("Network")
+                if isinstance(readback_strategy, dict)
+                else None
+            )
+            if readback_search != search or readback_network != network:
+                raise YandexDirectError(
+                    "Priority-goal value readback changed the campaign bidding strategy",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            if readback_text_campaign.get("CounterIds") != counter_ids:
+                raise YandexDirectError(
+                    "Priority-goal value readback changed CounterIds",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            readback_budget = readback_campaign.get("DailyBudget")
+            readback_amount = (
+                readback_budget.get("Amount")
+                if isinstance(readback_budget, dict)
+                else None
+            )
+            readback_mode = (
+                readback_budget.get("Mode", readback_budget.get("SpendMode"))
+                if isinstance(readback_budget, dict)
+                else None
+            )
+            normalized_readback_budget = {
+                "Amount": readback_amount,
+                "Mode": readback_mode,
+            }
+            if normalized_readback_budget != daily_budget:
+                raise YandexDirectError(
+                    "Priority-goal value readback changed DailyBudget",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            readback_priority_goals = readback_text_campaign.get("PriorityGoals")
+            readback_items = (
+                readback_priority_goals.get("Items")
+                if isinstance(readback_priority_goals, dict)
+                else None
+            )
+            if not isinstance(readback_items, list) or len(readback_items) != len(updated_items):
+                raise YandexDirectError(
+                    "Malformed priority-goal value readback: unexpected priority-goal list",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+            expected_goal_values = [
+                (item["GoalId"], item["Value"]) for item in updated_items
+            ]
+            actual_goal_values: list[tuple[int, int]] = []
+            for item in readback_items:
+                if not isinstance(item, dict):
+                    raise YandexDirectError(
+                        "Malformed priority-goal value readback: priority-goal item must be an object",
+                        diagnostics={"payload_preview": payload_preview},
+                    )
+                goal_id = item.get("GoalId")
+                value = item.get("Value")
+                if (
+                    isinstance(goal_id, bool)
+                    or not isinstance(goal_id, int)
+                    or isinstance(value, bool)
+                    or not isinstance(value, int)
+                ):
+                    raise YandexDirectError(
+                        "Malformed priority-goal value readback: invalid GoalId or Value",
+                        diagnostics={"payload_preview": payload_preview},
+                    )
+                actual_goal_values.append((goal_id, value))
+            if actual_goal_values != expected_goal_values:
+                raise YandexDirectError(
+                    "Priority-goal value readback does not match the requested update",
+                    diagnostics={"payload_preview": payload_preview},
+                )
+
+            readback = {
+                "DailyBudget": normalized_readback_budget,
+                "TextCampaign": {
+                    "CounterIds": list(counter_ids),
+                    "BiddingStrategy": {
+                        "Search": dict(search),
+                        "Network": dict(network),
+                    },
+                    "PriorityGoals": {"Items": [dict(item) for item in readback_items]},
+                },
+            }
+            raw_units = update_response.get("units")
+            try:
+                yandex_units = int(raw_units) if raw_units is not None else None
+            except (TypeError, ValueError):
+                yandex_units = None
+            audit = self.append_audit(
+                "yandex_priority_goal_value_applied",
+                campaign_id,
+                dry_run=False,
+                details={
+                    **audit_details,
+                    "yandex_units": yandex_units,
+                    "readback_verified": True,
+                },
+            )
+            result_model = PriorityGoalValueUpdateResult(
+                **result_fields,
+                dry_run=False,
+                applied=True,
+                audit_id=audit.id,
+                payload_preview=None,
+                readback=readback,
+                yandex_units=yandex_units,
+            )
+            self._priority_goal_value_results_by_key[cache_key] = result_model
+            return result_model
+        except YandexDirectError as exc:
+            self.append_audit(
+                "yandex_priority_goal_value_failed",
+                campaign_id,
+                dry_run=False,
+                details={
+                    **audit_details,
+                    "error_type": type(exc).__name__,
+                    "payload_preview": exc.diagnostics.get("payload_preview"),
                 },
             )
             raise

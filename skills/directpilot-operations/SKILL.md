@@ -179,6 +179,15 @@ When adding ads to an existing campaign/group via ``POST /yandex/ad-groups/{ad_g
 - `BudgetType` (e.g. `WEEKLY_BUDGET`) is preserved from readback strategy block. Direct requires it on update; stripping it caused live `error_code=8000`.
 - Network strategy defaults to preserve-from-readback. Explicit `network="SERVING_OFF"` is supported. Endpoint never silently turns networks ON.
 - Before applying, read current campaign state via the GET endpoint to verify the selected goal(s) against `/metrika/counters/{counter_id}/goals`.
+- To change only the value of an already configured priority goal in a manual
+  search campaign, use `POST /yandex/campaigns/{campaign_id}/priority-goals`.
+  It supports only `Search.HIGHEST_POSITION` + `Network.SERVING_OFF`, requires
+  the selected `GoalId` to exist, and never switches strategy or creates a goal.
+  Values are positive exact RUB amounts converted to micros. Use dry-run first;
+  apply needs `live_write` + `approved` + `idempotency_key` + `dry_run=false`
+  and verifies values, strategy, CounterIds, and DailyBudget via readback.
+  Missing/malformed goals, budget state, automatic strategy, per-item provider
+  errors, or readback mismatch fail closed with no automatic retry.
 
 ### Keyword bids update (SearchBid / ContextBid)
 
