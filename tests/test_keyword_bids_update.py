@@ -750,9 +750,10 @@ def _build_keywordbids_set_handler(
     """Build a keywordbids.set handler returning the given envelope.
 
     ``set_results`` — per-item ``SetResults`` array for the v5 response.
-    When ``None``, an empty ``SetResults: []`` is sent (current default).
-    When provided, each item should be ``{\"Id\": int, ...}`` with optional
-    ``Errors`` / ``Warnings`` arrays.
+    When ``None``, successful ``KeywordId`` results are generated from the
+    request items. When provided, each item may use the documented
+    ``KeywordId`` or a legacy-compatible ``Id`` with optional ``Errors`` /
+    ``Warnings`` arrays.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -766,7 +767,12 @@ def _build_keywordbids_set_handler(
             assert "CampaignId" not in item
             assert "AdGroupId" not in item
 
-        result = {"SetResults": set_results if set_results is not None else []}
+        response_set_results = (
+            set_results
+            if set_results is not None
+            else [{"KeywordId": item["KeywordId"]} for item in items]
+        )
+        result = {"SetResults": response_set_results}
         error_block = None
         if not ok:
             error_block = {
@@ -1083,14 +1089,14 @@ class TestSetResults:
         finally:
             _reset_overrides()
 
-    def test_successful_set_results_keep_pass(self):
-        """Clean SetResults (no Errors, no Warnings) → applied=True."""
+    def test_successful_documented_set_results_report_requested_keyword_ids(self):
+        """Clean KeywordId results are attributed without zero-value coercion."""
         settings = _settings("live_write")
         set_handler = _build_keywordbids_set_handler(
             ok=True,
             set_results=[
-                {"Id": 1},
-                {"Id": 2},
+                {"KeywordId": 1},
+                {"KeywordId": 2},
             ],
         )
         multi = _build_multi_handler(set_handler)
@@ -1122,6 +1128,8 @@ class TestSetResults:
             sr = data.get("set_results")
             assert sr is not None
             assert len(sr) == 2
+            assert [item["keyword_id"] for item in sr] == [1, 2]
+            assert all(item["keyword_id"] > 0 for item in sr)
             for item in sr:
                 assert item["has_errors"] is False
                 assert item["has_warnings"] is False
@@ -1130,8 +1138,8 @@ class TestSetResults:
         finally:
             _reset_overrides()
 
-    def test_no_set_results_envelope_still_applied_true(self):
-        """Missing SetResults envelope (ok=True, no result.SetResults) → applied=True."""
+    def test_missing_set_results_envelope_fails_closed_without_readback(self):
+        """A successful HTTP envelope without per-item results cannot prove apply."""
         settings = _settings("live_write")
 
         def custom_multi(request: httpx.Request) -> httpx.Response:
@@ -1167,10 +1175,71 @@ class TestSetResults:
             )
             assert response.status_code == 200
             data = response.json()
-            assert data["applied"] is True
-            assert data["partial_failure"] is False
-            # set_results should be None when no SetResults in envelope
+            assert data["applied"] is False
+            assert data["partial_failure"] is True
+            assert data.get("readback") is None
             assert data.get("set_results") is None
+            assert "malformed SetResults" in data["yandex_error"]
+            _assert_no_token_in_response(data)
+        finally:
+            _reset_overrides()
+
+    @pytest.mark.parametrize(
+        ("case", "set_results"),
+        [
+            ("missing-id", [{}]),
+            ("unknown-id", [{"ProviderId": 1}]),
+            ("zero-id", [{"KeywordId": 0}]),
+            ("negative-id", [{"KeywordId": -1}]),
+            ("string-id", [{"KeywordId": "1"}]),
+            ("duplicate-id", [{"KeywordId": 1}, {"KeywordId": 1}]),
+            ("unexpected-id", [{"KeywordId": 999}]),
+        ],
+    )
+    def test_malformed_set_result_ids_fail_closed_without_readback_or_retry(
+        self, case: str, set_results: list[dict]
+    ):
+        settings = _settings("live_write")
+        calls = {"set": 0, "get": 0}
+        set_handler = _build_keywordbids_set_handler(
+            ok=True,
+            set_results=set_results,
+        )
+
+        def counted_set(request: httpx.Request) -> httpx.Response:
+            calls["set"] += 1
+            return set_handler(request)
+
+        def counted_get(request: httpx.Request) -> httpx.Response:
+            calls["get"] += 1
+            return _build_keywords_get_handler()(request)
+
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = (
+            lambda: _client_with_handler(
+                settings,
+                _build_multi_handler(counted_set, get_handler=counted_get),
+            )
+        )
+        try:
+            response = client.post(
+                f"/yandex/campaigns/{MOCK_CAMPAIGN_ID}/bids",
+                json={
+                    "approved": True,
+                    "idempotency_key": f"sr-malformed-{case}-001",
+                    "dry_run": False,
+                    "items": [{"keyword_id": 1, "search_bid_rub": 100}],
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            assert data["applied"] is False
+            assert data["partial_failure"] is True
+            assert data.get("readback") is None
+            assert calls == {"set": 1, "get": 0}
+            assert all(
+                item["keyword_id"] > 0 for item in (data.get("set_results") or [])
+            )
             _assert_no_token_in_response(data)
         finally:
             _reset_overrides()

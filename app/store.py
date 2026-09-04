@@ -401,6 +401,28 @@ def _format_set_result_error(errors: list[Any]) -> str:
     return "SetResults.Errors: " + "; ".join(parts)
 
 
+def _set_result_keyword_id(item: dict[str, Any]) -> int | None:
+    """Return a strictly valid keyword id from a KeywordBids.set item result.
+
+    KeywordBids.set returns ``KeywordId`` for the item it processed.  Keep
+    ``Id`` as a compatibility alias only when it is a positive integer and,
+    when both fields are present, they agree.  Do not coerce missing,
+    string, boolean, zero, negative, or conflicting values into a synthetic
+    identifier.
+    """
+    identifiers: list[int] = []
+    for field_name in ("KeywordId", "Id"):
+        if field_name not in item:
+            continue
+        value = item[field_name]
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        identifiers.append(value)
+    if not identifiers or len(set(identifiers)) != 1:
+        return None
+    return identifiers[0]
+
+
 def _extract_set_results(
     result_payload: Any,
 ) -> tuple[list["KeywordBidSetItemResult"] | None, str | None]:
@@ -430,11 +452,10 @@ def _extract_set_results(
 
     for item in set_results_raw:
         if not isinstance(item, dict):
-            continue
-        keyword_id = item.get("Id")
+            return None, "SetResults contains a non-object item"
+        keyword_id = _set_result_keyword_id(item)
         if keyword_id is None:
-            # Missing Id — treat as an error item with keyword_id=0
-            keyword_id = 0
+            return None, "SetResults contains an invalid keyword identifier"
 
         item_errors_raw = item.get("Errors")
         item_warnings_raw = item.get("Warnings")
@@ -6989,8 +7010,19 @@ class MockStore:
         # --- Per-item SetResults inspection ---------------------------------
         v5_result = response.get("result") if isinstance(response, dict) else None
         set_results, set_error_summary = _extract_set_results(v5_result)
+        expected_writer_ids = {item["KeywordId"] for item in v5_items}
+        result_ids = [item.keyword_id for item in set_results or []]
+        malformed_set_results = (
+            set_results is None
+            or len(result_ids) != len(expected_writer_ids)
+            or set(result_ids) != expected_writer_ids
+            or len(set(result_ids)) != len(result_ids)
+        )
 
         partial_failure = False
+        if malformed_set_results:
+            partial_failure = True
+            yandex_error = "malformed SetResults"
         if set_error_summary:
             # At least one item has Errors — the apply is not fully successful.
             partial_failure = True
@@ -7017,7 +7049,7 @@ class MockStore:
         # --- Readback -------------------------------------------------------
         changed_keyword_ids = [item.keyword_id for item in payload.items]
         readback: list[dict] | None = None
-        # Only attempt readback when top-level ok AND no item-level errors
+        # Only attempt readback after a fully validated provider result.
         if top_level_ok and not partial_failure and client is not None:
             try:
                 # Use keywords_get to read back current bids

@@ -501,7 +501,7 @@ def test_successful_apply_writes_only_ready_target_bids_and_verifies_readback() 
             }
             return httpx.Response(
                 200,
-                json={"result": {"SetResults": [{"Id": 10}]}},
+                json={"result": {"SetResults": [{"KeywordId": 10}]}},
                 request=request,
             )
         raise AssertionError(f"Unexpected request {request.url}")
@@ -562,7 +562,7 @@ def test_malformed_per_item_set_result_under_http_200_is_not_reported_as_success
             calls.append("keywordbids.set")
             return httpx.Response(
                 200,
-                json={"result": {"SetResults": [{"Id": 10}, {"Id": 10}]}},
+                json={"result": {"SetResults": [{"KeywordId": 10}, {"KeywordId": 10}]}},
                 request=request,
             )
         raise AssertionError(f"Unexpected request {request.url}")
