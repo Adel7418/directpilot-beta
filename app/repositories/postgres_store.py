@@ -3,13 +3,16 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from itertools import count
 from types import MappingProxyType
 from typing import Any, Callable, Literal
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import CampaignDraftRecord, SemanticChangePackageRecord
+from app.db.rls import LEGACY_OPERATOR_WORKSPACE_ID, tenant_transaction
 from app.models import (
     AuditEvent,
     Campaign,
@@ -33,6 +36,17 @@ class _AuditDelegatingMockStore(MockStore):
     def __init__(self, audit: PostgresAuditRepository) -> None:
         super().__init__()
         self._audit = audit
+
+    def hydrate_drafts(self, drafts: dict[str, CampaignDraft]) -> None:
+        """Restore tenant-local draft state without reusing durable identifiers."""
+
+        self.drafts = drafts
+        persisted_numbers = (
+            int(draft_id.removeprefix("draft_"))
+            for draft_id in drafts
+            if draft_id.startswith("draft_") and draft_id.removeprefix("draft_").isdigit()
+        )
+        self._draft_counter = count(max(persisted_numbers, default=0) + 1)
 
     def append_audit(
         self,
@@ -60,11 +74,22 @@ class PostgresLegacyStoreRepository:
     for every persistent P2 operation.
     """
 
-    def __init__(self, sessions: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        sessions: sessionmaker[Session],
+        *,
+        workspace_id: UUID = LEGACY_OPERATOR_WORKSPACE_ID,
+    ) -> None:
         self._sessions = sessions
-        self._audit = PostgresAuditRepository(sessions)
-        self._idempotency = PostgresIdempotencyRepository(sessions)
+        self._workspace_id = workspace_id
+        self._audit = PostgresAuditRepository(sessions, workspace_id=workspace_id)
+        self._idempotency = PostgresIdempotencyRepository(sessions, workspace_id=workspace_id)
         self._legacy = _AuditDelegatingMockStore(self._audit)
+
+    def for_workspace(self, workspace_id: UUID) -> PostgresLegacyStoreRepository:
+        """Create a request-scoped adapter only after server-side authorization."""
+
+        return PostgresLegacyStoreRepository(self._sessions, workspace_id=workspace_id)
 
     @property
     def campaigns(self) -> Mapping[str, Campaign]:
@@ -152,20 +177,39 @@ class PostgresLegacyStoreRepository:
 
     def save_semantic_package(self, package: SemanticChangePackage) -> None:
         payload = package.model_dump(mode="json")
-        with self._sessions() as session:
-            with session.begin():
-                record = session.get(SemanticChangePackageRecord, package.package_id)
-                if record is None:
-                    session.add(
-                        SemanticChangePackageRecord(package_id=package.package_id, payload=payload)
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+        ) as session:
+            record = session.scalar(
+                select(SemanticChangePackageRecord).where(
+                    SemanticChangePackageRecord.package_id == package.package_id,
+                    SemanticChangePackageRecord.workspace_id == self._workspace_id,
+                )
+            )
+            if record is None:
+                session.add(
+                    SemanticChangePackageRecord(
+                        package_id=package.package_id,
+                        workspace_id=self._workspace_id,
+                        payload=payload,
                     )
-                else:
-                    record.payload = payload
-                    record.updated_at = datetime.now(timezone.utc)
+                )
+            else:
+                record.payload = payload
+                record.updated_at = datetime.now(timezone.utc)
 
     def get_semantic_package(self, package_id: str) -> SemanticChangePackage:
-        with self._sessions() as session:
-            record = session.get(SemanticChangePackageRecord, package_id)
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+        ) as session:
+            record = session.scalar(
+                select(SemanticChangePackageRecord).where(
+                    SemanticChangePackageRecord.package_id == package_id,
+                    SemanticChangePackageRecord.workspace_id == self._workspace_id,
+                )
+            )
         if record is None:
             raise KeyError("semantic_change_package_not_found")
         return SemanticChangePackage.model_validate(record.payload)
@@ -191,26 +235,56 @@ class PostgresLegacyStoreRepository:
         return draft
 
     def _hydrate_drafts(self) -> None:
-        with self._sessions() as session:
-            records = session.scalars(select(CampaignDraftRecord)).all()
-        self._legacy.drafts = {
-            record.id: CampaignDraft.model_validate(record.payload) for record in records
-        }
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+        ) as session:
+            records = session.scalars(
+                select(CampaignDraftRecord).where(
+                    CampaignDraftRecord.workspace_id == self._workspace_id
+                )
+            ).all()
+        self._legacy.hydrate_drafts(
+            {
+                record.id: CampaignDraft.model_validate(record.payload)
+                for record in records
+            }
+        )
 
     def _save_draft(self, draft: CampaignDraft) -> None:
         payload = draft.model_dump(mode="json")
-        with self._sessions() as session:
-            with session.begin():
-                record = session.get(CampaignDraftRecord, draft.id)
-                if record is None:
-                    session.add(CampaignDraftRecord(id=draft.id, payload=payload))
-                else:
-                    record.payload = payload
-                    record.updated_at = datetime.now(timezone.utc)
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+        ) as session:
+            record = session.scalar(
+                select(CampaignDraftRecord).where(
+                    CampaignDraftRecord.id == draft.id,
+                    CampaignDraftRecord.workspace_id == self._workspace_id,
+                )
+            )
+            if record is None:
+                session.add(
+                    CampaignDraftRecord(
+                        id=draft.id,
+                        workspace_id=self._workspace_id,
+                        payload=payload,
+                    )
+                )
+            else:
+                record.payload = payload
+                record.updated_at = datetime.now(timezone.utc)
 
     def _hydrate_packages(self) -> None:
-        with self._sessions() as session:
-            records = session.scalars(select(SemanticChangePackageRecord)).all()
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+        ) as session:
+            records = session.scalars(
+                select(SemanticChangePackageRecord).where(
+                    SemanticChangePackageRecord.workspace_id == self._workspace_id
+                )
+            ).all()
         self._legacy.semantic_packages_by_id = {
             record.package_id: SemanticChangePackage.model_validate(record.payload)
             for record in records

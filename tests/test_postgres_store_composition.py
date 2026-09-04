@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
@@ -9,7 +10,8 @@ import app.repositories.postgres_store as postgres_store
 
 
 class RecordingAuditRepository:
-    def __init__(self, _sessions: object) -> None:
+    def __init__(self, _sessions: object, *, workspace_id: UUID) -> None:
+        self.workspace_id = workspace_id
         self.calls: list[tuple[str, str, dict[str, Any]]] = []
 
     def append_audit(self, action: str, entity: str, **kwargs: Any) -> str:
@@ -24,6 +26,8 @@ def test_postgres_store_legacy_audit_uses_explicit_delegate(
     sessions = cast(sessionmaker[Session], None)
     repository = postgres_store.PostgresLegacyStoreRepository(sessions)
     audit = cast(RecordingAuditRepository, repository._audit)
+
+    assert audit.workspace_id == repository._workspace_id
 
     legacy_append_audit = repository._legacy.append_audit
 

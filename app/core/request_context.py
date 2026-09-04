@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -12,7 +12,9 @@ from starlette.responses import Response
 from app.bootstrap.dependencies import get_repository
 from app.core.errors import is_api_v1_path, safe_error_response
 from app.core.logging import log_request_completed, log_request_failed
+from app.modules.tenancy.models import MembershipRole
 from app.repositories.context import bind_request_repository, reset_request_repository
+from app.repositories.protocols import LegacyStoreRepository
 
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
@@ -20,9 +22,13 @@ _REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class RequestContext:
     request_id: str
+    user_id: UUID | None = None
+    session_id: UUID | None = None
+    workspace_id: UUID | None = None
+    membership_role: MembershipRole | None = None
 
 
 def create_request_context(request_id: str | None) -> RequestContext:
@@ -37,6 +43,32 @@ def get_request_context() -> RequestContext:
     if context is None:
         raise RuntimeError("RequestContext is only available while handling a request")
     return context
+
+
+def bind_authenticated_request_context(
+    *,
+    user_id: UUID,
+    session_id: UUID,
+    workspace_id: UUID,
+    membership_role: MembershipRole,
+) -> RequestContext:
+    """Attach freshly re-authorized tenant authority to this request only."""
+
+    context = get_request_context()
+    context.user_id = user_id
+    context.session_id = session_id
+    context.workspace_id = workspace_id
+    context.membership_role = membership_role
+    return context
+
+
+def bind_authorized_request_repository(
+    repository: LegacyStoreRepository,
+) -> Token[LegacyStoreRepository | None]:
+    """Bind a repository only after server-side workspace authorization."""
+
+    get_request_context()
+    return bind_request_repository(repository)
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
