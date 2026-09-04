@@ -8,6 +8,9 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2.2",
     "httpx[socks]>=0.27",
+    "sqlalchemy>=2.0,<2.1",
+    "psycopg[binary]>=3.2,<3.3",
+    "alembic>=1.14,<1.18",
 ]
 
 [dependency-groups]
@@ -25,6 +28,7 @@ pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
+    "integration: uses an isolated real PostgreSQL Docker Compose service",
     "live_smoke: opt-in tests that call external sandbox/live APIs and are skipped unless explicitly enabled",
 ]
 
@@ -40,6 +44,8 @@ include = [
     "app/api/wordstat_router.py",
     "app/bootstrap/application.py",
     "app/bootstrap/dependencies.py",
+    "app/db/**/*.py",
+    "app/modules/**/*.py",
     "app/main.py",
     "app/core/**/*.py",
     "app/providers/**/*.py",
@@ -61,6 +67,8 @@ files = [
     "app/api/wordstat_router.py",
     "app/bootstrap/application.py",
     "app/bootstrap/dependencies.py",
+    "app/db",
+    "app/modules",
     "app/main.py",
     "app/core",
     "app/providers",
