@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import CampaignDraftRecord, SemanticChangePackageRecord
 from app.models import (
+    AuditEvent,
     Campaign,
     CampaignDraft,
     CampaignDraftRequest,
@@ -26,6 +27,31 @@ from app.modules.audit.repository import PostgresAuditRepository
 from app.store import MockStore
 
 
+class _AuditDelegatingMockStore(MockStore):
+    """Compatibility engine with an explicit PostgreSQL audit delegate."""
+
+    def __init__(self, audit: PostgresAuditRepository) -> None:
+        super().__init__()
+        self._audit = audit
+
+    def append_audit(
+        self,
+        action: str,
+        entity: str,
+        *,
+        actor: str = "agent",
+        dry_run: bool = True,
+        details: dict[Any, Any] | None = None,
+    ) -> AuditEvent:
+        return self._audit.append_audit(
+            action,
+            entity,
+            actor=actor,
+            dry_run=dry_run,
+            details=details,
+        )
+
+
 class PostgresLegacyStoreRepository:
     """P2 persistence adapter: PostgreSQL owns drafts, packages, and audit records.
 
@@ -38,8 +64,7 @@ class PostgresLegacyStoreRepository:
         self._sessions = sessions
         self._audit = PostgresAuditRepository(sessions)
         self._idempotency = PostgresIdempotencyRepository(sessions)
-        self._legacy = MockStore()
-        self._legacy.append_audit = self.append_audit
+        self._legacy = _AuditDelegatingMockStore(self._audit)
 
     @property
     def campaigns(self) -> Mapping[str, Campaign]:
