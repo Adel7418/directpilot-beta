@@ -68,6 +68,9 @@ from app.models import (
     # Keyword bids
     KeywordBidItem,
     KeywordBidSetItemResult,
+    KeywordBidTrafficLevelItem,
+    KeywordBidTrafficLevelRequest,
+    KeywordBidTrafficLevelResult,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
     AuctionForecastAuctionBid,
@@ -634,6 +637,10 @@ class MockStore:
         # Stored value includes result + canonical request fingerprint for
         # payload-equality guard before replay.
         self._keyword_bids_results_by_key: dict[str, dict[str, Any]] = {}
+        # Discrete auction traffic-level bid previews/applies have a separate
+        # idempotency namespace because their material request includes both
+        # keyword ids and the selected official traffic level.
+        self._keyword_bid_traffic_level_results_by_key: dict[str, dict[str, Any]] = {}
         # Bid modifiers update cache mirrors keyword bids idempotency semantics.
         self._bid_modifiers_results_by_key: dict[str, dict[str, Any]] = {}
         # In-memory Yandex campaign status mirror (mock only).
@@ -6231,6 +6238,507 @@ class MockStore:
                         status="UNAVAILABLE",
                         reason="NO_AUCTION_DATA",
                     )
+        return result
+
+    # ---------------------------------- exact auction traffic-level keyword bids
+    #
+    # This flow deliberately selects only a documented discrete
+    # ``AuctionBidItems`` entry with ``TrafficVolume == target``.  It never
+    # estimates a UI traffic forecast, interpolates a bid, or falls back to a
+    # lower auction level.
+
+    def yandex_keyword_bids_by_traffic_level(
+        self,
+        campaign_id: str,
+        payload: "KeywordBidTrafficLevelRequest",
+        *,
+        settings: Settings,
+        client: YandexDirectClient | None,
+    ) -> "KeywordBidTrafficLevelResult":
+        """Preview or apply exact discrete Search bids from ``AuctionBids``."""
+
+        if not campaign_id.isascii() or not campaign_id.isdecimal() or int(campaign_id) <= 0:
+            raise ValueError("campaign_id must be a positive integer")
+        if not payload.approved:
+            raise ValueError("Action requires explicit approval")
+        if client is None:
+            raise YandexDirectError(
+                "Yandex Direct client is required to read discrete auction bid levels"
+            )
+        if not payload.dry_run and settings.directpilot_mode != "live_write":
+            raise ValueError("Live writes require DIRECTPILOT_MODE=live_write")
+
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {
+                    "target_traffic_volume": payload.target_traffic_volume,
+                    "keyword_ids": sorted(payload.keyword_ids),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        cache_key = f"keyword_bid_traffic_level:{campaign_id}:{payload.idempotency_key}"
+        cached_record = self._keyword_bid_traffic_level_results_by_key.get(cache_key)
+        if cached_record is not None:
+            cached = cached_record["result"]
+            if cached.dry_run != payload.dry_run:
+                raise ValueError(
+                    f"Idempotency key {payload.idempotency_key!r} was previously used "
+                    f"with dry_run={cached.dry_run}; replay is not allowed"
+                )
+            if cached_record.get("request_fingerprint") != fingerprint:
+                raise ValueError(
+                    f"Idempotency key {payload.idempotency_key!r} was previously used "
+                    "with a different traffic-level keyword selection"
+                )
+            return cached
+
+        expected_campaign_id = int(campaign_id)
+        strategy_response = client.campaigns_get_strategy(campaign_id)
+        if not strategy_response.get("ok"):
+            raise YandexDirectError("campaign strategy read failed before traffic-level bid selection")
+        strategy_result = strategy_response.get("result")
+        campaigns = strategy_result.get("Campaigns") if isinstance(strategy_result, dict) else None
+        campaign = campaigns[0] if isinstance(campaigns, list) and campaigns else None
+        if not isinstance(campaign, dict):
+            raise YandexDirectError("campaign strategy result is unavailable before traffic-level bid selection")
+        strategy = campaign.get("TextCampaign", {}).get("BiddingStrategy", {})
+        search = strategy.get("Search") if isinstance(strategy, dict) else None
+        search_strategy_type = (
+            search.get("BiddingStrategyType") or search.get("Type")
+            if isinstance(search, dict)
+            else None
+        )
+        # ``HIGHEST_POSITION`` is the only locally documented manual search
+        # strategy.  Unknown or automatic strategy types are fail-closed.
+        manual_strategy_supported = search_strategy_type == "HIGHEST_POSITION"
+
+        keywords_response = client.keywords_get(campaign_id, keyword_ids=payload.keyword_ids)
+        if not keywords_response.get("ok"):
+            raise YandexDirectError("keywords.get failed before traffic-level bid selection")
+        keyword_result = keywords_response.get("result")
+        raw_keywords = keyword_result.get("Keywords") if isinstance(keyword_result, dict) else None
+        if not isinstance(raw_keywords, list):
+            raise YandexDirectError("keywords.get did not enumerate selected keywords")
+
+        items_by_keyword_id: dict[int, KeywordBidTrafficLevelItem] = {
+            keyword_id: KeywordBidTrafficLevelItem(
+                keyword_id=keyword_id,
+                target_traffic_volume=payload.target_traffic_volume,
+                status="UNAVAILABLE",
+                reason="KEYWORD_NOT_FOUND",
+            )
+            for keyword_id in payload.keyword_ids
+        }
+        raw_keyword_by_id: dict[int, dict[str, Any]] = {}
+        duplicate_keyword_ids: set[int] = set()
+        selected_keyword_ids = set(payload.keyword_ids)
+        for raw_keyword in raw_keywords:
+            if not isinstance(raw_keyword, dict):
+                continue
+            keyword_id = self._auction_forecast_strict_int(raw_keyword.get("Id"))
+            if keyword_id not in selected_keyword_ids:
+                continue
+            if keyword_id in raw_keyword_by_id:
+                duplicate_keyword_ids.add(keyword_id)
+                continue
+            raw_keyword_by_id[keyword_id] = raw_keyword
+
+        eligible_keyword_ids: list[int] = []
+        for keyword_id in payload.keyword_ids:
+            item = items_by_keyword_id[keyword_id]
+            if keyword_id in duplicate_keyword_ids:
+                item.status = "FAILED"
+                item.reason = "MALFORMED_KEYWORD_RESULT"
+                continue
+            raw_keyword = raw_keyword_by_id.get(keyword_id)
+            if raw_keyword is None:
+                continue
+            source_campaign_id = self._auction_forecast_strict_int(raw_keyword.get("CampaignId"))
+            item.ad_group_id = self._auction_forecast_strict_int(raw_keyword.get("AdGroupId"))
+            phrase = raw_keyword.get("Keyword")
+            item.phrase = phrase if isinstance(phrase, str) and phrase != "---autotargeting" else None
+            current_bid = self._auction_forecast_strict_int(raw_keyword.get("Bid"))
+            item.current_search_bid_rub = (
+                current_bid / 1_000_000 if current_bid is not None else None
+            )
+            if source_campaign_id != expected_campaign_id:
+                item.status = "FAILED"
+                item.reason = "KEYWORD_NOT_IN_CAMPAIGN"
+            elif phrase == "---autotargeting":
+                item.status = "NOT_APPLICABLE"
+                item.reason = "AUTOTARGETING"
+            elif not isinstance(phrase, str):
+                item.status = "FAILED"
+                item.reason = "MALFORMED_KEYWORD_RESULT"
+            elif not manual_strategy_supported:
+                item.status = "NOT_APPLICABLE"
+                item.reason = "INCOMPATIBLE_CAMPAIGN_STRATEGY"
+            elif (
+                raw_keyword.get("State") != "ON"
+                or raw_keyword.get("Status") != "ACCEPTED"
+                or raw_keyword.get("ServingStatus") != "ELIGIBLE"
+            ):
+                item.status = "NOT_APPLICABLE"
+                item.reason = "KEYWORD_NOT_ELIGIBLE"
+            else:
+                eligible_keyword_ids.append(keyword_id)
+
+        auction_units: list[int] = []
+        target_bid_micros_by_keyword_id: dict[int, int] = {}
+        for start in range(0, len(eligible_keyword_ids), _AUCTION_FORECAST_BATCH_SIZE):
+            batch = eligible_keyword_ids[start : start + _AUCTION_FORECAST_BATCH_SIZE]
+            batch_ids = set(batch)
+            try:
+                auction_response = client.keywordbids_get(
+                    campaign_id,
+                    keyword_ids=batch,
+                    limit=_AUCTION_FORECAST_BATCH_SIZE,
+                    offset=0,
+                    include_auction_bids=True,
+                    include_coverage=False,
+                )
+            except YandexDirectError:
+                for keyword_id in batch:
+                    items_by_keyword_id[keyword_id].status = "FAILED"
+                    items_by_keyword_id[keyword_id].reason = "UPSTREAM_AUCTION_READ_FAILED"
+                continue
+            if not auction_response.get("ok"):
+                for keyword_id in batch:
+                    items_by_keyword_id[keyword_id].status = "FAILED"
+                    items_by_keyword_id[keyword_id].reason = "UPSTREAM_AUCTION_READ_FAILED"
+                continue
+            raw_units = auction_response.get("units")
+            units = _try_int(raw_units) if raw_units is not None else None
+            if units is not None:
+                auction_units.append(units)
+            auction_result = auction_response.get("result")
+            raw_rows = auction_result.get("KeywordBids") if isinstance(auction_result, dict) else None
+            if not isinstance(raw_rows, list):
+                for keyword_id in batch:
+                    items_by_keyword_id[keyword_id].status = "FAILED"
+                    items_by_keyword_id[keyword_id].reason = "MALFORMED_AUCTION_RESULT"
+                continue
+
+            rows_by_keyword_id: dict[int, dict[str, Any]] = {}
+            duplicate_row_ids: set[int] = set()
+            for raw_row in raw_rows:
+                if not isinstance(raw_row, dict):
+                    continue
+                keyword_id = self._auction_forecast_strict_int(raw_row.get("KeywordId"))
+                if keyword_id not in batch_ids:
+                    continue
+                if keyword_id in rows_by_keyword_id:
+                    duplicate_row_ids.add(keyword_id)
+                    continue
+                rows_by_keyword_id[keyword_id] = raw_row
+
+            for keyword_id in batch:
+                item = items_by_keyword_id[keyword_id]
+                raw_row = rows_by_keyword_id.get(keyword_id)
+                if keyword_id in duplicate_row_ids or raw_row is None:
+                    item.status = "FAILED"
+                    item.reason = "MALFORMED_AUCTION_RESULT"
+                    continue
+                if self._auction_forecast_strict_int(raw_row.get("CampaignId")) != expected_campaign_id:
+                    item.status = "FAILED"
+                    item.reason = "MALFORMED_AUCTION_RESULT"
+                    continue
+                raw_search = raw_row.get("Search")
+                if not isinstance(raw_search, dict):
+                    item.status = "FAILED"
+                    item.reason = "MALFORMED_AUCTION_RESULT"
+                    continue
+                current_bid = self._auction_forecast_strict_int(raw_search.get("Bid"))
+                raw_auction = raw_search.get("AuctionBids")
+                if current_bid is None or current_bid < 0:
+                    item.status = "FAILED"
+                    item.reason = "MALFORMED_AUCTION_RESULT"
+                    continue
+                # ``AuctionBids: null`` is a documented unavailable shape, not
+                # a license to infer a lower level or reuse the current bid.
+                if raw_auction is None:
+                    item.status = "UNAVAILABLE"
+                    item.reason = "TARGET_LEVEL_NOT_AVAILABLE"
+                    continue
+                raw_auction_items = (
+                    raw_auction.get("AuctionBidItems") if isinstance(raw_auction, dict) else None
+                )
+                if not isinstance(raw_auction_items, list):
+                    item.status = "FAILED"
+                    item.reason = "MALFORMED_AUCTION_RESULT"
+                    continue
+
+                selected_bid_micros: int | None = None
+                selected_price_micros: int | None = None
+                seen_traffic_levels: set[int] = set()
+                malformed = False
+                for raw_auction_item in raw_auction_items:
+                    if not isinstance(raw_auction_item, dict):
+                        malformed = True
+                        break
+                    traffic_volume = self._auction_forecast_strict_int(
+                        raw_auction_item.get("TrafficVolume")
+                    )
+                    bid_micros = self._auction_forecast_strict_int(raw_auction_item.get("Bid"))
+                    price_micros = self._auction_forecast_strict_int(raw_auction_item.get("Price"))
+                    if (
+                        traffic_volume is None
+                        or bid_micros is None
+                        or price_micros is None
+                        or traffic_volume < 0
+                        or bid_micros < 0
+                        or price_micros < 0
+                        or traffic_volume in seen_traffic_levels
+                    ):
+                        malformed = True
+                        break
+                    seen_traffic_levels.add(traffic_volume)
+                    if traffic_volume == payload.target_traffic_volume:
+                        selected_bid_micros = bid_micros
+                        selected_price_micros = price_micros
+                if malformed:
+                    item.status = "FAILED"
+                    item.reason = "MALFORMED_AUCTION_RESULT"
+                    continue
+                item.current_search_bid_rub = current_bid / 1_000_000
+                if selected_bid_micros is None or selected_price_micros is None:
+                    item.status = "UNAVAILABLE"
+                    item.reason = "TARGET_LEVEL_NOT_AVAILABLE"
+                    continue
+                item.target_bid_rub = selected_bid_micros / 1_000_000
+                item.target_price_rub = selected_price_micros / 1_000_000
+                item.status = "READY"
+                item.reason = None
+                target_bid_micros_by_keyword_id[keyword_id] = selected_bid_micros
+
+        writer_items = [
+            {"KeywordId": keyword_id, "SearchBid": target_bid_micros_by_keyword_id[keyword_id]}
+            for keyword_id in payload.keyword_ids
+            if items_by_keyword_id[keyword_id].status == "READY"
+        ]
+        payload_preview = {"method": "set", "params": {"KeywordBids": writer_items}}
+
+        def build_result(
+            *,
+            applied: bool,
+            audit_event: str,
+            readback: list[dict] | None = None,
+            provider_warnings: list[ProviderWarning] | None = None,
+            set_results: list[KeywordBidSetItemResult] | None = None,
+            partial_failure: bool = False,
+            yandex_units: int | None = None,
+            yandex_error: str | None = None,
+        ) -> KeywordBidTrafficLevelResult:
+            audit = self.append_audit(
+                audit_event,
+                campaign_id,
+                dry_run=payload.dry_run,
+                details={
+                    "approved": payload.approved,
+                    "idempotency_key": payload.idempotency_key,
+                    "reason": payload.reason,
+                    "target_traffic_volume": payload.target_traffic_volume,
+                    "keyword_ids": payload.keyword_ids,
+                    "ready_count": len(writer_items),
+                    "source": "yandex",
+                    "mode": settings.directpilot_mode,
+                    "applied": applied,
+                    "partial_failure": partial_failure,
+                },
+            )
+            return KeywordBidTrafficLevelResult(
+                campaign_id=campaign_id,
+                target_traffic_volume=payload.target_traffic_volume,
+                mode=settings.directpilot_mode,
+                dry_run=payload.dry_run,
+                applied=applied,
+                audit_id=audit.id,
+                items=[items_by_keyword_id[keyword_id] for keyword_id in payload.keyword_ids],
+                payload_preview=payload_preview,
+                readback=readback,
+                provider_warnings=provider_warnings or [],
+                set_results=set_results,
+                partial_failure=partial_failure,
+                yandex_units=yandex_units,
+                yandex_error=yandex_error,
+            )
+
+        if payload.dry_run:
+            result = build_result(
+                applied=False,
+                audit_event="yandex_keyword_bid_traffic_level_previewed",
+                yandex_units=sum(auction_units) if auction_units else None,
+            )
+            self._keyword_bid_traffic_level_results_by_key[cache_key] = {
+                "result": result,
+                "request_fingerprint": fingerprint,
+            }
+            return result
+
+        if not writer_items:
+            result = build_result(
+                applied=False,
+                audit_event="yandex_keyword_bid_traffic_level_not_applied",
+                yandex_units=sum(auction_units) if auction_units else None,
+            )
+            self._keyword_bid_traffic_level_results_by_key[cache_key] = {
+                "result": result,
+                "request_fingerprint": fingerprint,
+            }
+            return result
+
+        try:
+            set_response = client.keywordbids_set(writer_items)
+        except YandexDirectError:
+            raise
+        except Exception as exc:
+            raise YandexDirectError(
+                f"keywordbids.set failed: {type(exc).__name__}"
+            ) from exc
+        if not set_response.get("ok"):
+            raise YandexDirectError("keywordbids.set failed")
+
+        provider_warnings = _provider_warnings_from_result(set_response)
+        set_results, set_error_summary = _extract_set_results(set_response.get("result"))
+        expected_writer_ids = {item["KeywordId"] for item in writer_items}
+        result_ids = [item.keyword_id for item in set_results or []]
+        malformed_set_results = (
+            set_results is None
+            or len(result_ids) != len(expected_writer_ids)
+            or set(result_ids) != expected_writer_ids
+            or len(set(result_ids)) != len(result_ids)
+        )
+        if malformed_set_results:
+            for keyword_id in expected_writer_ids:
+                item = items_by_keyword_id[keyword_id]
+                item.status = "FAILED"
+                item.reason = "MALFORMED_SET_RESULT"
+        else:
+            assert set_results is not None
+            for set_result in set_results:
+                if set_result.has_errors:
+                    item = items_by_keyword_id[set_result.keyword_id]
+                    item.status = "FAILED"
+                    item.reason = "PROVIDER_SET_ERROR"
+                elif set_result.has_warnings:
+                    provider_warnings.extend(
+                        warning
+                        for warning in set_result.warnings
+                        if not any(
+                            existing.code == warning.code and existing.message == warning.message
+                            for existing in provider_warnings
+                        )
+                    )
+
+        successful_ids = [
+            item["KeywordId"]
+            for item in writer_items
+            if items_by_keyword_id[item["KeywordId"]].status == "READY"
+        ]
+        readback: list[dict] = []
+        readback_failed = False
+        if successful_ids:
+            try:
+                readback_response = client.keywords_get(campaign_id, keyword_ids=successful_ids)
+            except YandexDirectError:
+                readback_response = {"ok": False}
+            if not readback_response.get("ok"):
+                readback_failed = True
+            else:
+                readback_result = readback_response.get("result")
+                raw_readback_rows = (
+                    readback_result.get("Keywords") if isinstance(readback_result, dict) else None
+                )
+                if not isinstance(raw_readback_rows, list):
+                    readback_failed = True
+                else:
+                    rows_by_keyword_id: dict[int, dict[str, Any]] = {}
+                    duplicate_readback_ids: set[int] = set()
+                    for raw_row in raw_readback_rows:
+                        if not isinstance(raw_row, dict):
+                            continue
+                        keyword_id = self._auction_forecast_strict_int(raw_row.get("Id"))
+                        if keyword_id not in successful_ids:
+                            continue
+                        if keyword_id in rows_by_keyword_id:
+                            duplicate_readback_ids.add(keyword_id)
+                            continue
+                        rows_by_keyword_id[keyword_id] = raw_row
+                    for keyword_id in successful_ids:
+                        raw_row = rows_by_keyword_id.get(keyword_id)
+                        bid_micros = (
+                            self._auction_forecast_strict_int(raw_row.get("Bid"))
+                            if isinstance(raw_row, dict)
+                            else None
+                        )
+                        if (
+                            keyword_id in duplicate_readback_ids
+                            or not isinstance(raw_row, dict)
+                            or self._auction_forecast_strict_int(raw_row.get("CampaignId"))
+                            != expected_campaign_id
+                            or bid_micros != target_bid_micros_by_keyword_id[keyword_id]
+                        ):
+                            items_by_keyword_id[keyword_id].status = "FAILED"
+                            items_by_keyword_id[keyword_id].reason = "READBACK_MISMATCH"
+                            readback_failed = True
+                            continue
+                        items_by_keyword_id[keyword_id].status = "APPLIED"
+                        items_by_keyword_id[keyword_id].reason = None
+                        assert bid_micros is not None
+                        readback.append(
+                            {
+                                "keyword_id": keyword_id,
+                                "search_bid_micros": bid_micros,
+                                "search_bid_rub": bid_micros / 1_000_000,
+                            }
+                        )
+        if readback_failed:
+            for keyword_id in successful_ids:
+                if items_by_keyword_id[keyword_id].status == "READY":
+                    items_by_keyword_id[keyword_id].status = "FAILED"
+                    items_by_keyword_id[keyword_id].reason = "READBACK_UNAVAILABLE"
+
+        partial_failure = (
+            malformed_set_results
+            or set_error_summary is not None
+            or readback_failed
+            or any(
+                items_by_keyword_id[keyword_id].status == "FAILED"
+                for keyword_id in expected_writer_ids
+            )
+        )
+        applied = bool(expected_writer_ids) and not partial_failure and all(
+            items_by_keyword_id[keyword_id].status == "APPLIED"
+            for keyword_id in expected_writer_ids
+        )
+        raw_set_units = set_response.get("units")
+        set_units = _try_int(raw_set_units) if raw_set_units is not None else None
+        if set_units is None:
+            set_units = 0
+        result = build_result(
+            applied=applied,
+            audit_event=(
+                "yandex_keyword_bid_traffic_level_applied"
+                if applied
+                else "yandex_keyword_bid_traffic_level_failed"
+            ),
+            readback=readback or None,
+            provider_warnings=provider_warnings,
+            set_results=set_results,
+            partial_failure=partial_failure,
+            yandex_units=sum(auction_units) + set_units,
+            yandex_error=(
+                None
+                if applied
+                else "One or more keyword bids were not confirmed by the Direct readback"
+            ),
+        )
+        self._keyword_bid_traffic_level_results_by_key[cache_key] = {
+            "result": result,
+            "request_fingerprint": fingerprint,
+        }
         return result
 
     # --------------------------------------------------- keyword bids update

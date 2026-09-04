@@ -31,6 +31,7 @@ DirectPilot — единая прослойка для маркетолога:
 | Посмотреть группы кампании | `GET /yandex/campaigns/{campaign_id}/ad-groups` | структура групп |
 | Посмотреть объявления | `GET /yandex/campaigns/{campaign_id}/ads` | тексты, ссылки, статусы, business/vcard fields если есть |
 | Посмотреть прогноз аукциона по ключам | `GET /yandex/campaigns/{campaign_id}/auction-forecast` | read-only per-keyword `TrafficVolume` levels + normalized `forecast_status`/`forecast_reason` |
+| Подготовить/применить SearchBid по точному аукционному уровню объёма трафика | `POST /yandex/campaigns/{campaign_id}/keyword-bids/by-traffic-level` | сначала `dry_run=true`; только после явного подтверждения — `dry_run=false` + `live_write` + `approved` + `idempotency_key`; использует exact discrete `AuctionBids` level, не UI forecast |
 | Посмотреть демографические ставки кампании | `GET /yandex/campaigns/{campaign_id}/bid-modifiers` | текущие `AgeRange`/`BidModifier` для `Age` сегментов |
 | Обновить демографические корректировки | `POST /yandex/campaigns/{campaign_id}/bid-modifiers` | `dry_run=true` для preview; apply — `live_write` + `approved=true` + `idempotency_key`; сначала обязательно `GET`-readback для `modifier_id` |
 | Создать группу в существующей кампании | `POST /yandex/campaigns/{campaign_id}/ad-groups` | создаёт только группу: name/region_ids/optional negative_keywords; затем отдельные шаги для `ads`, ключей и модерации |
@@ -177,6 +178,56 @@ Operational notes:
 - `page_token` is an offset token and must be a non-negative decimal string;
 - sort/display `auction_bids` by integer `traffic_volume`; use `bid_rub`/`price_rub` for human display and micros for exact comparisons;
 - do not treat missing auction data as zero CPC. Use `forecast_status` and `forecast_reason` (`AUTOTARGETING`, `RARELY_SERVED`, `SEARCH_SERVING_OFF`, `NO_AUCTION_DATA`, `INVALID_AUCTION_DATA`, etc.).
+
+### SearchBid по дискретному аукционному уровню объёма трафика
+
+Для ручной поисковой кампании можно подготовить ставку по одному точному
+официальному уровню, например «аукционный уровень объёма трафика 85»:
+
+```http
+POST /yandex/campaigns/{campaign_id}/keyword-bids/by-traffic-level
+```
+
+Не называйте это «85%» и не выдавайте за текущий UI «Прогноз трафика».
+DirectPilot берёт только документированные дискретные
+`Search.AuctionBids.AuctionBidItems[]`: для каждого `READY` ключа нужно точное
+равенство `TrafficVolume == 85`, а новая Search-ставка — это `Bid` этой точки.
+Нет точного уровня — `TARGET_LEVEL_NOT_AVAILABLE`; нельзя использовать lower
+level, interpolation, текущую ставку или `Price`.
+
+Рабочий процесс:
+
+1. Сначала получите `GET .../auction-forecast` для проверки доступных целых
+   уровней и состояния ключей.
+2. Сделайте preview с явным списком ключей:
+
+   ```json
+   {
+     "target_traffic_volume": 85,
+     "keyword_ids": [123456789],
+     "dry_run": true,
+     "approved": true,
+     "idempotency_key": "traffic-level-preview-001"
+   }
+   ```
+
+3. Покажите пользователю только строки `READY`, их текущую API Search-ставку,
+   `target_bid_rub` и точный writer `payload_preview`. Не применяйте строки
+   `NOT_APPLICABLE`, `UNAVAILABLE` или `FAILED`.
+4. Получите явное подтверждение конкретного preview. `approved=true` — это
+   технический gate, а не право агента самоодобрить изменения.
+5. Только после подтверждения отправьте тот же выбранный набор с
+   `dry_run=false`, `approved=true`, валидным `idempotency_key` и runtime
+   `DIRECTPILOT_MODE=live_write`.
+6. Проверьте `set_results` и обязательный `readback`: статус `APPLIED` означает,
+   что DirectPilot подтвердил фактический `Bid` ключа равным выбранной цели.
+   Partial/malformed provider result или readback mismatch — не успех и не
+   повод для автоматического повторного writer-вызова.
+
+Endpoint fail-closed: `---autotargeting`, inactive/rejected/not-serving keys и
+кампании с автоматической/неподдерживаемой стратегией не получают manual bid.
+Для автостратегии используйте подходящий strategy/budget workflow, а не
+per-keyword `SearchBid`.
 
 ### Корректировки ставок по возрасту/демографии
 

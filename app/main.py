@@ -111,6 +111,8 @@ from app.models import (
     UtmPlanResult,
     # Keyword bids
     KeywordBidItem,
+    KeywordBidTrafficLevelRequest,
+    KeywordBidTrafficLevelResult,
     KeywordBidUpdateRequest,
     KeywordBidUpdateResult,
     AuctionForecastResult,
@@ -3594,6 +3596,79 @@ def yandex_autotargeting_update(
 # ---------------------------------------------------------------------------
 # Keyword bids update — live-safe SearchBid / ContextBid changes
 # ---------------------------------------------------------------------------
+
+
+@app.post(
+    "/yandex/campaigns/{campaign_id}/keyword-bids/by-traffic-level",
+    response_model=KeywordBidTrafficLevelResult,
+    summary="Preview/apply Search bids at an exact auction traffic-volume level",
+    responses={
+        409: {
+            "description": "Safety gate, idempotency conflict, or incompatible apply mode; no upstream write was sent.",
+        },
+        502: {
+            "description": "Yandex Direct strategy, auction-read, writer, or mandatory readback failure with redacted diagnostics.",
+        },
+    },
+)
+def yandex_keyword_bids_by_traffic_level(
+    campaign_id: str,
+    payload: KeywordBidTrafficLevelRequest,
+    settings: Settings = Depends(get_settings),
+    client: YandexDirectClient | None = Depends(get_yandex_client),
+) -> KeywordBidTrafficLevelResult:
+    """Select only the exact documented integer ``AuctionBids`` level.
+
+    This endpoint does not set or claim to calculate the fractional Direct UI
+    traffic forecast.  It maps ``TrafficVolume == target_traffic_volume`` to
+    that item's ``Bid`` and writes only ``KeywordId + SearchBid`` for rows
+    that remain ``READY`` after campaign/keyword/auction safeguards.
+
+    ``dry_run=True`` performs provider-backed reads and returns the complete
+    v5 ``keywordbids.set`` payload preview without a writer call.  A real
+    apply requires the normal DirectPilot gates: ``live_write``,
+    ``approved=True``, an idempotency key, and ``dry_run=False``.
+    """
+    if not payload.approved:
+        raise HTTPException(
+            status_code=409,
+            detail="Action requires explicit approval before traffic-level keyword bids update",
+        )
+    if not payload.dry_run and settings.directpilot_mode != "live_write":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Live writes require DIRECTPILOT_MODE=live_write; "
+                f"current mode is {settings.directpilot_mode!r}; "
+                "dry_run=True is the preview-only path"
+            ),
+        )
+    try:
+        return store.yandex_keyword_bids_by_traffic_level(
+            campaign_id,
+            payload,
+            settings=settings,
+            client=client,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except YandexDirectError as exc:
+        diagnostics = exc.diagnostics or {}
+        detail: dict[str, Any] = {
+            "error_type": "YandexDirectError",
+            "message": str(exc),
+        }
+        if "error_code" in diagnostics:
+            detail["error_code"] = diagnostics["error_code"]
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "YandexDirectError",
+                "message": f"unexpected error during traffic-level keyword bids update: {type(exc).__name__}",
+            },
+        ) from exc
 
 
 @app.post(

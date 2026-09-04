@@ -2516,6 +2516,96 @@ class AuctionForecastResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Exact auction traffic-level keyword bids
+# ---------------------------------------------------------------------------
+
+
+class KeywordBidTrafficLevelRequest(BaseModel):
+    """Request for a discrete documented ``AuctionBids`` traffic level.
+
+    The target is intentionally an integer: DirectPilot never interprets it
+    as a UI traffic forecast, interpolates a level, or selects a lower level.
+    """
+
+    target_traffic_volume: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Exact integer auction traffic-volume level from documented "
+            "``Search.AuctionBids.AuctionBidItems``. This is not a percentage "
+            "and not the fractional Direct UI traffic forecast."
+        ),
+    )
+    keyword_ids: list[int] = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Explicit eligible-keyword selection; all-campaign apply is intentionally unsupported.",
+    )
+    dry_run: bool = True
+    approved: bool
+    idempotency_key: str = Field(..., min_length=6)
+    reason: str | None = None
+
+    @field_validator("target_traffic_volume", mode="before")
+    @classmethod
+    def _validate_exact_integer_traffic_level(cls, value: Any) -> int:
+        if type(value) is not int:
+            raise ValueError("target_traffic_volume must be an integer official auction level")
+        return value
+
+    @field_validator("keyword_ids", mode="before")
+    @classmethod
+    def _validate_exact_integer_keyword_ids(cls, value: Any) -> list[int]:
+        if not isinstance(value, list) or any(type(keyword_id) is not int for keyword_id in value):
+            raise ValueError("keyword_ids must be explicit integer ids")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_keyword_ids(self) -> "KeywordBidTrafficLevelRequest":
+        if any(keyword_id <= 0 for keyword_id in self.keyword_ids):
+            raise ValueError("keyword_ids must contain positive integers")
+        if len(set(self.keyword_ids)) != len(self.keyword_ids):
+            raise ValueError("keyword_ids must not contain duplicates")
+        return self
+
+
+class KeywordBidTrafficLevelItem(BaseModel):
+    """Safe per-keyword outcome for a traffic-level bid request."""
+
+    keyword_id: int
+    ad_group_id: int | None = None
+    phrase: str | None = None
+    current_search_bid_rub: float | None = None
+    target_traffic_volume: int
+    target_bid_rub: float | None = None
+    target_price_rub: float | None = None
+    status: Literal["READY", "NOT_APPLICABLE", "UNAVAILABLE", "FAILED", "APPLIED"]
+    reason: str | None = None
+
+
+class KeywordBidTrafficLevelResult(BaseModel):
+    """Preview/apply result for exact discrete auction traffic levels."""
+
+    campaign_id: str
+    target_traffic_volume: int
+    mode: str
+    dry_run: bool
+    applied: bool
+    source: Literal["yandex"] = "yandex"
+    read_only: bool = False
+    audit_id: str
+    items: list[KeywordBidTrafficLevelItem] = Field(default_factory=list)
+    payload_preview: dict | None = None
+    readback: list[dict] | None = None
+    provider_warnings: list["ProviderWarning"] = Field(default_factory=list)
+    set_results: list["KeywordBidSetItemResult"] | None = None
+    partial_failure: bool = False
+    yandex_units: int | None = None
+    yandex_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Bid modifiers update — semantic preview + Direct v5 set payload
 # ---------------------------------------------------------------------------
 

@@ -512,6 +512,101 @@ Query:
 
 Response is read-only and never fabricates missing rows. Each item includes the keyword identity, current API search bid in micros/RUB, sorted integer `auction_bids` levels (`traffic_volume`, `bid_micros`, `price_micros`) and normalized `forecast_status`: `AVAILABLE`, `NOT_APPLICABLE`, `UNAVAILABLE`, or `ERROR`. Autotargeting rows are `NOT_APPLICABLE`; unavailable/invalid provider data is marked with `forecast_reason` instead of fake zero prices.
 
+### Live Direct: установить SearchBid по точному аукционному уровню объёма трафика
+
+```http
+POST /yandex/campaigns/{campaign_id}/keyword-bids/by-traffic-level
+```
+
+Этот endpoint работает только с **дискретными, документированными** уровнями
+`Search.AuctionBids.AuctionBidItems[]` из `keywordbids.get`. Для каждого
+допущенного ручного ключа он ищет ровно `TrafficVolume == target_traffic_volume`
+и использует только `Bid` найденного элемента как новый `SearchBid`.
+
+Это именно «аукционный уровень объёма трафика 85», а не «85%» и не текущий
+дробный UI-показатель «Прогноз трафика». Endpoint не интерполирует, не
+округляет, не выбирает ближайший/меньший уровень и не пытается вычислять UI
+forecast. `Price` возвращается в preview только для информации и **никогда** не
+подставляется вместо нового `SearchBid`.
+
+`keyword_ids` обязателен: endpoint не делает неограниченный apply по всей
+кампании. Выбираются только ключи со `State=ON`, `Status=ACCEPTED`,
+`ServingStatus=ELIGIBLE` и совместимой вручную поисковой стратегией
+`HIGHEST_POSITION`. Строка `---autotargeting` и неактивные/отклонённые/
+необслуживаемые ключи остаются в per-keyword ответе, но не попадают ни в
+`keywordbids.get` auction batch, ни в writer payload. Ключ без точного уровня
+попадает в безопасный preview как `TARGET_LEVEL_NOT_AVAILABLE`, но не в writer
+payload.
+
+**Preview (первый обязательный шаг):**
+
+```json
+{
+  "target_traffic_volume": 85,
+  "keyword_ids": [123456789],
+  "dry_run": true,
+  "approved": true,
+  "idempotency_key": "traffic-level-preview-001",
+  "reason": "Проверяем аукционный уровень объёма трафика 85"
+}
+```
+
+Пример безопасного preview-ответа:
+
+```json
+{
+  "campaign_id": "123456",
+  "target_traffic_volume": 85,
+  "source": "yandex",
+  "dry_run": true,
+  "applied": false,
+  "payload_preview": {
+    "method": "set",
+    "params": {
+      "KeywordBids": [
+        {"KeywordId": 123456789, "SearchBid": 313600000}
+      ]
+    }
+  },
+  "items": [
+    {
+      "keyword_id": 123456789,
+      "ad_group_id": 987654,
+      "phrase": "ремонт посудомоечной машины",
+      "current_search_bid_rub": 300.0,
+      "target_traffic_volume": 85,
+      "target_bid_rub": 313.6,
+      "target_price_rub": 0.0,
+      "status": "READY",
+      "reason": null
+    }
+  ]
+}
+```
+
+**Preview → confirmation → apply → readback:**
+
+1. Выполните `dry_run=true` и покажите оператору `items` +
+   `payload_preview`; не трактуйте отсутствующий уровень как нулевую цену.
+2. Получите явное подтверждение пользователя именно этого списка `READY` ключей
+   и этих ставок. `approved=true` — технический флаг, не самоодобрение агента.
+3. Только после подтверждения повторите запрос с теми же выбранными ключами,
+   `dry_run=false`, `approved=true`, новым/допустимым `idempotency_key` и
+   `DIRECTPILOT_MODE=live_write`.
+4. Apply вызывает только документированный `keywordbids.set` с минимальными
+   `KeywordId + SearchBid` для строк `READY`. HTTP 200 сам по себе не означает
+   успех: per-item `SetResults` проверяются.
+5. После apply endpoint читает ключи через DirectPilot read layer и возвращает
+   `readback`. Успешный ключ имеет `status="APPLIED"` только если его фактический
+   `Bid` точно равен выбранному `target_bid_rub`; при partial/malformed result
+   или mismatch возвращается безопасный per-item failure без blind retry.
+
+Статусы строк: `READY` (в preview готов к writer), `APPLIED` (writer и
+readback подтверждены), `NOT_APPLICABLE` (например `AUTOTARGETING`,
+`INCOMPATIBLE_CAMPAIGN_STRATEGY`, `KEYWORD_NOT_ELIGIBLE`), `UNAVAILABLE`
+(`TARGET_LEVEL_NOT_AVAILABLE`) и `FAILED` (некорректный/частичный provider
+result или readback mismatch).
+
 ### Live Direct: изменить корректировки ставок по возрасту/демографии
 
 ```http

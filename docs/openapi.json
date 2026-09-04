@@ -1883,6 +1883,289 @@
         "title": "KeywordBidSetItemResult",
         "type": "object"
       },
+      "KeywordBidTrafficLevelItem": {
+        "description": "Safe per-keyword outcome for a traffic-level bid request.",
+        "properties": {
+          "ad_group_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ad Group Id"
+          },
+          "current_search_bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Search Bid Rub"
+          },
+          "keyword_id": {
+            "title": "Keyword Id",
+            "type": "integer"
+          },
+          "phrase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phrase"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "NOT_APPLICABLE",
+              "UNAVAILABLE",
+              "FAILED",
+              "APPLIED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_bid_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Bid Rub"
+          },
+          "target_price_rub": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price Rub"
+          },
+          "target_traffic_volume": {
+            "title": "Target Traffic Volume",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "keyword_id",
+          "target_traffic_volume",
+          "status"
+        ],
+        "title": "KeywordBidTrafficLevelItem",
+        "type": "object"
+      },
+      "KeywordBidTrafficLevelRequest": {
+        "description": "Request for a discrete documented ``AuctionBids`` traffic level.\n\nThe target is intentionally an integer: DirectPilot never interprets it\nas a UI traffic forecast, interpolates a level, or selects a lower level.",
+        "properties": {
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          },
+          "dry_run": {
+            "default": true,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "idempotency_key": {
+            "minLength": 6,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "keyword_ids": {
+            "description": "Explicit eligible-keyword selection; all-campaign apply is intentionally unsupported.",
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Keyword Ids",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "target_traffic_volume": {
+            "description": "Exact integer auction traffic-volume level from documented ``Search.AuctionBids.AuctionBidItems``. This is not a percentage and not the fractional Direct UI traffic forecast.",
+            "minimum": 0.0,
+            "title": "Target Traffic Volume",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "target_traffic_volume",
+          "keyword_ids",
+          "approved",
+          "idempotency_key"
+        ],
+        "title": "KeywordBidTrafficLevelRequest",
+        "type": "object"
+      },
+      "KeywordBidTrafficLevelResult": {
+        "description": "Preview/apply result for exact discrete auction traffic levels.",
+        "properties": {
+          "applied": {
+            "title": "Applied",
+            "type": "boolean"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/KeywordBidTrafficLevelItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "partial_failure": {
+            "default": false,
+            "title": "Partial Failure",
+            "type": "boolean"
+          },
+          "payload_preview": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Payload Preview"
+          },
+          "provider_warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderWarning"
+            },
+            "title": "Provider Warnings",
+            "type": "array"
+          },
+          "read_only": {
+            "default": false,
+            "title": "Read Only",
+            "type": "boolean"
+          },
+          "readback": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Readback"
+          },
+          "set_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/KeywordBidSetItemResult"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Set Results"
+          },
+          "source": {
+            "const": "yandex",
+            "default": "yandex",
+            "title": "Source",
+            "type": "string"
+          },
+          "target_traffic_volume": {
+            "title": "Target Traffic Volume",
+            "type": "integer"
+          },
+          "yandex_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Error"
+          },
+          "yandex_units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Yandex Units"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "target_traffic_volume",
+          "mode",
+          "dry_run",
+          "applied",
+          "audit_id"
+        ],
+        "title": "KeywordBidTrafficLevelResult",
+        "type": "object"
+      },
       "KeywordBidUpdateRequest": {
         "description": "Body of ``POST /yandex/campaigns/{campaign_id}/bids``.\n\nStandard product gate contract:\n``dry_run=True`` (default) is preview-only — no external write.\n``dry_run=False`` requires ``DIRECTPILOT_MODE=live_write``,\n``approved=True`` and a valid ``idempotency_key``.\n\n``items`` is a non-empty list of per-keyword bid changes.",
         "properties": {
@@ -9685,6 +9968,62 @@
           }
         },
         "summary": "Yandex Keyword Bids Update"
+      }
+    },
+    "/yandex/campaigns/{campaign_id}/keyword-bids/by-traffic-level": {
+      "post": {
+        "description": "Select only the exact documented integer ``AuctionBids`` level.\n\nThis endpoint does not set or claim to calculate the fractional Direct UI\ntraffic forecast.  It maps ``TrafficVolume == target_traffic_volume`` to\nthat item's ``Bid`` and writes only ``KeywordId + SearchBid`` for rows\nthat remain ``READY`` after campaign/keyword/auction safeguards.\n\n``dry_run=True`` performs provider-backed reads and returns the complete\nv5 ``keywordbids.set`` payload preview without a writer call.  A real\napply requires the normal DirectPilot gates: ``live_write``,\n``approved=True``, an idempotency key, and ``dry_run=False``.",
+        "operationId": "yandex_keyword_bids_by_traffic_level_yandex_campaigns__campaign_id__keyword_bids_by_traffic_level_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeywordBidTrafficLevelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeywordBidTrafficLevelResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "409": {
+            "description": "Safety gate, idempotency conflict, or incompatible apply mode; no upstream write was sent."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "description": "Yandex Direct strategy, auction-read, writer, or mandatory readback failure with redacted diagnostics."
+          }
+        },
+        "summary": "Preview/apply Search bids at an exact auction traffic-volume level"
       }
     },
     "/yandex/campaigns/{campaign_id}/keywords": {
