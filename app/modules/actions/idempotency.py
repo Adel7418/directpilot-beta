@@ -13,7 +13,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import IdempotencyRecord
-from app.db.rls import LEGACY_OPERATOR_WORKSPACE_ID, tenant_transaction
+from app.db.rls import (
+    LEGACY_OPERATOR_USER_ID,
+    LEGACY_OPERATOR_WORKSPACE_ID,
+    tenant_transaction,
+)
 
 
 class IdempotencyError(RuntimeError):
@@ -98,9 +102,11 @@ class PostgresIdempotencyRepository:
         sessions: sessionmaker[Session],
         *,
         workspace_id: UUID = LEGACY_OPERATOR_WORKSPACE_ID,
+        user_id: UUID = LEGACY_OPERATOR_USER_ID,
     ) -> None:
         self._sessions = sessions
         self._workspace_id = workspace_id
+        self._user_id = user_id
 
     def claim(
         self,
@@ -125,6 +131,7 @@ class PostgresIdempotencyRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             inserted = session.execute(
                 insert(IdempotencyRecord)
@@ -178,6 +185,7 @@ class PostgresIdempotencyRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             record = session.scalar(
                 select(IdempotencyRecord)

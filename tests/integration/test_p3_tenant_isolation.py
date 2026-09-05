@@ -71,10 +71,12 @@ def test_two_users_are_denied_cross_tenant_service_repository_and_raw_sql_access
         first_store = PostgresLegacyStoreRepository(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         )
         second_store = PostgresLegacyStoreRepository(
             app_runtime.sessions,
             workspace_id=second.workspace.id,
+            user_id=second.user.id,
         )
         first_draft = first_store.create_draft(
             CampaignDraftRequest(
@@ -114,10 +116,12 @@ def test_two_users_are_denied_cross_tenant_service_repository_and_raw_sql_access
         first_audit = PostgresAuditRepository(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         )
         second_audit = PostgresAuditRepository(
             app_runtime.sessions,
             workspace_id=second.workspace.id,
+            user_id=second.user.id,
         )
         first_audit.append_audit("synthetic.isolation.first", "first")
         second_audit.append_audit("synthetic.isolation.second", "second")
@@ -131,10 +135,12 @@ def test_two_users_are_denied_cross_tenant_service_repository_and_raw_sql_access
         first_idempotency = PostgresIdempotencyRepository(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         )
         second_idempotency = PostgresIdempotencyRepository(
             app_runtime.sessions,
             workspace_id=second.workspace.id,
+            user_id=second.user.id,
         )
         assert first_idempotency.claim("synthetic-isolation", "same-key", {"tenant": 1}).is_owner
         assert second_idempotency.claim("synthetic-isolation", "same-key", {"tenant": 2}).is_owner
@@ -210,6 +216,7 @@ def test_two_users_are_denied_cross_tenant_service_repository_and_raw_sql_access
             with tenant_transaction(
                 app_runtime.sessions,
                 workspace_id=first.workspace.id,
+                user_id=first.user.id,
             ) as session:
                 session.execute(
                     text(
@@ -223,6 +230,7 @@ def test_two_users_are_denied_cross_tenant_service_repository_and_raw_sql_access
         with tenant_transaction(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         ) as session:
             assert session.execute(
                 text("SELECT id FROM campaign_drafts WHERE id = :id"),

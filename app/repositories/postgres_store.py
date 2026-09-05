@@ -12,7 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import CampaignDraftRecord, SemanticChangePackageRecord
-from app.db.rls import LEGACY_OPERATOR_WORKSPACE_ID, tenant_transaction
+from app.db.rls import (
+    LEGACY_OPERATOR_USER_ID,
+    LEGACY_OPERATOR_WORKSPACE_ID,
+    tenant_transaction,
+)
 from app.models import (
     AuditEvent,
     Campaign,
@@ -79,17 +83,31 @@ class PostgresLegacyStoreRepository:
         sessions: sessionmaker[Session],
         *,
         workspace_id: UUID = LEGACY_OPERATOR_WORKSPACE_ID,
+        user_id: UUID = LEGACY_OPERATOR_USER_ID,
     ) -> None:
         self._sessions = sessions
         self._workspace_id = workspace_id
-        self._audit = PostgresAuditRepository(sessions, workspace_id=workspace_id)
-        self._idempotency = PostgresIdempotencyRepository(sessions, workspace_id=workspace_id)
+        self._user_id = user_id
+        self._audit = PostgresAuditRepository(
+            sessions,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
+        self._idempotency = PostgresIdempotencyRepository(
+            sessions,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
         self._legacy = _AuditDelegatingMockStore(self._audit)
 
-    def for_workspace(self, workspace_id: UUID) -> PostgresLegacyStoreRepository:
+    def for_workspace(self, workspace_id: UUID, user_id: UUID) -> PostgresLegacyStoreRepository:
         """Create a request-scoped adapter only after server-side authorization."""
 
-        return PostgresLegacyStoreRepository(self._sessions, workspace_id=workspace_id)
+        return PostgresLegacyStoreRepository(
+            self._sessions,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        )
 
     @property
     def campaigns(self) -> Mapping[str, Campaign]:
@@ -180,6 +198,7 @@ class PostgresLegacyStoreRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             record = session.scalar(
                 select(SemanticChangePackageRecord).where(
@@ -203,6 +222,7 @@ class PostgresLegacyStoreRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             record = session.scalar(
                 select(SemanticChangePackageRecord).where(
@@ -238,6 +258,7 @@ class PostgresLegacyStoreRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             records = session.scalars(
                 select(CampaignDraftRecord).where(
@@ -256,6 +277,7 @@ class PostgresLegacyStoreRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             record = session.scalar(
                 select(CampaignDraftRecord).where(
@@ -279,6 +301,7 @@ class PostgresLegacyStoreRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             records = session.scalars(
                 select(SemanticChangePackageRecord).where(

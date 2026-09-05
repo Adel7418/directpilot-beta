@@ -94,10 +94,12 @@ def test_cookie_session_binds_the_server_authorized_workspace_for_repository_acc
         first_repository = PostgresLegacyStoreRepository(
             app_runtime.sessions,
             workspace_id=first_workspace_id,
+            user_id=first_login.json()["user_id"],
         )
         second_repository = PostgresLegacyStoreRepository(
             app_runtime.sessions,
             workspace_id=second_workspace_id,
+            user_id=second_login.json()["user_id"],
         )
         first_repository.create_draft(
             CampaignDraftRequest(

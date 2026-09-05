@@ -9,7 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import AuditEventRecord
-from app.db.rls import LEGACY_OPERATOR_WORKSPACE_ID, tenant_transaction
+from app.db.rls import (
+    LEGACY_OPERATOR_USER_ID,
+    LEGACY_OPERATOR_WORKSPACE_ID,
+    tenant_transaction,
+)
 from app.models import AuditEvent
 
 _SAFE_METADATA_KEYS = frozenset(
@@ -53,9 +57,11 @@ class PostgresAuditRepository:
         sessions: sessionmaker[Session],
         *,
         workspace_id: UUID | None = LEGACY_OPERATOR_WORKSPACE_ID,
+        user_id: UUID = LEGACY_OPERATOR_USER_ID,
     ) -> None:
         self._sessions = sessions
         self._workspace_id = workspace_id
+        self._user_id = user_id
 
     def append_audit(
         self,
@@ -85,6 +91,7 @@ class PostgresAuditRepository:
             with tenant_transaction(
                 self._sessions,
                 workspace_id=self._workspace_id,
+                user_id=self._user_id,
             ) as session:
                 session.add(record)
 
@@ -97,6 +104,7 @@ class PostgresAuditRepository:
         with tenant_transaction(
             self._sessions,
             workspace_id=self._workspace_id,
+            user_id=self._user_id,
         ) as session:
             records = session.scalars(
                 select(AuditEventRecord)

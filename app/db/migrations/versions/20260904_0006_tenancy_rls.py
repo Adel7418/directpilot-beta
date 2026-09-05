@@ -15,6 +15,8 @@ _LEGACY_USER_ID = "00000000-0000-4000-8000-000000000301"
 _LEGACY_WORKSPACE_ID = "00000000-0000-4000-8000-000000000302"
 _LEGACY_MEMBERSHIP_ID = "00000000-0000-4000-8000-000000000303"
 _WORKSPACE_SETTING = "NULLIF(current_setting('app.current_workspace_id', true), '')::uuid"
+_USER_SETTING = "NULLIF(current_setting('app.current_user_id', true), '')::uuid"
+_MEMBERSHIP_CHECK = f"public.directpilot_has_active_membership({_WORKSPACE_SETTING}, {_USER_SETTING})"
 
 
 def _create_legacy_operator_workspace() -> None:
@@ -65,14 +67,109 @@ def _add_workspace_column(table_name: str, *, nullable: bool) -> None:
     op.create_index(op.f(f"ix_{table_name}_workspace_id"), table_name, ["workspace_id"])
 
 
+def _create_membership_helper() -> None:
+    op.execute("GRANT USAGE ON SCHEMA public TO directpilot_rls_helper")
+    op.execute("GRANT SELECT ON TABLE memberships TO directpilot_rls_helper")
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION public.directpilot_has_active_membership(
+            workspace_id uuid,
+            user_id uuid
+        ) RETURNS boolean
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.memberships AS m
+                WHERE m.workspace_id = $1
+                  AND m.user_id = $2
+                  AND m.status = 'active'
+            )
+        $$
+        """
+    )
+    op.execute("ALTER FUNCTION public.directpilot_has_active_membership(uuid, uuid) OWNER TO directpilot_rls_helper")
+    op.execute("REVOKE ALL ON FUNCTION public.directpilot_has_active_membership(uuid, uuid) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION public.directpilot_has_active_membership(uuid, uuid) TO directpilot_app")
+
+
+def _bootstrap_workspace_check() -> str:
+    return (
+        f"id = {_WORKSPACE_SETTING} AND created_by_user_id = {_USER_SETTING} AND "
+        "NOT public.directpilot_workspace_has_memberships(id)"
+    )
+
+
+def _bootstrap_membership_check() -> str:
+    return (
+        f"workspace_id = {_WORKSPACE_SETTING} AND user_id = {_USER_SETTING} AND "
+        "role = 'owner' AND status = 'active' AND "
+        "public.directpilot_workspace_owned_by(workspace_id, user_id) AND "
+        "NOT public.directpilot_workspace_has_memberships(workspace_id)"
+    )
+
+
+def _create_bootstrap_helpers() -> None:
+    op.execute("GRANT SELECT ON TABLE workspaces TO directpilot_rls_helper")
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION public.directpilot_workspace_has_memberships(
+            workspace_id uuid
+        ) RETURNS boolean
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.memberships AS m
+                WHERE m.workspace_id = $1
+            )
+        $$
+        """
+    )
+    op.execute("ALTER FUNCTION public.directpilot_workspace_has_memberships(uuid) OWNER TO directpilot_rls_helper")
+    op.execute("REVOKE ALL ON FUNCTION public.directpilot_workspace_has_memberships(uuid) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION public.directpilot_workspace_has_memberships(uuid) TO directpilot_app")
+    op.execute(
+        """
+        CREATE OR REPLACE FUNCTION public.directpilot_workspace_owned_by(
+            workspace_id uuid,
+            user_id uuid
+        ) RETURNS boolean
+        LANGUAGE sql
+        STABLE
+        SECURITY DEFINER
+        SET search_path = public, pg_temp
+        AS $$
+            SELECT EXISTS (
+                SELECT 1
+                FROM public.workspaces AS w
+                WHERE w.id = $1
+                  AND w.created_by_user_id = $2
+            )
+        $$
+        """
+    )
+    op.execute("ALTER FUNCTION public.directpilot_workspace_owned_by(uuid, uuid) OWNER TO directpilot_rls_helper")
+    op.execute("REVOKE ALL ON FUNCTION public.directpilot_workspace_owned_by(uuid, uuid) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION public.directpilot_workspace_owned_by(uuid, uuid) TO directpilot_app")
+
+
 def _enable_workspace_rls(
     table_name: str,
     *,
     tenant_column: str = "workspace_id",
     platform_auth_events: bool = False,
+    extra_check: str | None = None,
 ) -> None:
-    using_clause = f"{tenant_column} = {_WORKSPACE_SETTING}"
-    check_clause = using_clause
+    workspace_clause = f"{tenant_column} = {_WORKSPACE_SETTING}"
+    using_clause = f"{workspace_clause} AND {_MEMBERSHIP_CHECK}"
+    check_clause = using_clause if extra_check is None else f"({using_clause}) OR ({extra_check})"
     if platform_auth_events:
         check_clause = (
             f"({using_clause}) OR "
@@ -88,6 +185,8 @@ def _enable_workspace_rls(
 
 def upgrade() -> None:
     _create_legacy_operator_workspace()
+    _create_membership_helper()
+    _create_bootstrap_helpers()
 
     _add_workspace_column("audit_events", nullable=True)
     op.create_check_constraint(
@@ -128,8 +227,8 @@ def upgrade() -> None:
         ["package_id", "workspace_id"],
     )
 
-    _enable_workspace_rls("workspaces", tenant_column="id")
-    _enable_workspace_rls("memberships")
+    _enable_workspace_rls("workspaces", tenant_column="id", extra_check=_bootstrap_workspace_check())
+    _enable_workspace_rls("memberships", extra_check=_bootstrap_membership_check())
     _enable_workspace_rls("audit_events", platform_auth_events=True)
     _enable_workspace_rls("idempotency_records")
     _enable_workspace_rls("campaign_drafts")
@@ -148,6 +247,10 @@ def downgrade() -> None:
         op.execute(f"DROP POLICY IF EXISTS {table_name}_workspace_isolation ON {table_name}")
         op.execute(f"ALTER TABLE {table_name} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY")
+
+    op.execute("DROP FUNCTION IF EXISTS public.directpilot_workspace_owned_by(uuid, uuid)")
+    op.execute("DROP FUNCTION IF EXISTS public.directpilot_workspace_has_memberships(uuid)")
+    op.execute("DROP FUNCTION IF EXISTS public.directpilot_has_active_membership(uuid, uuid)")
 
     op.drop_constraint(
         "pk_semantic_change_packages",

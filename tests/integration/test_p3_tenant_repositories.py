@@ -46,10 +46,12 @@ def test_tenant_repositories_scope_p2_rows_and_idempotency_by_workspace(
         first_store = PostgresLegacyStoreRepository(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         )
         second_store = PostgresLegacyStoreRepository(
             app_runtime.sessions,
             workspace_id=second.workspace.id,
+            user_id=second.user.id,
         )
 
         first_draft = first_store.create_draft(
@@ -88,10 +90,12 @@ def test_tenant_repositories_scope_p2_rows_and_idempotency_by_workspace(
         first_audit = PostgresAuditRepository(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         )
         second_audit = PostgresAuditRepository(
             app_runtime.sessions,
             workspace_id=second.workspace.id,
+            user_id=second.user.id,
         )
         first_audit.append_audit("synthetic.first", "first-row")
         second_audit.append_audit("synthetic.second", "second-row")
@@ -105,10 +109,12 @@ def test_tenant_repositories_scope_p2_rows_and_idempotency_by_workspace(
         first_idempotency = PostgresIdempotencyRepository(
             app_runtime.sessions,
             workspace_id=first.workspace.id,
+            user_id=first.user.id,
         )
         second_idempotency = PostgresIdempotencyRepository(
             app_runtime.sessions,
             workspace_id=second.workspace.id,
+            user_id=second.user.id,
         )
         assert first_idempotency.claim("synthetic.operation", "same-key", {"value": 1}).is_owner
         assert second_idempotency.claim("synthetic.operation", "same-key", {"value": 1}).is_owner

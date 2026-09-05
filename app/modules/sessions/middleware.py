@@ -81,7 +81,7 @@ class SessionWorkspaceContextMiddleware(BaseHTTPMiddleware):
         repository_token = None
         if isinstance(repository, PostgresLegacyStoreRepository):
             repository_token = bind_authorized_request_repository(
-                repository.for_workspace(membership.workspace_id)
+                repository.for_workspace(membership.workspace_id, membership.user_id)
             )
         try:
             return await call_next(request)

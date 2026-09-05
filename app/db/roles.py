@@ -38,6 +38,12 @@ def bootstrap_database_roles(runtime: DatabaseRuntime, *, app_password: str) -> 
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
+                        SELECT 1 FROM pg_roles WHERE rolname = 'directpilot_rls_helper'
+                    ) THEN
+                        CREATE ROLE directpilot_rls_helper
+                            NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION BYPASSRLS NOINHERIT;
+                    END IF;
+                    IF NOT EXISTS (
                         SELECT 1 FROM pg_roles WHERE rolname = 'directpilot_app'
                     ) THEN
                         CREATE ROLE directpilot_app
@@ -57,6 +63,8 @@ def bootstrap_database_roles(runtime: DatabaseRuntime, *, app_password: str) -> 
                 """
                 DO $$
                 BEGIN
+                    EXECUTE 'ALTER ROLE directpilot_rls_helper WITH NOLOGIN NOSUPERUSER NOCREATEDB '
+                        'NOCREATEROLE NOREPLICATION BYPASSRLS NOINHERIT';
                     EXECUTE format(
                         'ALTER ROLE directpilot_app WITH LOGIN NOSUPERUSER NOCREATEDB '
                         'NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT PASSWORD %L',
