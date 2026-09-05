@@ -3,12 +3,17 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import AuditEventRecord
+from app.db.rls import (
+    LEGACY_OPERATOR_USER_ID,
+    LEGACY_OPERATOR_WORKSPACE_ID,
+    tenant_transaction,
+)
 from app.models import AuditEvent
 
 _SAFE_METADATA_KEYS = frozenset(
@@ -45,10 +50,18 @@ def sanitize_audit_metadata(details: Mapping[str, Any] | None) -> dict[str, str 
 
 
 class PostgresAuditRepository:
-    """Append-only PostgreSQL implementation of the P1 audit seam."""
+    """Append-only PostgreSQL audit records scoped to one explicit workspace."""
 
-    def __init__(self, sessions: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        sessions: sessionmaker[Session],
+        *,
+        workspace_id: UUID | None = LEGACY_OPERATOR_WORKSPACE_ID,
+        user_id: UUID = LEGACY_OPERATOR_USER_ID,
+    ) -> None:
         self._sessions = sessions
+        self._workspace_id = workspace_id
+        self._user_id = user_id
 
     def append_audit(
         self,
@@ -59,25 +72,44 @@ class PostgresAuditRepository:
         dry_run: bool = True,
         details: Mapping[str, Any] | None = None,
     ) -> AuditEvent:
+        if self._workspace_id is None and not action.startswith("platform_auth."):
+            raise ValueError("audit workspace is required")
         record = AuditEventRecord(
             id=uuid4(),
+            workspace_id=self._workspace_id,
             actor=actor,
             action=action,
             entity=entity,
             dry_run=dry_run,
             details=sanitize_audit_metadata(details) or None,
         )
-        with self._sessions() as session:
-            with session.begin():
+        if self._workspace_id is None:
+            with self._sessions() as session:
+                with session.begin():
+                    session.add(record)
+        else:
+            with tenant_transaction(
+                self._sessions,
+                workspace_id=self._workspace_id,
+                user_id=self._user_id,
+            ) as session:
                 session.add(record)
 
         return self._to_model(record)
 
     @property
     def audit_events(self) -> list[AuditEvent]:
-        with self._sessions() as session:
+        if self._workspace_id is None:
+            return []
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+            user_id=self._user_id,
+        ) as session:
             records = session.scalars(
-                select(AuditEventRecord).order_by(
+                select(AuditEventRecord)
+                .where(AuditEventRecord.workspace_id == self._workspace_id)
+                .order_by(
                     AuditEventRecord.occurred_at,
                     AuditEventRecord.id,
                 )

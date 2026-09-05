@@ -13,6 +13,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import IdempotencyRecord
+from app.db.rls import (
+    LEGACY_OPERATOR_USER_ID,
+    LEGACY_OPERATOR_WORKSPACE_ID,
+    tenant_transaction,
+)
 
 
 class IdempotencyError(RuntimeError):
@@ -20,7 +25,7 @@ class IdempotencyError(RuntimeError):
 
 
 class IdempotencyConflictError(IdempotencyError):
-    """Raised when one namespace/key is reused with a different request."""
+    """Raised when one workspace namespace/key is reused with different input."""
 
 
 class IdempotencyStateError(IdempotencyError):
@@ -30,6 +35,7 @@ class IdempotencyStateError(IdempotencyError):
 @dataclass(frozen=True, slots=True)
 class IdempotencyClaim:
     record_id: UUID
+    workspace_id: UUID
     namespace: str
     key_hash: str
     request_hash: str
@@ -89,10 +95,18 @@ def _sanitize_result(value: Any) -> Any:
 
 
 class PostgresIdempotencyRepository:
-    """PostgreSQL uniqueness and row-locking implementation for P2 idempotency."""
+    """P2 idempotency storage with an explicit RLS-protected workspace scope."""
 
-    def __init__(self, sessions: sessionmaker[Session]) -> None:
+    def __init__(
+        self,
+        sessions: sessionmaker[Session],
+        *,
+        workspace_id: UUID = LEGACY_OPERATOR_WORKSPACE_ID,
+        user_id: UUID = LEGACY_OPERATOR_USER_ID,
+    ) -> None:
         self._sessions = sessions
+        self._workspace_id = workspace_id
+        self._user_id = user_id
 
     def claim(
         self,
@@ -107,42 +121,50 @@ class PostgresIdempotencyRepository:
         request_hash = canonical_request_hash(payload)
         candidate = IdempotencyRecord(
             id=uuid4(),
+            workspace_id=self._workspace_id,
             namespace=namespace,
             key_hash=key_hash,
             request_hash=request_hash,
             status="pending",
             result=None,
         )
-        with self._sessions() as session:
-            with session.begin():
-                inserted = session.execute(
-                    insert(IdempotencyRecord)
-                    .values(
-                        id=candidate.id,
-                        namespace=candidate.namespace,
-                        key_hash=candidate.key_hash,
-                        request_hash=candidate.request_hash,
-                        status=candidate.status,
-                    )
-                    .on_conflict_do_nothing(index_elements=["namespace", "key_hash"])
-                    .returning(IdempotencyRecord)
-                ).scalar_one_or_none()
-                if inserted is not None:
-                    return self._to_claim(inserted, is_owner=True)
-
-                existing = session.scalar(
-                    select(IdempotencyRecord)
-                    .where(
-                        IdempotencyRecord.namespace == namespace,
-                        IdempotencyRecord.key_hash == key_hash,
-                    )
-                    .with_for_update()
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+            user_id=self._user_id,
+        ) as session:
+            inserted = session.execute(
+                insert(IdempotencyRecord)
+                .values(
+                    id=candidate.id,
+                    workspace_id=candidate.workspace_id,
+                    namespace=candidate.namespace,
+                    key_hash=candidate.key_hash,
+                    request_hash=candidate.request_hash,
+                    status=candidate.status,
                 )
-                if existing is None:
-                    raise IdempotencyError("idempotency record is unavailable")
-                if existing.request_hash != request_hash:
-                    raise IdempotencyConflictError("idempotency key conflicts with a prior request")
-                return self._to_claim(existing, is_owner=False)
+                .on_conflict_do_nothing(
+                    index_elements=["workspace_id", "namespace", "key_hash"]
+                )
+                .returning(IdempotencyRecord)
+            ).scalar_one_or_none()
+            if inserted is not None:
+                return self._to_claim(inserted, is_owner=True)
+
+            existing = session.scalar(
+                select(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.workspace_id == self._workspace_id,
+                    IdempotencyRecord.namespace == namespace,
+                    IdempotencyRecord.key_hash == key_hash,
+                )
+                .with_for_update()
+            )
+            if existing is None:
+                raise IdempotencyError("idempotency record is unavailable")
+            if existing.request_hash != request_hash:
+                raise IdempotencyConflictError("idempotency key conflicts with a prior request")
+            return self._to_claim(existing, is_owner=False)
 
     def complete(
         self,
@@ -151,7 +173,7 @@ class PostgresIdempotencyRepository:
         status: str,
         result: Mapping[str, Any],
     ) -> IdempotencyClaim:
-        if not claim.is_owner:
+        if not claim.is_owner or claim.workspace_id != self._workspace_id:
             raise IdempotencyStateError("only the original idempotency claimant can finalize")
         if status not in _FINAL_STATUSES:
             raise IdempotencyStateError("idempotency status is invalid")
@@ -160,27 +182,34 @@ class PostgresIdempotencyRepository:
         if not isinstance(safe_result, dict):
             raise IdempotencyError("idempotency result is not an object")
 
-        with self._sessions() as session:
-            with session.begin():
-                record = session.scalar(
-                    select(IdempotencyRecord)
-                    .where(IdempotencyRecord.id == claim.record_id)
-                    .with_for_update()
+        with tenant_transaction(
+            self._sessions,
+            workspace_id=self._workspace_id,
+            user_id=self._user_id,
+        ) as session:
+            record = session.scalar(
+                select(IdempotencyRecord)
+                .where(
+                    IdempotencyRecord.id == claim.record_id,
+                    IdempotencyRecord.workspace_id == self._workspace_id,
                 )
-                if record is None or record.request_hash != claim.request_hash:
-                    raise IdempotencyStateError("idempotency claim is unavailable")
-                if record.status != "pending":
-                    raise IdempotencyStateError("idempotency claim was already finalized")
-                record.status = status
-                record.result = safe_result
-                record.completed_at = datetime.now(timezone.utc)
-                session.flush()
-                return self._to_claim(record, is_owner=True)
+                .with_for_update()
+            )
+            if record is None or record.request_hash != claim.request_hash:
+                raise IdempotencyStateError("idempotency claim is unavailable")
+            if record.status != "pending":
+                raise IdempotencyStateError("idempotency claim was already finalized")
+            record.status = status
+            record.result = safe_result
+            record.completed_at = datetime.now(timezone.utc)
+            session.flush()
+            return self._to_claim(record, is_owner=True)
 
     @staticmethod
     def _to_claim(record: IdempotencyRecord, *, is_owner: bool) -> IdempotencyClaim:
         return IdempotencyClaim(
             record_id=record.id,
+            workspace_id=record.workspace_id,
             namespace=record.namespace,
             key_hash=record.key_hash,
             request_hash=record.request_hash,

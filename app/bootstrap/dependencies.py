@@ -14,6 +14,9 @@ from app.db.engine import (
     create_database_runtime,
 )
 from app.db.schema import check_schema_compatibility
+from app.modules.identity.repository import PostgresIdentityRepository
+from app.modules.sessions.service import PostgresSessionService
+from app.modules.tenancy.authorization import PostgresWorkspaceAuthorizer
 from app.providers.protocols import (
     DirectClientFactory,
     MetrikaClientFactory,
@@ -44,6 +47,16 @@ class ApplicationDependencies:
     metrika_client_factory: MetrikaClientFactory
     wordstat_client_factory: WordstatClientFactory
     database_runtime: DatabaseRuntime | None = None
+    identity_repository: PostgresIdentityRepository | None = None
+    session_service: PostgresSessionService | None = None
+    workspace_authorizer: PostgresWorkspaceAuthorizer | None = None
+    fake_auth_enabled: bool = False
+
+
+def _fake_auth_is_enabled(app_env: str) -> bool:
+    return app_env in {"local", "test"} and os.environ.get(
+        "DIRECTPILOT_ENABLE_FAKE_AUTH", ""
+    ).lower() == "1"
 
 
 def create_application_dependencies() -> ApplicationDependencies:
@@ -64,6 +77,10 @@ def create_application_dependencies() -> ApplicationDependencies:
             metrika_client_factory=DefaultMetrikaClientFactory(),
             wordstat_client_factory=DefaultWordstatClientFactory(),
             database_runtime=runtime,
+            identity_repository=PostgresIdentityRepository(runtime.sessions),
+            session_service=PostgresSessionService(runtime.sessions),
+            workspace_authorizer=PostgresWorkspaceAuthorizer(runtime.sessions),
+            fake_auth_enabled=_fake_auth_is_enabled(app_env),
         )
     if app_env in {"production", "staging"}:
         DatabaseSettings.from_mapping({})
