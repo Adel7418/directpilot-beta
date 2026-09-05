@@ -1,0 +1,68 @@
+name: P2 PostgreSQL migrations
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/p2-postgresql-migrations.yml"
+      - "alembic.ini"
+      - "app/db/**"
+      - "app/modules/**"
+      - "app/repositories/postgres_store.py"
+      - "deploy/compose.test.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "tests/integration/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/p2-postgresql-migrations.yml"
+      - "alembic.ini"
+      - "app/db/**"
+      - "app/modules/**"
+      - "app/repositories/postgres_store.py"
+      - "deploy/compose.test.yml"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "tests/integration/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  migration-compatibility:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DIRECTPILOT_DOCKER_BIN: docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install locked dependencies
+        run: uv sync --locked --all-groups
+      - name: Pull the isolated PostgreSQL image
+        run: docker pull postgres:17.7-bookworm
+      - name: Empty database migration and runtime-role proof
+        run: >-
+          uv run pytest
+          tests/integration/test_migrations_and_roles.py::test_owner_migrates_empty_database_and_runtime_role_is_nonowner
+          -q
+      - name: Prior P2 revision to head migration proof
+        run: >-
+          uv run pytest
+          tests/integration/test_migrations_and_roles.py::test_owner_upgrades_from_prior_p2_revision_to_current_head
+          -q
+      - name: PostgreSQL persistence and restore integration
+        run: >-
+          uv run pytest
+          tests/integration/test_postgresql_runtime.py
+          tests/integration/test_schema_compatibility.py
+          tests/integration/test_audit_repository.py
+          tests/integration/test_idempotency_repository.py
+          tests/integration/test_persistent_product_stores.py
+          tests/integration/test_application_persistence_runtime.py
+          tests/integration/test_backup_restore.py
+          -q

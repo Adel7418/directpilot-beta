@@ -8,13 +8,19 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic-settings>=2.2",
     "httpx[socks]>=0.27",
+    "sqlalchemy>=2.0,<2.1",
+    "psycopg[binary]>=3.2,<3.3",
+    "alembic>=1.14,<1.18",
 ]
 
 [dependency-groups]
 dev = [
     "httpx2>=0.1",  # Used indirectly by Starlette/FastAPI TestClient to avoid the deprecated httpx compatibility path.
+    "mypy>=2.3.1",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "respx>=0.23.1",
+    "ruff>=0.16.6",
 ]
 
 [tool.pytest.ini_options]
@@ -22,5 +28,56 @@ pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
+    "integration: uses an isolated real PostgreSQL Docker Compose service",
     "live_smoke: opt-in tests that call external sandbox/live APIs and are skipped unless explicitly enabled",
 ]
+
+[tool.ruff]
+target-version = "py311"
+include = [
+    "app/api/core_router.py",
+    "app/api/direct_extensions_router.py",
+    "app/api/direct_router.py",
+    "app/api/legacy_router.py",
+    "app/api/metrika_router.py",
+    "app/api/route_registry.py",
+    "app/api/wordstat_router.py",
+    "app/bootstrap/application.py",
+    "app/bootstrap/dependencies.py",
+    "app/db/**/*.py",
+    "app/modules/**/*.py",
+    "app/main.py",
+    "app/core/**/*.py",
+    "app/providers/**/*.py",
+    "app/repositories/**/*.py",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+files = [
+    "app/api/core_router.py",
+    "app/api/direct_extensions_router.py",
+    "app/api/direct_router.py",
+    "app/api/legacy_router.py",
+    "app/api/metrika_router.py",
+    "app/api/route_registry.py",
+    "app/api/wordstat_router.py",
+    "app/bootstrap/application.py",
+    "app/bootstrap/dependencies.py",
+    "app/db",
+    "app/modules",
+    "app/main.py",
+    "app/core",
+    "app/providers",
+    "app/repositories",
+]
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["app.api.legacy_handlers", "app.store", "app.yandex_direct"]
+follow_imports = "skip"

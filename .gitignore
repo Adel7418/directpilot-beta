@@ -7,5 +7,6 @@ __pycache__/
 .ruff_cache/
 .hermes/
 graphify-out/
+artifacts/
 *.pyc
 .DS_Store

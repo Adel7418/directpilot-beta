@@ -1,0 +1,63 @@
+name: P1 quality
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p1-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install locked dependencies
+        run: uv sync --frozen --python 3.11
+      - name: Run P1 characterization and tracer tests
+        run: >-
+          uv run pytest -q
+          tests/characterization
+          tests/test_application_factory.py
+          tests/test_dependency_seams.py
+          tests/test_request_context.py
+          tests/test_respx_harness.py
+          tests/test_router_decomposition.py
+      - name: Check OpenAPI snapshot
+        run: uv run python scripts/check_openapi_sync.py
+      - name: Lint bounded P1 modules
+        run: >-
+          uv run ruff check
+          app/api/core_router.py
+          app/api/direct_extensions_router.py
+          app/api/direct_router.py
+          app/api/legacy_router.py
+          app/api/metrika_router.py
+          app/api/route_registry.py
+          app/api/wordstat_router.py
+          app/bootstrap/application.py
+          app/bootstrap/dependencies.py
+          app/main.py
+          app/core
+          app/providers
+          app/repositories
+      - name: Type-check bounded P1 modules
+        run: >-
+          uv run mypy
+          app/api/core_router.py
+          app/api/direct_extensions_router.py
+          app/api/direct_router.py
+          app/api/legacy_router.py
+          app/api/metrika_router.py
+          app/api/route_registry.py
+          app/api/wordstat_router.py
+          app/bootstrap/application.py
+          app/bootstrap/dependencies.py
+          app/main.py
+          app/core
+          app/providers
+          app/repositories
