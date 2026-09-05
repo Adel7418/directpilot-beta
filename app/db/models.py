@@ -6,8 +6,11 @@ from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    Integer,
+    LargeBinary,
     MetaData,
     String,
     UniqueConstraint,
@@ -197,6 +200,44 @@ class ExternalIdentityRecord(Base):
     last_authenticated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class YandexProviderConnectionRecord(Base):
+    __tablename__ = "yandex_provider_connections"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "provider", "external_identity_id"),
+        CheckConstraint("provider = 'yandex'", name="provider_yandex"),
+        CheckConstraint("schema_version > 0", name="schema_version_positive"),
+        CheckConstraint("version > 0", name="version_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id"),
+        nullable=False,
+    )
+    external_identity_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("external_identities.id"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    token_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wrap_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    kek_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    access_token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    credential_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class AuditEventRecord(Base):

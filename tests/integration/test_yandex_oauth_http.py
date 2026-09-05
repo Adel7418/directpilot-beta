@@ -15,10 +15,11 @@ from app.bootstrap.application import create_app
 from app.bootstrap.dependencies import create_application_dependencies
 from app.db.engine import DatabaseSettings, create_database_runtime
 from app.db.migrations.runner import upgrade_database
-from app.db.models import ExternalIdentityRecord
+from app.db.models import ExternalIdentityRecord, YandexProviderConnectionRecord
 from app.db.rls import tenant_transaction
 from app.db.roles import bootstrap_database_roles
 from app.modules.identity.repository import PostgresIdentityRepository
+from app.modules.integrations.yandex.credentials import YandexCredentialPayload
 from app.modules.integrations.yandex.oauth import (
     YandexOAuthConfiguration,
     YandexOAuthIntegration,
@@ -29,6 +30,7 @@ from app.modules.integrations.yandex.provider import YandexOAuthProviderFailure
 from app.modules.integrations.yandex.repository import (
     PostgresExternalIdentityRepository,
     PostgresOAuthTransactionRepository,
+    ProviderConnectionPersistenceError,
 )
 from app.modules.sessions.cookies import SESSION_COOKIE_NAME
 from app.modules.sessions.service import PostgresSessionService
@@ -63,6 +65,27 @@ class _MockYandexOAuthProvider:
         )
 
 
+class _RecordingCredentialPersister:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def persist_yandex_oauth_tokens(
+        self,
+        *,
+        user_id: UUID,
+        workspace_id: UUID,
+        issuer: str,
+        subject: str,
+        payload: YandexCredentialPayload,
+    ) -> None:
+        assert user_id
+        assert workspace_id
+        assert issuer == "https://login.yandex.ru"
+        assert subject == "stable-yandex-user-id"
+        assert payload.access_token
+        self.calls += 1
+
+
 @pytest.mark.integration
 def test_authenticated_oauth_callback_rotates_session_and_maps_stable_subject(
     postgres_service: object,
@@ -89,6 +112,7 @@ def test_authenticated_oauth_callback_rotates_session_and_maps_stable_subject(
             redirect_uri="http://127.0.0.1:8000/api/v1/integrations/yandex/callback",
         )
         provider = _MockYandexOAuthProvider(config)
+        credential_persister = _RecordingCredentialPersister()
         session_service = PostgresSessionService(app_runtime.sessions)
         dependencies = replace(
             create_application_dependencies(),
@@ -102,6 +126,7 @@ def test_authenticated_oauth_callback_rotates_session_and_maps_stable_subject(
                 transactions=PostgresOAuthTransactionRepository(app_runtime.sessions),
                 identities=PostgresExternalIdentityRepository(app_runtime.sessions),
                 provider=provider,
+                credential_persister=credential_persister,
             ),
         )
         client = TestClient(create_app(dependencies=dependencies), base_url="https://testserver")
@@ -139,6 +164,7 @@ def test_authenticated_oauth_callback_rotates_session_and_maps_stable_subject(
         assert session_service.authenticate(rotated_session_token) is not None
         assert provider.exchange_calls == 1
         assert provider.userinfo_calls == 1
+        assert credential_persister.calls == 1
         with tenant_transaction(
             app_runtime.sessions,
             workspace_id=workspace_id,
@@ -212,6 +238,7 @@ def test_oauth_route_errors_do_not_echo_callback_or_secret_values(
                 transactions=PostgresOAuthTransactionRepository(app_runtime.sessions),
                 identities=PostgresExternalIdentityRepository(app_runtime.sessions),
                 provider=provider,
+                credential_persister=_RecordingCredentialPersister(),
             ),
         )
         client = TestClient(create_app(dependencies=dependencies), base_url="https://testserver")
@@ -252,6 +279,156 @@ def test_oauth_route_errors_do_not_echo_callback_or_secret_values(
         assert not _contains_any(provider_failure.text, sensitive_markers)
         assert not _contains_any(malformed.text, sensitive_markers)
         assert not _contains_any(open_redirect.text, sensitive_markers)
+        log_output = "\n".join(str(record.__dict__) for record in caplog.records)
+        assert not _contains_any(log_output, sensitive_markers)
+    finally:
+        owner_runtime.close()
+        app_runtime.close()
+
+
+class _SuccessfulPersistenceFailureProvider:
+    access_token = "synthetic-access-token-for-persistence-failure"
+    refresh_token = "synthetic-refresh-token-for-persistence-failure"
+
+    def __init__(self, config: YandexOAuthConfiguration) -> None:
+        self._config = config
+
+    def exchange_code(self, *, code: str, code_verifier: str) -> YandexOAuthTokenSet:
+        assert code == "synthetic-callback-code-for-persistence-failure"
+        assert code_verifier
+        return YandexOAuthTokenSet(
+            access_token=self.access_token,
+            refresh_token=self.refresh_token,
+            expires_in=3600,
+        )
+
+    def fetch_user_info(self, *, access_token: str) -> YandexUserInfo:
+        assert access_token == self.access_token
+        return YandexUserInfo(
+            subject="stable-yandex-user-id",
+            client_id=self._config.client_id,
+            login="synthetic-login",
+            display_name="Synthetic display name",
+        )
+
+
+class _FailingCredentialPersister:
+    upstream_body = "synthetic-upstream-persistence-body"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def persist_yandex_oauth_tokens(
+        self,
+        *,
+        user_id: UUID,
+        workspace_id: UUID,
+        issuer: str,
+        subject: str,
+        payload: YandexCredentialPayload,
+    ) -> None:
+        assert user_id
+        assert workspace_id
+        assert issuer == "https://login.yandex.ru"
+        assert subject == "stable-yandex-user-id"
+        assert payload.access_token
+        self.calls += 1
+        raise ProviderConnectionPersistenceError(self.upstream_body)
+
+
+@pytest.mark.integration
+def test_credential_persistence_failure_is_safe_and_keeps_session_and_connection_absent(
+    postgres_service: object,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    owner_runtime = create_database_runtime(
+        DatabaseSettings.from_mapping(
+            {"DIRECTPILOT_DATABASE_URL": getattr(postgres_service, "owner_url")}
+        )
+    )
+    app_runtime = create_database_runtime(
+        DatabaseSettings.from_mapping(
+            {"DIRECTPILOT_DATABASE_URL": getattr(postgres_service, "app_url")}
+        )
+    )
+    try:
+        bootstrap_database_roles(
+            owner_runtime,
+            app_password=getattr(postgres_service, "app_password"),
+        )
+        upgrade_database(owner_runtime)
+        config = YandexOAuthConfiguration(
+            client_id="synthetic-client-id",
+            client_secret="synthetic-client-secret",
+            redirect_uri="http://127.0.0.1:8000/api/v1/integrations/yandex/callback",
+        )
+        provider = _SuccessfulPersistenceFailureProvider(config)
+        credential_persister = _FailingCredentialPersister()
+        session_service = PostgresSessionService(app_runtime.sessions)
+        dependencies = replace(
+            create_application_dependencies(),
+            repository=PostgresLegacyStoreRepository(app_runtime.sessions),
+            identity_repository=PostgresIdentityRepository(app_runtime.sessions),
+            session_service=session_service,
+            workspace_authorizer=PostgresWorkspaceAuthorizer(app_runtime.sessions),
+            fake_auth_enabled=True,
+            yandex_oauth=YandexOAuthIntegration(
+                config=config,
+                transactions=PostgresOAuthTransactionRepository(app_runtime.sessions),
+                identities=PostgresExternalIdentityRepository(app_runtime.sessions),
+                provider=provider,
+                credential_persister=credential_persister,
+            ),
+        )
+        client = TestClient(create_app(dependencies=dependencies), base_url="https://testserver")
+        login = client.post(
+            "/api/v1/_test/identity/login",
+            json={"display_name": "Synthetic persistence failure owner"},
+        )
+        assert login.status_code == 200
+        user_id = UUID(login.json()["user_id"])
+        workspace_id = UUID(login.json()["workspace_id"])
+        previous_session_token = client.cookies.get(SESSION_COOKIE_NAME)
+        assert previous_session_token is not None
+        start = client.get("/api/v1/integrations/yandex/start", follow_redirects=False)
+        assert start.status_code == 302
+        state = parse_qs(urlsplit(start.headers["location"]).query, strict_parsing=True)["state"][0]
+        authorization_code = "synthetic-callback-code-for-persistence-failure"
+        caplog.set_level(logging.INFO, logger="directpilot.request")
+
+        callback = client.get(
+            "/api/v1/integrations/yandex/callback",
+            params={"code": authorization_code, "state": state},
+            follow_redirects=False,
+        )
+
+        assert callback.status_code == 503
+        assert "oauth_credential_persistence_failed" in callback.text
+        assert callback.headers.get("location") is None
+        assert callback.headers.get("set-cookie") is None
+        current_session_token = client.cookies.get(SESSION_COOKIE_NAME)
+        assert current_session_token is not None
+        assert hmac.compare_digest(previous_session_token, current_session_token)
+        assert session_service.authenticate(previous_session_token) is not None
+        assert credential_persister.calls == 1
+        with tenant_transaction(
+            app_runtime.sessions,
+            workspace_id=workspace_id,
+            user_id=user_id,
+        ) as session:
+            connections = session.scalars(
+                select(YandexProviderConnectionRecord).where(
+                    YandexProviderConnectionRecord.workspace_id == workspace_id
+                )
+            ).all()
+        assert connections == []
+        sensitive_markers = (
+            provider.access_token,
+            provider.refresh_token,
+            authorization_code,
+            credential_persister.upstream_body,
+        )
+        assert not _contains_any(callback.text, sensitive_markers)
         log_output = "\n".join(str(record.__dict__) for record in caplog.records)
         assert not _contains_any(log_output, sensitive_markers)
     finally:

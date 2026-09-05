@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
+from app.modules.integrations.yandex.credentials import YandexCredentialPayload
 from app.modules.integrations.yandex.oauth import (
     ConsumedOAuthTransaction,
     NewOAuthTransaction,
@@ -108,6 +109,30 @@ class _RecordingIdentities:
         self.subject = subject
 
 
+class _RecordingCredentialPersister:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.user_id: UUID | None = None
+        self.workspace_id: UUID | None = None
+        self.subject: str | None = None
+
+    def persist_yandex_oauth_tokens(
+        self,
+        *,
+        user_id: UUID,
+        workspace_id: UUID,
+        issuer: str,
+        subject: str,
+        payload: YandexCredentialPayload,
+    ) -> None:
+        assert issuer == "https://login.yandex.ru"
+        assert payload.access_token_expires_at > datetime.now(timezone.utc)
+        self.calls += 1
+        self.user_id = user_id
+        self.workspace_id = workspace_id
+        self.subject = subject
+
+
 class _MockYandexOAuthProvider:
     def __init__(self, config: YandexOAuthConfiguration) -> None:
         self._config = config
@@ -160,11 +185,13 @@ def test_callback_binds_the_stable_yandex_subject_to_the_authenticated_local_use
     )
     identities = _RecordingIdentities()
     provider = _MockYandexOAuthProvider(config)
+    credential_persister = _RecordingCredentialPersister()
     service = OAuthCallbackService(
         config=config,
         transactions=transactions,
         identities=identities,
         provider=provider,
+        credential_persister=credential_persister,
     )
 
     completed = service.complete(
@@ -181,5 +208,9 @@ def test_callback_binds_the_stable_yandex_subject_to_the_authenticated_local_use
     assert identities.user_id == user_id
     assert identities.workspace_id == workspace_id
     assert identities.subject == "stable-yandex-user-id"
+    assert credential_persister.calls == 1
+    assert credential_persister.user_id == user_id
+    assert credential_persister.workspace_id == workspace_id
+    assert credential_persister.subject == "stable-yandex-user-id"
     assert provider.userinfo_calls == 1
     assert completed.return_path == "/"

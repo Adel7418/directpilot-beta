@@ -15,6 +15,11 @@ from app.db.engine import (
 )
 from app.db.schema import check_schema_compatibility
 from app.modules.identity.repository import PostgresIdentityRepository
+from app.modules.integrations.yandex.credentials import (
+    CredentialConfigurationError,
+    CredentialKeyRing,
+    CredentialVault,
+)
 from app.modules.integrations.yandex.oauth import (
     YandexOAuthConfiguration,
     YandexOAuthIntegration,
@@ -22,6 +27,7 @@ from app.modules.integrations.yandex.oauth import (
 from app.modules.integrations.yandex.repository import (
     PostgresExternalIdentityRepository,
     PostgresOAuthTransactionRepository,
+    PostgresYandexProviderConnectionRepository,
 )
 from app.modules.sessions.service import PostgresSessionService
 from app.modules.tenancy.authorization import PostgresWorkspaceAuthorizer
@@ -68,8 +74,7 @@ def _fake_auth_is_enabled(app_env: str) -> bool:
     ).lower() == "1"
 
 
-def _configured_yandex_oauth() -> YandexOAuthConfiguration | None:
-    settings = get_settings()
+def _configured_yandex_oauth(settings: Settings) -> YandexOAuthConfiguration | None:
     if settings.yandex_client_id is None or settings.yandex_client_secret is None:
         return None
     return YandexOAuthConfiguration(
@@ -79,15 +84,31 @@ def _configured_yandex_oauth() -> YandexOAuthConfiguration | None:
     )
 
 
+def _configured_credential_vault(settings: Settings) -> CredentialVault:
+    secret_file = settings.credential_keyring_secret_file
+    if not secret_file:
+        raise CredentialConfigurationError("Credential key-ring secret file is not configured")
+    return CredentialVault(CredentialKeyRing.from_json_secret_file(secret_file))
+
+
 def create_application_dependencies() -> ApplicationDependencies:
     database_url = os.environ.get(DATABASE_URL_ENV)
     app_env = os.environ.get("DIRECTPILOT_APP_ENV", "local").lower()
     if database_url:
-        oauth_config = _configured_yandex_oauth()
+        settings = get_settings()
+        oauth_config = _configured_yandex_oauth(settings)
         runtime = create_database_runtime(
             DatabaseSettings.from_mapping({DATABASE_URL_ENV: database_url})
         )
         try:
+            credential_persister = (
+                PostgresYandexProviderConnectionRepository(
+                    runtime.sessions,
+                    vault=_configured_credential_vault(settings),
+                )
+                if oauth_config is not None
+                else None
+            )
             check_schema_compatibility(runtime)
         except Exception:
             runtime.close()
@@ -105,6 +126,7 @@ def create_application_dependencies() -> ApplicationDependencies:
                 transactions=PostgresOAuthTransactionRepository(runtime.sessions),
                 identities=PostgresExternalIdentityRepository(runtime.sessions),
                 config=oauth_config,
+                credential_persister=credential_persister,
             ),
             fake_auth_enabled=_fake_auth_is_enabled(app_env),
         )

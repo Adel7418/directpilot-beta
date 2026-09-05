@@ -10,6 +10,11 @@ from typing import Protocol
 from urllib.parse import urlencode
 from uuid import UUID
 
+from app.modules.integrations.yandex.credentials import (
+    CredentialPayloadError,
+    YandexCredentialPayload,
+)
+
 YANDEX_AUTHORIZE_URL = "https://oauth.yandex.ru/authorize"
 LOCAL_YANDEX_CALLBACK_URI = "http://127.0.0.1:8000/api/v1/integrations/yandex/callback"
 MAX_OAUTH_TRANSACTION_TTL = timedelta(minutes=10)
@@ -94,6 +99,18 @@ class ExternalIdentityBinder(Protocol):
     ) -> object: ...
 
 
+class OAuthCredentialPersister(Protocol):
+    def persist_yandex_oauth_tokens(
+        self,
+        *,
+        user_id: UUID,
+        workspace_id: UUID,
+        issuer: str,
+        subject: str,
+        payload: YandexCredentialPayload,
+    ) -> object: ...
+
+
 @dataclass(frozen=True, slots=True)
 class YandexOAuthTokenSet:
     access_token: str = field(repr=False)
@@ -132,6 +149,7 @@ class YandexOAuthIntegration:
     identities: ExternalIdentityBinder
     config: YandexOAuthConfiguration | None = None
     provider: YandexOAuthProvider | None = None
+    credential_persister: OAuthCredentialPersister | None = None
 
 
 class OAuthCallbackRejected(RuntimeError):
@@ -140,6 +158,10 @@ class OAuthCallbackRejected(RuntimeError):
 
 class OAuthClientMismatch(RuntimeError):
     """Raised when userinfo does not belong to the configured OAuth application."""
+
+
+class OAuthCredentialPersistenceUnavailable(RuntimeError):
+    """Raised when OAuth callback vault persistence is not safely configured."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,11 +250,13 @@ class OAuthCallbackService:
         transactions: OAuthTransactionConsumer,
         identities: ExternalIdentityBinder,
         provider: YandexOAuthProvider,
+        credential_persister: OAuthCredentialPersister | None,
     ) -> None:
         self._config = config
         self._transactions = transactions
         self._identities = identities
         self._provider = provider
+        self._credential_persister = credential_persister
 
     def complete(
         self,
@@ -243,6 +267,9 @@ class OAuthCallbackService:
         workspace_id: UUID,
         browser_session_id: UUID,
     ) -> OAuthCallbackResult:
+        credential_persister = self._credential_persister
+        if credential_persister is None:
+            raise OAuthCredentialPersistenceUnavailable("OAuth credential vault is unavailable")
         if not _is_valid_callback_value(code, maximum_length=4096) or not _is_valid_callback_value(
             state, maximum_length=1024
         ):
@@ -260,21 +287,52 @@ class OAuthCallbackService:
             code=code,
             code_verifier=transaction.code_verifier,
         )
-        userinfo = self._provider.fetch_user_info(access_token=tokens.access_token)
-        if not hmac.compare_digest(userinfo.client_id, self._config.client_id):
-            raise OAuthClientMismatch("Yandex OAuth application is invalid")
-        if not _is_valid_callback_value(userinfo.subject, maximum_length=255):
-            raise OAuthCallbackRejected("Yandex OAuth subject is invalid")
-        self._identities.bind_yandex_identity(
-            user_id=transaction.user_id,
-            workspace_id=transaction.workspace_id,
-            issuer="https://login.yandex.ru",
-            subject=userinfo.subject,
-            profile_login=_bounded_profile_value(userinfo.login),
-            profile_display_name=_bounded_profile_value(userinfo.display_name),
+        try:
+            userinfo = self._provider.fetch_user_info(access_token=tokens.access_token)
+            if not hmac.compare_digest(userinfo.client_id, self._config.client_id):
+                raise OAuthClientMismatch("Yandex OAuth application is invalid")
+            if not _is_valid_callback_value(userinfo.subject, maximum_length=255):
+                raise OAuthCallbackRejected("Yandex OAuth subject is invalid")
+            self._identities.bind_yandex_identity(
+                user_id=transaction.user_id,
+                workspace_id=transaction.workspace_id,
+                issuer="https://login.yandex.ru",
+                subject=userinfo.subject,
+                profile_login=_bounded_profile_value(userinfo.login),
+                profile_display_name=_bounded_profile_value(userinfo.display_name),
+            )
+            payload = _credential_payload_from_token_set(tokens)
+            try:
+                credential_persister.persist_yandex_oauth_tokens(
+                    user_id=transaction.user_id,
+                    workspace_id=transaction.workspace_id,
+                    issuer="https://login.yandex.ru",
+                    subject=userinfo.subject,
+                    payload=payload,
+                )
+            finally:
+                del payload
+            return OAuthCallbackResult(return_path=transaction.return_path)
+        finally:
+            del tokens
+
+
+def _credential_payload_from_token_set(tokens: YandexOAuthTokenSet) -> YandexCredentialPayload:
+    if (
+        not isinstance(tokens.expires_in, int)
+        or isinstance(tokens.expires_in, bool)
+        or tokens.expires_in <= 0
+    ):
+        raise OAuthCallbackRejected("OAuth token response is invalid")
+    try:
+        return YandexCredentialPayload(
+            access_token=tokens.access_token,
+            refresh_token=tokens.refresh_token,
+            access_token_expires_at=_utc_now(None) + timedelta(seconds=tokens.expires_in),
+            refresh_token_expires_at=None,
         )
-        # P4-01/P4-02 deliberately does not persist the transient token pair; P4-03 owns vaulting.
-        return OAuthCallbackResult(return_path=transaction.return_path)
+    except CredentialPayloadError:
+        raise OAuthCallbackRejected("OAuth token response is invalid") from None
 
 
 def _is_valid_callback_value(value: str, *, maximum_length: int) -> bool:

@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     yandex_oauth_token: str | None = None
     yandex_redirect_uri: str = "https://oauth.yandex.ru/verification_code"
     yandex_oauth_redirect_uri: str = "http://127.0.0.1:8000/api/v1/integrations/yandex/callback"
+    credential_keyring_secret_file: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DIRECTPILOT_CREDENTIAL_KEYRING_SECRET_FILE",
+            "credential_keyring_secret_file",
+        ),
+    )
 
     # Yandex AI Studio / Search API v2 — used by the modern Wordstat client.
     # Optional folderId is the cloud folder that owns the service account

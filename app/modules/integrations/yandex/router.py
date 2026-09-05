@@ -7,10 +7,12 @@ from starlette.responses import RedirectResponse, Response
 
 from app.bootstrap.dependencies import get_application_dependencies
 from app.core.errors import safe_error_response
+from app.modules.integrations.yandex.credentials import CredentialVaultError
 from app.modules.integrations.yandex.oauth import (
     OAuthCallbackRejected,
     OAuthCallbackService,
     OAuthClientMismatch,
+    OAuthCredentialPersistenceUnavailable,
     OAuthStartService,
     YandexOAuthConfiguration,
     YandexOAuthIntegration,
@@ -20,7 +22,10 @@ from app.modules.integrations.yandex.provider import (
     HttpxYandexOAuthProvider,
     YandexOAuthProviderFailure,
 )
-from app.modules.integrations.yandex.repository import ExternalIdentityConflict
+from app.modules.integrations.yandex.repository import (
+    ExternalIdentityConflict,
+    ProviderConnectionPersistenceError,
+)
 from app.modules.sessions.cookies import SESSION_COOKIE_NAME, set_session_cookie
 from app.modules.sessions.service import AuthenticatedSession, PostgresSessionService
 from app.modules.tenancy.policy import AuthorizationDenied, Capability
@@ -64,7 +69,11 @@ def _configured_integration(
     request: Request,
 ) -> tuple[YandexOAuthIntegration, YandexOAuthConfiguration] | Response:
     integration = get_application_dependencies(request).yandex_oauth
-    if integration is None or integration.config is None:
+    if (
+        integration is None
+        or integration.config is None
+        or integration.credential_persister is None
+    ):
         return _safe_error(request, status_code=503, code="oauth_unavailable")
     return integration, integration.config
 
@@ -124,6 +133,7 @@ def complete_yandex_oauth(
             transactions=integration.transactions,
             identities=integration.identities,
             provider=_provider(integration, config),
+            credential_persister=integration.credential_persister,
         ).complete(
             code=code,
             state=state,
@@ -137,6 +147,10 @@ def complete_yandex_oauth(
         return _safe_error(request, status_code=502, code="oauth_provider_error")
     except ExternalIdentityConflict:
         return _safe_error(request, status_code=409, code="oauth_identity_conflict")
+    except OAuthCredentialPersistenceUnavailable:
+        return _safe_error(request, status_code=503, code="oauth_credential_vault_unavailable")
+    except (CredentialVaultError, ProviderConnectionPersistenceError):
+        return _safe_error(request, status_code=503, code="oauth_credential_persistence_failed")
     except YandexOAuthProviderFailure as exc:
         if exc.kind == "invalid_grant":
             return _safe_error(request, status_code=400, code="oauth_reauthorization_required")
