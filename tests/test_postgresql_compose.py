@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
-
 _WORKTREE = Path(__file__).resolve().parents[1]
 _COMPOSE = _WORKTREE / "deploy" / "compose.test.yml"
-_DOCKER = "/tmp/directpilot-p2-bin/docker"
+_DOCKER = os.environ.get("DIRECTPILOT_DOCKER_BIN", "docker")
 
 
 def test_test_compose_resolves_pinned_postgres_on_loopback_only(tmp_path: Path) -> None:

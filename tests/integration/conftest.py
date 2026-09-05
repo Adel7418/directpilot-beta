@@ -9,10 +9,9 @@ from pathlib import Path
 
 import pytest
 
-
 _WORKTREE = Path(__file__).resolve().parents[2]
 _COMPOSE = _WORKTREE / "deploy" / "compose.test.yml"
-_DOCKER = os.environ.get("DIRECTPILOT_DOCKER_BIN", "/tmp/directpilot-p2-bin/docker")
+_DOCKER = os.environ.get("DIRECTPILOT_DOCKER_BIN", "docker")
 _OWNER_PASSWORD = "synthetic-test-owner-password"
 _APP_PASSWORD = "synthetic-test-app-password"
 
