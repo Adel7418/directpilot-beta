@@ -15,6 +15,14 @@ from app.db.engine import (
 )
 from app.db.schema import check_schema_compatibility
 from app.modules.identity.repository import PostgresIdentityRepository
+from app.modules.integrations.yandex.oauth import (
+    YandexOAuthConfiguration,
+    YandexOAuthIntegration,
+)
+from app.modules.integrations.yandex.repository import (
+    PostgresExternalIdentityRepository,
+    PostgresOAuthTransactionRepository,
+)
 from app.modules.sessions.service import PostgresSessionService
 from app.modules.tenancy.authorization import PostgresWorkspaceAuthorizer
 from app.providers.protocols import (
@@ -50,6 +58,7 @@ class ApplicationDependencies:
     identity_repository: PostgresIdentityRepository | None = None
     session_service: PostgresSessionService | None = None
     workspace_authorizer: PostgresWorkspaceAuthorizer | None = None
+    yandex_oauth: YandexOAuthIntegration | None = None
     fake_auth_enabled: bool = False
 
 
@@ -59,10 +68,22 @@ def _fake_auth_is_enabled(app_env: str) -> bool:
     ).lower() == "1"
 
 
+def _configured_yandex_oauth() -> YandexOAuthConfiguration | None:
+    settings = get_settings()
+    if settings.yandex_client_id is None or settings.yandex_client_secret is None:
+        return None
+    return YandexOAuthConfiguration(
+        client_id=settings.yandex_client_id,
+        client_secret=settings.yandex_client_secret,
+        redirect_uri=settings.yandex_oauth_redirect_uri,
+    )
+
+
 def create_application_dependencies() -> ApplicationDependencies:
     database_url = os.environ.get(DATABASE_URL_ENV)
     app_env = os.environ.get("DIRECTPILOT_APP_ENV", "local").lower()
     if database_url:
+        oauth_config = _configured_yandex_oauth()
         runtime = create_database_runtime(
             DatabaseSettings.from_mapping({DATABASE_URL_ENV: database_url})
         )
@@ -80,6 +101,11 @@ def create_application_dependencies() -> ApplicationDependencies:
             identity_repository=PostgresIdentityRepository(runtime.sessions),
             session_service=PostgresSessionService(runtime.sessions),
             workspace_authorizer=PostgresWorkspaceAuthorizer(runtime.sessions),
+            yandex_oauth=YandexOAuthIntegration(
+                transactions=PostgresOAuthTransactionRepository(runtime.sessions),
+                identities=PostgresExternalIdentityRepository(runtime.sessions),
+                config=oauth_config,
+            ),
             fake_auth_enabled=_fake_auth_is_enabled(app_env),
         )
     if app_env in {"production", "staging"}:
