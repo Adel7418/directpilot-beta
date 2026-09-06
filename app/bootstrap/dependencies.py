@@ -6,7 +6,12 @@ from typing import cast
 
 from fastapi import Depends, Request
 
-from app.config import Settings, get_settings
+from app.bootstrap.public_profile import (
+    PublicProfileConfigurationError,
+    validate_public_profile_dependencies,
+    validate_public_profile_static,
+)
+from app.config import RuntimeProfile, Settings, get_settings
 from app.db.engine import (
     DATABASE_URL_ENV,
     DatabaseRuntime,
@@ -49,6 +54,7 @@ from app.providers.yandex import (
     DefaultDirectClientFactory,
     DefaultMetrikaClientFactory,
     DefaultWordstatClientFactory,
+    PublicDirectClientFactory,
 )
 from app.repositories.context import RequestRepositoryProxy
 from app.repositories.mock_store import MockStoreRepositoryAdapter
@@ -61,6 +67,7 @@ from app.yandex_search_wordstat import YandexSearchWordstatClient
 
 legacy_store_adapter = MockStoreRepositoryAdapter(mock_store)
 legacy_store = RequestRepositoryProxy(legacy_store_adapter)
+_CACHED_SETTINGS_RESOLVER = get_settings
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,12 +84,15 @@ class ApplicationDependencies:
     yandex_oauth: YandexOAuthIntegration | None = None
     yandex_connection_lifecycle: YandexConnectionLifecycle | None = None
     fake_auth_enabled: bool = False
+    credential_vault: CredentialVault | None = None
 
 
 def _fake_auth_is_enabled(app_env: str) -> bool:
-    return app_env in {"local", "test"} and os.environ.get(
-        "DIRECTPILOT_ENABLE_FAKE_AUTH", ""
-    ).lower() == "1"
+    return app_env in {"local", "test"} and _fake_auth_is_requested()
+
+
+def _fake_auth_is_requested() -> bool:
+    return os.environ.get("DIRECTPILOT_ENABLE_FAKE_AUTH", "").lower() == "1"
 
 
 def _configured_yandex_oauth(settings: Settings) -> YandexOAuthConfiguration | None:
@@ -102,11 +112,47 @@ def _configured_credential_vault(settings: Settings) -> CredentialVault:
     return CredentialVault(CredentialKeyRing.from_json_secret_file(secret_file))
 
 
-def create_application_dependencies() -> ApplicationDependencies:
+def _direct_client_factory_for(settings: Settings) -> DirectClientFactory:
+    if settings.runtime_profile is RuntimeProfile.PUBLIC:
+        return PublicDirectClientFactory()
+    return DefaultDirectClientFactory()
+
+
+def _resolve_application_settings(settings: Settings | None) -> Settings:
+    if settings is not None:
+        return settings
+    if get_settings is not _CACHED_SETTINGS_RESOLVER:
+        return get_settings()
+    return Settings()
+
+
+def create_application_dependencies(
+    settings: Settings | None = None,
+    *,
+    include_legacy_router: bool = False,
+) -> ApplicationDependencies:
+    """Create dependency wiring from one resolved Settings object."""
+
+    settings = _resolve_application_settings(settings)
     database_url = os.environ.get(DATABASE_URL_ENV)
-    app_env = os.environ.get("DIRECTPILOT_APP_ENV", "local").lower()
+    fake_auth_enabled = _fake_auth_is_enabled(settings.app_env.lower())
+    validate_public_profile_static(
+        settings,
+        include_legacy_router=include_legacy_router,
+        fake_auth_enabled=fake_auth_enabled or _fake_auth_is_requested(),
+        database_configured=bool(database_url),
+    )
+
+    preloaded_credential_vault: CredentialVault | None = None
+    if settings.runtime_profile is RuntimeProfile.PUBLIC:
+        try:
+            preloaded_credential_vault = _configured_credential_vault(settings)
+        except CredentialConfigurationError:
+            raise PublicProfileConfigurationError(
+                "public_credential_keyring_unavailable"
+            ) from None
+
     if database_url:
-        settings = get_settings()
         oauth_config = _configured_yandex_oauth(settings)
         runtime = create_database_runtime(
             DatabaseSettings.from_mapping({DATABASE_URL_ENV: database_url})
@@ -115,9 +161,10 @@ def create_application_dependencies() -> ApplicationDependencies:
             credential_persister = None
             yandex_provider = None
             connection_lifecycle = None
-            credential_vault = None
-            if settings.credential_keyring_secret_file:
+            credential_vault = preloaded_credential_vault
+            if credential_vault is None and settings.credential_keyring_secret_file:
                 credential_vault = _configured_credential_vault(settings)
+            workspace_authorizer = PostgresWorkspaceAuthorizer(runtime.sessions)
             if oauth_config is not None:
                 connection_repository = PostgresYandexProviderConnectionRepository(
                     runtime.sessions,
@@ -132,45 +179,49 @@ def create_application_dependencies() -> ApplicationDependencies:
                     provider=yandex_provider,
                 )
             check_schema_compatibility(runtime)
+            dependencies = ApplicationDependencies(
+                repository=PostgresLegacyStoreRepository(runtime.sessions),
+                direct_client_factory=_direct_client_factory_for(settings),
+                metrika_client_factory=DefaultMetrikaClientFactory(),
+                wordstat_client_factory=DefaultWordstatClientFactory(),
+                connection_scoped_direct_client_factory=(
+                    None
+                    if credential_vault is None
+                    else PostgresConnectionScopedDirectClientFactory(
+                        sessions=runtime.sessions,
+                        vault=credential_vault,
+                        workspace_authorizer=workspace_authorizer,
+                        settings=settings,
+                    )
+                ),
+                database_runtime=runtime,
+                identity_repository=PostgresIdentityRepository(runtime.sessions),
+                session_service=PostgresSessionService(runtime.sessions),
+                workspace_authorizer=workspace_authorizer,
+                yandex_oauth=YandexOAuthIntegration(
+                    transactions=PostgresOAuthTransactionRepository(runtime.sessions),
+                    identities=PostgresExternalIdentityRepository(runtime.sessions),
+                    config=oauth_config,
+                    provider=yandex_provider,
+                    credential_persister=credential_persister,
+                ),
+                yandex_connection_lifecycle=connection_lifecycle,
+                fake_auth_enabled=fake_auth_enabled,
+                credential_vault=credential_vault,
+            )
+            validate_public_profile_dependencies(settings, dependencies)
+            return dependencies
         except Exception:
             runtime.close()
             raise
-        return ApplicationDependencies(
-            repository=PostgresLegacyStoreRepository(runtime.sessions),
-            direct_client_factory=DefaultDirectClientFactory(),
-            metrika_client_factory=DefaultMetrikaClientFactory(),
-            wordstat_client_factory=DefaultWordstatClientFactory(),
-            connection_scoped_direct_client_factory=(
-                None
-                if credential_vault is None
-                else PostgresConnectionScopedDirectClientFactory(
-                    sessions=runtime.sessions,
-                    vault=credential_vault,
-                    workspace_authorizer=PostgresWorkspaceAuthorizer(runtime.sessions),
-                    settings=settings,
-                )
-            ),
-            database_runtime=runtime,
-            identity_repository=PostgresIdentityRepository(runtime.sessions),
-            session_service=PostgresSessionService(runtime.sessions),
-            workspace_authorizer=PostgresWorkspaceAuthorizer(runtime.sessions),
-            yandex_oauth=YandexOAuthIntegration(
-                transactions=PostgresOAuthTransactionRepository(runtime.sessions),
-                identities=PostgresExternalIdentityRepository(runtime.sessions),
-                config=oauth_config,
-                provider=yandex_provider,
-                credential_persister=credential_persister,
-            ),
-            yandex_connection_lifecycle=connection_lifecycle,
-            fake_auth_enabled=_fake_auth_is_enabled(app_env),
-        )
-    if app_env in {"production", "staging"}:
+    if settings.app_env.lower() in {"production", "staging"}:
         DatabaseSettings.from_mapping({})
     return ApplicationDependencies(
         repository=legacy_store_adapter,
-        direct_client_factory=DefaultDirectClientFactory(),
+        direct_client_factory=_direct_client_factory_for(settings),
         metrika_client_factory=DefaultMetrikaClientFactory(),
         wordstat_client_factory=DefaultWordstatClientFactory(),
+        fake_auth_enabled=fake_auth_enabled,
     )
 
 

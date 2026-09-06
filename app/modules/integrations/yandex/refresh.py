@@ -128,6 +128,14 @@ class YandexConnectionLifecycleService:
         self._provider = provider
         self._refresh_skew_seconds = refresh_skew_seconds
 
+    @property
+    def repository(self) -> YandexConnectionLifecycleRepository:
+        return self._repository
+
+    @property
+    def provider(self) -> YandexRefreshProvider:
+        return self._provider
+
     def refresh(
         self,
         *,

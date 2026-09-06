@@ -1,3 +1,4 @@
+from enum import Enum
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
@@ -12,6 +13,11 @@ def mask_secret(value: str | None) -> str | None:
     return f"{value[:4]}…{value[-4:]}(len={len(value)})"
 
 
+class RuntimeProfile(str, Enum):
+    OPERATOR_LOCAL = "operator_local"
+    PUBLIC = "public"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -20,7 +26,24 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
-    app_env: str = "local"
+    app_env: str = Field(
+        default="local",
+        validation_alias=AliasChoices("DIRECTPILOT_APP_ENV", "app_env"),
+    )
+    runtime_profile: RuntimeProfile = Field(
+        default=RuntimeProfile.OPERATOR_LOCAL,
+        validation_alias=AliasChoices(
+            "DIRECTPILOT_RUNTIME_PROFILE",
+            "runtime_profile",
+        ),
+    )
+    public_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DIRECTPILOT_PUBLIC_BASE_URL",
+            "public_base_url",
+        ),
+    )
     directpilot_mode: str = Field(
         default="live_readonly",
         pattern="^(mock|sandbox|live_readonly|live_write)$",

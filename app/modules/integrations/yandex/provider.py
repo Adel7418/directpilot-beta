@@ -49,6 +49,10 @@ class HttpxYandexOAuthProvider:
         self._transport = transport
         self._timeout_seconds = timeout_seconds
 
+    @property
+    def config(self) -> YandexOAuthConfiguration:
+        return self._config
+
     def exchange_code(self, *, code: str, code_verifier: str) -> YandexOAuthTokenSet:
         try:
             with httpx.Client(

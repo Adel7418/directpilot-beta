@@ -7,7 +7,7 @@ import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from uuid import UUID
 
 from app.modules.integrations.yandex.credentials import (
@@ -17,12 +17,35 @@ from app.modules.integrations.yandex.credentials import (
 
 YANDEX_AUTHORIZE_URL = "https://oauth.yandex.ru/authorize"
 LOCAL_YANDEX_CALLBACK_URI = "http://127.0.0.1:8000/api/v1/integrations/yandex/callback"
+_PUBLIC_CALLBACK_PATH = "/api/v1/integrations/yandex/callback"
 MAX_OAUTH_TRANSACTION_TTL = timedelta(minutes=10)
 _ALLOWED_RETURN_PATHS = frozenset({"/"})
 
 
 class OAuthConfigurationError(ValueError):
-    """Raised when the bounded local OAuth configuration is unsafe."""
+    """Raised when the configured OAuth callback URI is unsafe."""
+
+
+def _is_supported_redirect_uri(redirect_uri: str) -> bool:
+    if redirect_uri == LOCAL_YANDEX_CALLBACK_URI:
+        return True
+    try:
+        parsed = urlsplit(redirect_uri)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and parsed.hostname is not None
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and "?" not in redirect_uri
+        and "#" not in redirect_uri
+        and parsed.path == _PUBLIC_CALLBACK_PATH
+        and (port is None or port > 0)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,9 +56,14 @@ class YandexOAuthConfiguration:
     transaction_ttl: timedelta = MAX_OAUTH_TRANSACTION_TTL
 
     def __post_init__(self) -> None:
-        if not self.client_id or not self.client_secret:
+        if (
+            not isinstance(self.client_id, str)
+            or not self.client_id.strip()
+            or not isinstance(self.client_secret, str)
+            or not self.client_secret.strip()
+        ):
             raise OAuthConfigurationError("Yandex OAuth is not configured")
-        if self.redirect_uri != LOCAL_YANDEX_CALLBACK_URI:
+        if not _is_supported_redirect_uri(self.redirect_uri):
             raise OAuthConfigurationError("Yandex OAuth redirect URI is not configured")
         if not timedelta() < self.transaction_ttl <= MAX_OAUTH_TRANSACTION_TTL:
             raise OAuthConfigurationError("Yandex OAuth transaction TTL is not configured")

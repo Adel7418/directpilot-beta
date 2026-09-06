@@ -13,6 +13,14 @@ class DefaultDirectClientFactory:
         return YandexDirectClient(settings=settings)
 
 
+class PublicDirectClientFactory:
+    """Public-safe generic factory that cannot select a global credential."""
+
+    def create(self, settings: Settings) -> YandexDirectClient | None:
+        del settings
+        return None
+
+
 class DefaultMetrikaClientFactory:
     def create(self, settings: Settings) -> YandexMetrikaClient:
         return YandexMetrikaClient(settings=settings)
