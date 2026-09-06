@@ -15,6 +15,10 @@ from app.db.engine import (
 )
 from app.db.schema import check_schema_compatibility
 from app.modules.identity.repository import PostgresIdentityRepository
+from app.modules.integrations.yandex.client_factory import (
+    ConnectionScopedDirectClientFactory,
+    PostgresConnectionScopedDirectClientFactory,
+)
 from app.modules.integrations.yandex.credentials import (
     CredentialConfigurationError,
     CredentialKeyRing,
@@ -65,6 +69,7 @@ class ApplicationDependencies:
     direct_client_factory: DirectClientFactory
     metrika_client_factory: MetrikaClientFactory
     wordstat_client_factory: WordstatClientFactory
+    connection_scoped_direct_client_factory: ConnectionScopedDirectClientFactory | None = None
     database_runtime: DatabaseRuntime | None = None
     identity_repository: PostgresIdentityRepository | None = None
     session_service: PostgresSessionService | None = None
@@ -110,10 +115,13 @@ def create_application_dependencies() -> ApplicationDependencies:
             credential_persister = None
             yandex_provider = None
             connection_lifecycle = None
+            credential_vault = None
+            if settings.credential_keyring_secret_file:
+                credential_vault = _configured_credential_vault(settings)
             if oauth_config is not None:
                 connection_repository = PostgresYandexProviderConnectionRepository(
                     runtime.sessions,
-                    vault=_configured_credential_vault(settings),
+                    vault=credential_vault or _configured_credential_vault(settings),
                 )
                 credential_persister = connection_repository
                 yandex_provider = HttpxYandexOAuthProvider(
@@ -132,6 +140,16 @@ def create_application_dependencies() -> ApplicationDependencies:
             direct_client_factory=DefaultDirectClientFactory(),
             metrika_client_factory=DefaultMetrikaClientFactory(),
             wordstat_client_factory=DefaultWordstatClientFactory(),
+            connection_scoped_direct_client_factory=(
+                None
+                if credential_vault is None
+                else PostgresConnectionScopedDirectClientFactory(
+                    sessions=runtime.sessions,
+                    vault=credential_vault,
+                    workspace_authorizer=PostgresWorkspaceAuthorizer(runtime.sessions),
+                    settings=settings,
+                )
+            ),
             database_runtime=runtime,
             identity_repository=PostgresIdentityRepository(runtime.sessions),
             session_service=PostgresSessionService(runtime.sessions),
