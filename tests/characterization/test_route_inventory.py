@@ -34,8 +34,8 @@ def test_openapi_baseline_route_inventory_matches_current_snapshot() -> None:
     for schema in (snapshot, generated):
         assert schema["info"]["title"] == "DirectPilot Beta API"
         assert schema["info"]["version"] == "0.2.1"
-        assert len(schema["paths"]) == 85
-        assert _operation_count(schema) == 99
+        assert len(schema["paths"]) == 89
+        assert _operation_count(schema) == 103
         assert schema.get("components", {}).get("securitySchemes", {}) == {}
         for route, method in _EXPECTED_ROUTES.items():
             assert method in schema["paths"][route]
