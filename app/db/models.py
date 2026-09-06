@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Integer,
     LargeBinary,
     MetaData,
@@ -206,6 +207,7 @@ class YandexProviderConnectionRecord(Base):
     __tablename__ = "yandex_provider_connections"
     __table_args__ = (
         UniqueConstraint("workspace_id", "provider", "external_identity_id"),
+        UniqueConstraint("id", "workspace_id"),
         CheckConstraint("provider = 'yandex'", name="provider_yandex"),
         CheckConstraint("schema_version > 0", name="schema_version_positive"),
         CheckConstraint("version > 0", name="version_positive"),
@@ -235,6 +237,66 @@ class YandexProviderConnectionRecord(Base):
         DateTime(timezone=True), nullable=True
     )
     credential_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ProviderAccountRecord(Base):
+    __tablename__ = "provider_accounts"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "provider_account_key"),
+        ForeignKeyConstraint(
+            ["connection_id", "workspace_id"],
+            ["yandex_provider_connections.id", "yandex_provider_connections.workspace_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "account_type IN ('advertiser', 'agency_client')",
+            name="account_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'archived', 'stale')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "capabilities = '[\"direct.read\"]'::jsonb",
+            name="capabilities_read_only",
+        ),
+        CheckConstraint("login_schema_version > 0", name="login_schema_version_positive"),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint("octet_length(login_nonce) = 12", name="login_nonce_length"),
+        CheckConstraint("octet_length(login_wrap_nonce) = 12", name="login_wrap_nonce_length"),
+        CheckConstraint("char_length(login_kek_key_id) > 0", name="login_kek_key_id_not_empty"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id"),
+        nullable=False,
+        index=True,
+    )
+    connection_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    provider_account_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    country_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    login_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    login_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    login_wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    login_wrap_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    login_kek_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    login_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)

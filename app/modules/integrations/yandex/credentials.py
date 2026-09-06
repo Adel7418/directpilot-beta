@@ -19,6 +19,8 @@ CREDENTIAL_SCHEMA_VERSION = 1
 YANDEX_PROVIDER = "yandex"
 _TOKEN_PAYLOAD_PURPOSE = "yandex-token-payload"
 _DEK_WRAP_PURPOSE = "yandex-dek-wrap"
+_PROVIDER_ACCOUNT_LOGIN_PURPOSE = "yandex-provider-account-login"
+_PROVIDER_ACCOUNT_LOGIN_WRAP_PURPOSE = "yandex-provider-account-login-dek-wrap"
 _NONCE_LENGTH = 12
 _DEK_LENGTH = 32
 _KEY_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -77,6 +79,66 @@ class CredentialContext:
         for purpose in (self.token_purpose, self.wrap_purpose):
             if not purpose or not purpose.isascii() or len(purpose) > 128:
                 raise CredentialConfigurationError("Credential context is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAccountLoginContext:
+    """Non-secret identifiers bound to one protected provider routing Login."""
+
+    workspace_id: UUID
+    connection_id: UUID
+    provider_account_id: UUID
+    schema_version: int = CREDENTIAL_SCHEMA_VERSION
+    provider: str = YANDEX_PROVIDER
+    login_purpose: str = _PROVIDER_ACCOUNT_LOGIN_PURPOSE
+    wrap_purpose: str = _PROVIDER_ACCOUNT_LOGIN_WRAP_PURPOSE
+
+    @classmethod
+    def for_yandex_provider_account(
+        cls,
+        *,
+        workspace_id: UUID,
+        connection_id: UUID,
+        provider_account_id: UUID,
+    ) -> ProviderAccountLoginContext:
+        return cls(
+            workspace_id=workspace_id,
+            connection_id=connection_id,
+            provider_account_id=provider_account_id,
+        )
+
+    def __post_init__(self) -> None:
+        if self.schema_version <= 0:
+            raise CredentialConfigurationError("Provider account login context is invalid")
+        if not self.provider or not self.provider.isascii() or len(self.provider) > 32:
+            raise CredentialConfigurationError("Provider account login context is invalid")
+        for purpose in (self.login_purpose, self.wrap_purpose):
+            if not purpose or not purpose.isascii() or len(purpose) > 128:
+                raise CredentialConfigurationError("Provider account login context is invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class EncryptedProviderAccountLogin:
+    """Persistable account Login envelope; encrypted material is never repr'd."""
+
+    ciphertext: bytes = field(repr=False)
+    nonce: bytes = field(repr=False)
+    wrapped_dek: bytes = field(repr=False)
+    wrap_nonce: bytes = field(repr=False)
+    kek_key_id: str
+    schema_version: int
+
+    def __post_init__(self) -> None:
+        if self.schema_version <= 0 or not _is_valid_key_id(self.kek_key_id):
+            raise CredentialDecryptionError("Encrypted provider account Login metadata is invalid")
+        if not isinstance(self.ciphertext, bytes) or not self.ciphertext:
+            raise CredentialDecryptionError("Encrypted provider account Login metadata is invalid")
+        if not isinstance(self.wrapped_dek, bytes) or not self.wrapped_dek:
+            raise CredentialDecryptionError("Encrypted provider account Login metadata is invalid")
+        if not isinstance(self.nonce, bytes) or len(self.nonce) != _NONCE_LENGTH:
+            raise CredentialDecryptionError("Encrypted provider account Login metadata is invalid")
+        if not isinstance(self.wrap_nonce, bytes) or len(self.wrap_nonce) != _NONCE_LENGTH:
+            raise CredentialDecryptionError("Encrypted provider account Login metadata is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +282,71 @@ class CredentialVault:
     def __init__(self, key_ring: CredentialKeyRing) -> None:
         self._key_ring = key_ring
 
+    def encrypt_provider_account_login(
+        self,
+        *,
+        context: ProviderAccountLoginContext,
+        login: str,
+    ) -> EncryptedProviderAccountLogin:
+        if context.schema_version != CREDENTIAL_SCHEMA_VERSION or context.provider != YANDEX_PROVIDER:
+            raise CredentialEncryptionError("Provider account Login context is invalid")
+        plaintext = _serialize_provider_account_login(login)
+        dek = os.urandom(_DEK_LENGTH)
+        try:
+            nonce = os.urandom(_NONCE_LENGTH)
+            wrap_nonce = os.urandom(_NONCE_LENGTH)
+            key_id, kek = self._key_ring.active_key()
+            ciphertext = AESGCM(dek).encrypt(
+                nonce,
+                plaintext,
+                _provider_account_login_authenticated_data(context, context.login_purpose),
+            )
+            wrapped_dek = AESGCM(kek).encrypt(
+                wrap_nonce,
+                dek,
+                _provider_account_login_authenticated_data(
+                    context,
+                    context.wrap_purpose,
+                    kek_key_id=key_id,
+                ),
+            )
+            return EncryptedProviderAccountLogin(
+                ciphertext=ciphertext,
+                nonce=nonce,
+                wrapped_dek=wrapped_dek,
+                wrap_nonce=wrap_nonce,
+                kek_key_id=key_id,
+                schema_version=context.schema_version,
+            )
+        except CredentialVaultError:
+            raise
+        except (TypeError, ValueError):
+            raise CredentialEncryptionError("Provider account Login encryption failed") from None
+        finally:
+            del plaintext
+            del dek
+
+    def decrypt_provider_account_login(
+        self,
+        *,
+        context: ProviderAccountLoginContext,
+        encrypted: EncryptedProviderAccountLogin,
+    ) -> str:
+        dek = self._unwrap_provider_account_login_dek(context=context, encrypted=encrypted)
+        try:
+            plaintext = AESGCM(dek).decrypt(
+                encrypted.nonce,
+                encrypted.ciphertext,
+                _provider_account_login_authenticated_data(context, context.login_purpose),
+            )
+            return _deserialize_provider_account_login(plaintext)
+        except CredentialVaultError:
+            raise
+        except (InvalidTag, UnicodeDecodeError, ValueError):
+            raise CredentialDecryptionError("Provider account Login decryption failed") from None
+        finally:
+            del dek
+
     def encrypt(
         self,
         *,
@@ -317,6 +444,35 @@ class CredentialVault:
             raise CredentialEncryptionError("Credential rewrap failed") from None
         finally:
             del dek
+
+    def _unwrap_provider_account_login_dek(
+        self,
+        *,
+        context: ProviderAccountLoginContext,
+        encrypted: EncryptedProviderAccountLogin,
+    ) -> bytes:
+        if (
+            context.schema_version != CREDENTIAL_SCHEMA_VERSION
+            or context.provider != YANDEX_PROVIDER
+            or encrypted.schema_version != context.schema_version
+        ):
+            raise CredentialDecryptionError("Encrypted provider account Login metadata is invalid")
+        kek = self._key_ring.key_for(encrypted.kek_key_id)
+        try:
+            dek = AESGCM(kek).decrypt(
+                encrypted.wrap_nonce,
+                encrypted.wrapped_dek,
+                _provider_account_login_authenticated_data(
+                    context,
+                    context.wrap_purpose,
+                    kek_key_id=encrypted.kek_key_id,
+                ),
+            )
+        except (InvalidTag, ValueError):
+            raise CredentialDecryptionError("Provider account Login decryption failed") from None
+        if len(dek) != _DEK_LENGTH:
+            raise CredentialDecryptionError("Provider account Login decryption failed")
+        return dek
 
     def _unwrap_dek(
         self,
@@ -454,6 +610,46 @@ def _required_timestamp(value: object) -> datetime:
     if parsed is None:
         raise CredentialDecryptionError("Credential payload is invalid")
     return parsed
+
+
+def _serialize_provider_account_login(value: str) -> bytes:
+    if not isinstance(value, str) or not value.strip() or len(value) > 1024:
+        raise CredentialPayloadError("Provider account Login is invalid")
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise CredentialPayloadError("Provider account Login is invalid") from None
+
+
+def _deserialize_provider_account_login(value: bytes) -> str:
+    try:
+        login = value.decode("utf-8")
+    except UnicodeDecodeError:
+        raise CredentialDecryptionError("Provider account Login is invalid") from None
+    try:
+        _serialize_provider_account_login(login)
+    except CredentialPayloadError:
+        raise CredentialDecryptionError("Provider account Login is invalid") from None
+    return login
+
+
+def _provider_account_login_authenticated_data(
+    context: ProviderAccountLoginContext,
+    purpose: str,
+    *,
+    kek_key_id: str | None = None,
+) -> bytes:
+    document: dict[str, int | str] = {
+        "connection_id": str(context.connection_id),
+        "provider": context.provider,
+        "provider_account_id": str(context.provider_account_id),
+        "purpose": purpose,
+        "schema_version": context.schema_version,
+        "workspace_id": str(context.workspace_id),
+    }
+    if kek_key_id is not None:
+        document["kek_key_id"] = kek_key_id
+    return json.dumps(document, separators=(",", ":"), sort_keys=True).encode("ascii")
 
 
 def _authenticated_data(
