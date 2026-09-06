@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -10,6 +10,7 @@ from app.config import Settings
 
 SANDBOX_BASE_URL = "https://api-sandbox.direct.yandex.com/json/v5"
 LIVE_BASE_URL = "https://api.direct.yandex.com/json/v5"
+_UNSET = object()
 
 
 class YandexDirectError(RuntimeError):
@@ -33,9 +34,95 @@ class YandexDirectError(RuntimeError):
 
 
 class YandexDirectClient:
-    def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        transport: httpx.BaseTransport | None = None,
+        *,
+        access_token: str | None | object = _UNSET,
+        client_login: str | None = None,
+        use_operator_units: bool = False,
+        request_context: Callable[[], None] | None = None,
+    ) -> None:
+        if access_token is _UNSET:
+            if client_login is not None or use_operator_units or request_context is not None:
+                raise ValueError("Explicit Direct options require an explicit credential")
+            self._connection_scoped = False
+            self._access_token: str | None = None
+        else:
+            if not isinstance(access_token, str) or not access_token:
+                raise ValueError("An explicit Yandex Direct credential is required")
+            if use_operator_units:
+                raise ValueError("Connection-scoped Direct clients cannot use agency units")
+            self._connection_scoped = True
+            self._access_token = access_token
+        self._client_login = client_login
+        self._request_context = request_context
+        self._closed = False
         self.settings = settings
         self._client = httpx.Client(timeout=20, transport=transport)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._client.close()
+        self._access_token = None
+        self._client_login = None
+        self._request_context = None
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise YandexDirectError("Yandex Direct client is closed")
+
+    def _before_provider_request(self, *, method: str | None) -> None:
+        self._ensure_open()
+        if self._connection_scoped and method is not None and method != "get":
+            raise YandexDirectError("Connection-scoped Direct clients allow only get methods")
+        if self._request_context is not None:
+            self._request_context()
+
+    def _request_headers(self, *, language: str, report: bool) -> dict[str, str]:
+        self._ensure_open()
+        access_token: str | None
+        if self._connection_scoped:
+            if self._access_token is None:
+                raise YandexDirectError("Connection-scoped Direct credential is unavailable")
+            access_token = self._access_token
+        else:
+            access_token = self.settings.yandex_oauth_token
+            if not access_token:
+                raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
+
+        if access_token is None:
+            raise YandexDirectError("Yandex Direct credential is unavailable")
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept-Language": language,
+        }
+        if self._client_login is not None:
+            headers["Client-Login"] = self._client_login
+        if report:
+            headers.update(
+                {
+                    "processingMode": "auto",
+                    "returnMoneyInMicros": "false",
+                    "skipReportHeader": "true",
+                    "skipColumnHeader": "false",
+                    "skipReportSummary": "true",
+                }
+            )
+        return headers
+
+    def _provider_error(self, error: dict[str, Any]) -> dict[str, Any]:
+        if self._connection_scoped:
+            return {"error_code": error.get("error_code")}
+        return {
+            "error_code": error.get("error_code"),
+            "error_detail": error.get("error_detail"),
+            "error_string": error.get("error_string"),
+        }
 
     @property
     def base_url(self) -> str:
@@ -919,6 +1006,11 @@ class YandexDirectClient:
         ``Currency`` and ``AccountDayBudget`` — the four fields the user
         needs to decide whether the account can keep serving impressions.
         """
+        self._ensure_open()
+        if self._connection_scoped:
+            raise YandexDirectError(
+                "Connection-scoped Direct clients do not support account balance"
+            )
         if not self.settings.yandex_oauth_token:
             raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
 
@@ -1508,22 +1600,13 @@ class YandexDirectClient:
         return self._call("campaigns", payload)
 
     def _call_report(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if not self.settings.yandex_oauth_token:
-            raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
+        self._before_provider_request(method=None)
 
         try:
             response = self._client.post(
                 f"{self.base_url}/reports",
                 json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
-                    "Accept-Language": "en",
-                    "processingMode": "auto",
-                    "returnMoneyInMicros": "false",
-                    "skipReportHeader": "true",
-                    "skipColumnHeader": "false",
-                    "skipReportSummary": "true",
-                },
+                headers=self._request_headers(language="en", report=True),
             )
         except httpx.HTTPError as exc:
             raise YandexDirectError(
@@ -1545,11 +1628,7 @@ class YandexDirectClient:
             if isinstance(error, dict):
                 return {
                     "ok": False,
-                    "error": {
-                        "error_code": error.get("error_code"),
-                        "error_detail": error.get("error_detail"),
-                        "error_string": error.get("error_string"),
-                    },
+                    "error": self._provider_error(error),
                     "units": response.headers.get("Units"),
                 }
             return {
@@ -1561,22 +1640,18 @@ class YandexDirectClient:
         return {"ok": True, "result": response.text, "units": response.headers.get("Units")}
 
     def _call(self, service: str, payload: dict[str, Any]) -> dict[str, Any]:
-        diagnostics = {
+        diagnostics: dict[str, Any] = {
             "provider": "yandex_direct",
             "service": service,
             "method": str(payload.get("method") or ""),
         }
-        if not self.settings.yandex_oauth_token:
-            raise YandexDirectError("YANDEX_OAUTH_TOKEN is required for Yandex Direct API calls")
+        self._before_provider_request(method=diagnostics["method"])
 
         try:
             response = self._client.post(
                 f"{self.base_url}/{service}",
                 json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.settings.yandex_oauth_token}",
-                    "Accept-Language": "ru",
-                },
+                headers=self._request_headers(language="ru", report=False),
             )
         except httpx.HTTPError as exc:
             raise YandexDirectError(
@@ -1592,7 +1667,12 @@ class YandexDirectClient:
                 body = None
             error = body.get("error") if isinstance(body, dict) else None
             if isinstance(error, dict):
-                for key in ("error_code", "error_string", "error_detail"):
+                keys = ("error_code",) if self._connection_scoped else (
+                    "error_code",
+                    "error_string",
+                    "error_detail",
+                )
+                for key in keys:
                     if key in error:
                         diagnostics[key] = error[key]
             diagnostics["http_status"] = response.status_code
@@ -1614,11 +1694,7 @@ class YandexDirectClient:
                 error = body["error"]
                 return {
                     "ok": False,
-                    "error": {
-                        "error_code": error.get("error_code"),
-                        "error_detail": error.get("error_detail"),
-                        "error_string": error.get("error_string"),
-                    },
+                    "error": self._provider_error(error),
                     "units": units,
                 }
             return {

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from app.bootstrap import dependencies as dependencies_module
 from app.bootstrap.dependencies import create_application_dependencies
+from app.config import Settings
 from app.db.engine import DatabaseSettings, create_database_runtime
 from app.db.migrations.runner import upgrade_database
 from app.db.roles import bootstrap_database_roles
@@ -26,6 +28,17 @@ def test_production_dependencies_use_postgresql_repository_after_schema_readines
         upgrade_database(owner_runtime)
         monkeypatch.setenv("DIRECTPILOT_APP_ENV", "production")
         monkeypatch.setenv("DIRECTPILOT_DATABASE_URL", getattr(postgres_service, "app_url"))
+        monkeypatch.setattr(
+            dependencies_module,
+            "get_settings",
+            lambda: Settings(
+                _env_file=None,
+                yandex_client_id=None,
+                yandex_client_secret=None,
+                yandex_oauth_token=None,
+                credential_keyring_secret_file=None,
+            ),
+        )
 
         dependencies = create_application_dependencies()
         try:

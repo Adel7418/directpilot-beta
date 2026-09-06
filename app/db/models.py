@@ -6,8 +6,12 @@ from uuid import UUID
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    LargeBinary,
     MetaData,
     String,
     UniqueConstraint,
@@ -146,6 +150,156 @@ class SessionRecord(Base):
     idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class OAuthTransactionRecord(Base):
+    __tablename__ = "yandex_oauth_transactions"
+
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id"),
+        nullable=False,
+    )
+    browser_session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("sessions.id"),
+        nullable=False,
+    )
+    return_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ExternalIdentityRecord(Base):
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject"),
+        UniqueConstraint("user_id", "issuer"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(255), nullable=False)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+    )
+    profile_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    profile_display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_authenticated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class YandexProviderConnectionRecord(Base):
+    __tablename__ = "yandex_provider_connections"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "provider", "external_identity_id"),
+        UniqueConstraint("id", "workspace_id"),
+        CheckConstraint("provider = 'yandex'", name="provider_yandex"),
+        CheckConstraint("schema_version > 0", name="schema_version_positive"),
+        CheckConstraint("version > 0", name="version_positive"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id"),
+        nullable=False,
+    )
+    external_identity_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("external_identities.id"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    token_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wrap_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    kek_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    access_token_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    refresh_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    credential_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ProviderAccountRecord(Base):
+    __tablename__ = "provider_accounts"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "provider_account_key"),
+        ForeignKeyConstraint(
+            ["connection_id", "workspace_id"],
+            ["yandex_provider_connections.id", "yandex_provider_connections.workspace_id"],
+            ondelete="CASCADE",
+        ),
+        CheckConstraint(
+            "account_type IN ('advertiser', 'agency_client')",
+            name="account_type_valid",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'archived', 'stale')",
+            name="status_valid",
+        ),
+        CheckConstraint(
+            "capabilities = '[\"direct.read\"]'::jsonb",
+            name="capabilities_read_only",
+        ),
+        CheckConstraint("login_schema_version > 0", name="login_schema_version_positive"),
+        CheckConstraint("version > 0", name="version_positive"),
+        CheckConstraint("octet_length(login_nonce) = 12", name="login_nonce_length"),
+        CheckConstraint("octet_length(login_wrap_nonce) = 12", name="login_wrap_nonce_length"),
+        CheckConstraint("char_length(login_kek_key_id) > 0", name="login_kek_key_id_not_empty"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PostgreSQLUUID(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id"),
+        nullable=False,
+        index=True,
+    )
+    connection_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        nullable=False,
+        index=True,
+    )
+    provider_account_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    country_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    login_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    login_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    login_wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    login_wrap_nonce: Mapped[bytes] = mapped_column(LargeBinary(12), nullable=False)
+    login_kek_key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    login_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class AuditEventRecord(Base):

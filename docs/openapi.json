@@ -7055,6 +7055,80 @@
         "title": "YandexCampaignList",
         "type": "object"
       },
+      "YandexConnectionDisconnectResponse": {
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "local_credentials_purged": {
+            "const": true,
+            "title": "Local Credentials Purged",
+            "type": "boolean"
+          },
+          "provider_revocation": {
+            "const": "not_supported_for_current_grant",
+            "title": "Provider Revocation",
+            "type": "string"
+          },
+          "status": {
+            "const": "disconnected",
+            "title": "Status",
+            "type": "string"
+          },
+          "yandex_revocation_url": {
+            "const": "https://id.yandex.ru/personal/data-access",
+            "title": "Yandex Revocation Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "status",
+          "local_credentials_purged",
+          "provider_revocation",
+          "yandex_revocation_url"
+        ],
+        "title": "YandexConnectionDisconnectResponse",
+        "type": "object"
+      },
+      "YandexConnectionRefreshResponse": {
+        "properties": {
+          "access_token_expires_at": {
+            "format": "date-time",
+            "title": "Access Token Expires At",
+            "type": "string"
+          },
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "credential_version": {
+            "title": "Credential Version",
+            "type": "integer"
+          },
+          "refreshed": {
+            "title": "Refreshed",
+            "type": "boolean"
+          },
+          "status": {
+            "const": "active",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "status",
+          "refreshed",
+          "access_token_expires_at",
+          "credential_version"
+        ],
+        "title": "YandexConnectionRefreshResponse",
+        "type": "object"
+      },
       "YandexControlRequest": {
         "properties": {
           "approved": {
@@ -8444,6 +8518,184 @@
           }
         },
         "summary": "Apply Action"
+      }
+    },
+    "/api/v1/integrations/yandex/callback": {
+      "get": {
+        "operationId": "complete_yandex_oauth_api_v1_integrations_yandex_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Yandex Oauth"
+      }
+    },
+    "/api/v1/integrations/yandex/connections/{connection_id}/disconnect": {
+      "post": {
+        "operationId": "disconnect_yandex_connection_api_v1_integrations_yandex_connections__connection_id__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexConnectionDisconnectResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Yandex Connection"
+      }
+    },
+    "/api/v1/integrations/yandex/connections/{connection_id}/refresh": {
+      "post": {
+        "operationId": "refresh_yandex_connection_api_v1_integrations_yandex_connections__connection_id__refresh_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connection_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Connection Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YandexConnectionRefreshResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh Yandex Connection"
+      }
+    },
+    "/api/v1/integrations/yandex/start": {
+      "get": {
+        "operationId": "start_yandex_oauth_api_v1_integrations_yandex_start_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "return_path",
+            "required": false,
+            "schema": {
+              "default": "/",
+              "title": "Return Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Yandex Oauth"
       }
     },
     "/audit-log": {
