@@ -1,29 +1,49 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.models import (
+    AuditEventRecord,
     ExternalIdentityRecord,
     OAuthTransactionRecord,
     YandexProviderConnectionRecord,
 )
 from app.db.rls import tenant_transaction
+from app.modules.audit.repository import sanitize_audit_metadata
 from app.modules.integrations.yandex.credentials import (
     CredentialContext,
+    CredentialPayloadError,
     CredentialVault,
+    CredentialVaultError,
     EncryptedYandexCredential,
     YandexCredentialPayload,
 )
 from app.modules.integrations.yandex.oauth import (
     ConsumedOAuthTransaction,
     NewOAuthTransaction,
+    YandexOAuthTokenSet,
     hash_oauth_state,
+)
+from app.modules.integrations.yandex.provider import YandexOAuthProviderFailure
+from app.modules.integrations.yandex.refresh import (
+    DisconnectResult,
+    RefreshResult,
+    YandexConnectionCredentialUnavailable,
+    YandexConnectionLifecycleError,
+    YandexConnectionNotActive,
+    YandexConnectionNotFound,
+    YandexConnectionPersistenceFailure,
+    YandexConnectionProviderConfigurationFailure,
+    YandexConnectionProviderUnavailable,
+    YandexConnectionReauthorizationRequired,
+    YandexRefreshProvider,
+    is_refresh_due,
 )
 
 
@@ -295,6 +315,229 @@ class PostgresYandexProviderConnectionRepository:
                 "Yandex provider connection could not be persisted"
             ) from None
 
+    def refresh_yandex_connection(
+        self,
+        *,
+        user_id: UUID,
+        workspace_id: UUID,
+        connection_id: UUID,
+        provider: YandexRefreshProvider,
+        skew_seconds: int,
+        now: datetime | None = None,
+    ) -> RefreshResult:
+        """Refresh one due active connection while retaining its PostgreSQL row lock."""
+        result: RefreshResult | None = None
+        failure: YandexConnectionLifecycleError | None = None
+        try:
+            with tenant_transaction(
+                self._sessions,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            ) as session:
+                record = session.scalar(
+                    select(YandexProviderConnectionRecord)
+                    .where(
+                        YandexProviderConnectionRecord.id == connection_id,
+                        YandexProviderConnectionRecord.workspace_id == workspace_id,
+                        YandexProviderConnectionRecord.provider == "yandex",
+                    )
+                    .with_for_update()
+                )
+                lock_checked_at = _utc_now(now)
+                if record is None:
+                    failure = YandexConnectionNotFound()
+                elif record.status != "active":
+                    failure = YandexConnectionNotActive()
+                elif not is_refresh_due(
+                    now=lock_checked_at,
+                    expires_at=record.access_token_expires_at,
+                    skew_seconds=skew_seconds,
+                ):
+                    result = _refresh_result(record, refreshed=False)
+                else:
+                    try:
+                        decrypted = self._vault.decrypt(
+                            context=CredentialContext.for_yandex_connection(
+                                workspace_id=workspace_id,
+                                connection_id=record.id,
+                            ),
+                            encrypted=_encrypted_credential(record),
+                        )
+                    except CredentialVaultError:
+                        _append_lifecycle_audit(
+                            session,
+                            user_id=user_id,
+                            workspace_id=workspace_id,
+                            connection_id=connection_id,
+                            action="yandex_connection_refresh",
+                            outcome="credential_unavailable",
+                        )
+                        failure = YandexConnectionCredentialUnavailable()
+                    else:
+                        tokens: YandexOAuthTokenSet | None = None
+                        try:
+                            tokens = provider.refresh_tokens(refresh_token=decrypted.refresh_token)
+                        except YandexOAuthProviderFailure as exc:
+                            if exc.kind == "invalid_grant":
+                                session.delete(record)
+                                _append_lifecycle_audit(
+                                    session,
+                                    user_id=user_id,
+                                    workspace_id=workspace_id,
+                                    connection_id=connection_id,
+                                    action="yandex_connection_refresh",
+                                    outcome="refresh_reauth_required",
+                                )
+                                failure = YandexConnectionReauthorizationRequired()
+                            elif exc.kind in {"invalid_client", "unauthorized_client"}:
+                                _append_lifecycle_audit(
+                                    session,
+                                    user_id=user_id,
+                                    workspace_id=workspace_id,
+                                    connection_id=connection_id,
+                                    action="yandex_connection_refresh",
+                                    outcome="provider_configuration_error",
+                                )
+                                failure = YandexConnectionProviderConfigurationFailure()
+                            else:
+                                _append_lifecycle_audit(
+                                    session,
+                                    user_id=user_id,
+                                    workspace_id=workspace_id,
+                                    connection_id=connection_id,
+                                    action="yandex_connection_refresh",
+                                    outcome="provider_unavailable",
+                                )
+                                failure = YandexConnectionProviderUnavailable()
+                        finally:
+                            del decrypted
+                        if failure is None and tokens is None:
+                            _append_lifecycle_audit(
+                                session,
+                                user_id=user_id,
+                                workspace_id=workspace_id,
+                                connection_id=connection_id,
+                                action="yandex_connection_refresh",
+                                outcome="provider_response_invalid",
+                            )
+                            failure = YandexConnectionProviderUnavailable()
+                        if tokens is not None:
+                            try:
+                                refreshed_payload = _refreshed_credential_payload(
+                                    tokens,
+                                    received_at=_utc_now(now),
+                                )
+                            except (CredentialPayloadError, ValueError):
+                                _append_lifecycle_audit(
+                                    session,
+                                    user_id=user_id,
+                                    workspace_id=workspace_id,
+                                    connection_id=connection_id,
+                                    action="yandex_connection_refresh",
+                                    outcome="provider_response_invalid",
+                                )
+                                failure = YandexConnectionProviderUnavailable()
+                            else:
+                                try:
+                                    encrypted = self._vault.encrypt(
+                                        context=CredentialContext.for_yandex_connection(
+                                            workspace_id=workspace_id,
+                                            connection_id=record.id,
+                                        ),
+                                        payload=refreshed_payload,
+                                    )
+                                except CredentialVaultError:
+                                    _append_lifecycle_audit(
+                                        session,
+                                        user_id=user_id,
+                                        workspace_id=workspace_id,
+                                        connection_id=connection_id,
+                                        action="yandex_connection_refresh",
+                                        outcome="refresh_persistence_failed",
+                                    )
+                                    failure = YandexConnectionPersistenceFailure()
+                                else:
+                                    _replace_encrypted_credential(record, encrypted)
+                                    record.status = "active"
+                                    record.credential_updated_at = lock_checked_at
+                                    record.updated_at = lock_checked_at
+                                    record.version += 1
+                                    result = _refresh_result(record, refreshed=True)
+                                    _append_lifecycle_audit(
+                                        session,
+                                        user_id=user_id,
+                                        workspace_id=workspace_id,
+                                        connection_id=connection_id,
+                                        action="yandex_connection_refresh",
+                                        outcome="refreshed",
+                                    )
+                                finally:
+                                    del refreshed_payload
+                            del tokens
+                session.flush()
+        except SQLAlchemyError:
+            raise YandexConnectionPersistenceFailure() from None
+        if failure is not None:
+            raise failure
+        if result is None:
+            raise YandexConnectionPersistenceFailure()
+        return result
+
+    def disconnect_yandex_connection(
+        self,
+        *,
+        user_id: UUID,
+        workspace_id: UUID,
+        connection_id: UUID,
+        now: datetime | None = None,
+    ) -> DisconnectResult:
+        """Hard-delete one local connection without attempting unsupported upstream revoke."""
+        del now
+        result: DisconnectResult | None = None
+        failure: YandexConnectionLifecycleError | None = None
+        try:
+            with tenant_transaction(
+                self._sessions,
+                workspace_id=workspace_id,
+                user_id=user_id,
+            ) as session:
+                record = session.scalar(
+                    select(YandexProviderConnectionRecord)
+                    .where(
+                        YandexProviderConnectionRecord.id == connection_id,
+                        YandexProviderConnectionRecord.workspace_id == workspace_id,
+                        YandexProviderConnectionRecord.provider == "yandex",
+                    )
+                    .with_for_update()
+                )
+                if record is not None:
+                    session.delete(record)
+                    _append_lifecycle_audit(
+                        session,
+                        user_id=user_id,
+                        workspace_id=workspace_id,
+                        connection_id=connection_id,
+                        action="yandex_connection_disconnect",
+                        outcome="disconnect_local",
+                    )
+                    result = DisconnectResult(connection_id=connection_id)
+                elif _has_prior_disconnect_audit(
+                    session,
+                    workspace_id=workspace_id,
+                    connection_id=connection_id,
+                ):
+                    result = DisconnectResult(connection_id=connection_id)
+                else:
+                    failure = YandexConnectionNotFound()
+                session.flush()
+        except SQLAlchemyError:
+            raise YandexConnectionPersistenceFailure() from None
+        if failure is not None:
+            raise failure
+        if result is None:
+            raise YandexConnectionPersistenceFailure()
+        return result
+
     def rewrap_to_active_key(
         self,
         *,
@@ -335,6 +578,86 @@ class PostgresYandexProviderConnectionRepository:
             record.version += 1
             session.flush()
             return _safe_provider_connection(record)
+
+
+def _refresh_result(
+    record: YandexProviderConnectionRecord,
+    *,
+    refreshed: bool,
+) -> RefreshResult:
+    return RefreshResult(
+        connection_id=record.id,
+        status=record.status,
+        refreshed=refreshed,
+        access_token_expires_at=record.access_token_expires_at,
+        credential_version=record.version,
+    )
+
+
+def _refreshed_credential_payload(
+    tokens: YandexOAuthTokenSet,
+    *,
+    received_at: datetime,
+) -> YandexCredentialPayload:
+    if (
+        not isinstance(tokens.token_type, str)
+        or tokens.token_type.lower() != "bearer"
+        or not isinstance(tokens.access_token, str)
+        or not tokens.access_token
+        or not isinstance(tokens.refresh_token, str)
+        or not tokens.refresh_token
+        or not isinstance(tokens.expires_in, int)
+        or isinstance(tokens.expires_in, bool)
+        or tokens.expires_in <= 0
+    ):
+        raise CredentialPayloadError("Yandex refresh response is invalid")
+    expires_at = _utc_now(received_at) + timedelta(seconds=tokens.expires_in)
+    return YandexCredentialPayload(
+        access_token=tokens.access_token,
+        refresh_token=tokens.refresh_token,
+        access_token_expires_at=expires_at,
+        refresh_token_expires_at=expires_at,
+    )
+
+
+def _append_lifecycle_audit(
+    session: Session,
+    *,
+    user_id: UUID,
+    workspace_id: UUID,
+    connection_id: UUID,
+    action: str,
+    outcome: str,
+) -> None:
+    session.add(
+        AuditEventRecord(
+            id=uuid4(),
+            workspace_id=workspace_id,
+            actor=str(user_id),
+            action=action,
+            entity=f"yandex_connection:{connection_id}",
+            dry_run=False,
+            details=sanitize_audit_metadata({"provider": "yandex", "outcome": outcome}),
+        )
+    )
+
+
+def _has_prior_disconnect_audit(
+    session: Session,
+    *,
+    workspace_id: UUID,
+    connection_id: UUID,
+) -> bool:
+    audit_id = session.scalar(
+        select(AuditEventRecord.id)
+        .where(
+            AuditEventRecord.workspace_id == workspace_id,
+            AuditEventRecord.action == "yandex_connection_disconnect",
+            AuditEventRecord.entity == f"yandex_connection:{connection_id}",
+        )
+        .limit(1)
+    )
+    return audit_id is not None
 
 
 def _replace_encrypted_credential(

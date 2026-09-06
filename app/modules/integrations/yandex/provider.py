@@ -41,14 +41,18 @@ class HttpxYandexOAuthProvider:
         *,
         config: YandexOAuthConfiguration,
         transport: httpx.BaseTransport | None = None,
+        timeout_seconds: float = 10.0,
     ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("Yandex OAuth timeout must be positive")
         self._config = config
         self._transport = transport
+        self._timeout_seconds = timeout_seconds
 
     def exchange_code(self, *, code: str, code_verifier: str) -> YandexOAuthTokenSet:
         try:
             with httpx.Client(
-                timeout=httpx.Timeout(10.0),
+                timeout=httpx.Timeout(self._timeout_seconds),
                 transport=self._transport,
             ) as client:
                 response = client.post(
@@ -89,10 +93,54 @@ class HttpxYandexOAuthProvider:
             token_type=token_type.lower(),
         )
 
+    def refresh_tokens(self, *, refresh_token: str) -> YandexOAuthTokenSet:
+        """Refresh one encrypted connection's token pair through the bounded OAuth seam."""
+        try:
+            with httpx.Client(
+                timeout=httpx.Timeout(self._timeout_seconds),
+                transport=self._transport,
+            ) as client:
+                response = client.post(
+                    _TOKEN_URL,
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": refresh_token,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    auth=(self._config.client_id, self._config.client_secret),
+                )
+        except httpx.HTTPError:
+            raise YandexOAuthProviderFailure("provider_unavailable") from None
+        if response.is_error:
+            raise _token_failure(response)
+        payload = _json_mapping(response, kind="provider_response_invalid")
+        token_type = payload.get("token_type")
+        access_token = payload.get("access_token")
+        returned_refresh_token = payload.get("refresh_token")
+        expires_in = payload.get("expires_in")
+        if (
+            not isinstance(token_type, str)
+            or token_type.lower() != "bearer"
+            or not isinstance(access_token, str)
+            or not access_token
+            or not isinstance(returned_refresh_token, str)
+            or not returned_refresh_token
+            or not isinstance(expires_in, int)
+            or isinstance(expires_in, bool)
+            or expires_in <= 0
+        ):
+            raise YandexOAuthProviderFailure("provider_response_invalid")
+        return YandexOAuthTokenSet(
+            access_token=access_token,
+            refresh_token=returned_refresh_token,
+            expires_in=expires_in,
+            token_type=token_type.lower(),
+        )
+
     def fetch_user_info(self, *, access_token: str) -> YandexUserInfo:
         try:
             with httpx.Client(
-                timeout=httpx.Timeout(10.0),
+                timeout=httpx.Timeout(self._timeout_seconds),
                 transport=self._transport,
             ) as client:
                 response = client.get(

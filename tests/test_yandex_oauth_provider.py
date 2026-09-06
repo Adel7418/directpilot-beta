@@ -76,6 +76,50 @@ def test_provider_uses_basic_form_pkce_and_header_userinfo_without_network() -> 
     assert "refresh_token=" not in repr(tokens)
 
 
+def test_provider_refresh_uses_exact_form_and_basic_auth_without_network() -> None:
+    config = YandexOAuthConfiguration(
+        client_id="synthetic-client-id",
+        client_secret="synthetic-client-secret",
+        redirect_uri="http://127.0.0.1:8000/api/v1/integrations/yandex/callback",
+    )
+    refresh_token = secrets.token_urlsafe(32)
+    returned_access_token = secrets.token_urlsafe(32)
+    returned_refresh_token = secrets.token_urlsafe(32)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        form = parse_qs(request.content.decode("ascii"), strict_parsing=True)
+        assert request.method == "POST"
+        assert str(request.url) == "https://oauth.yandex.ru/token"
+        assert request.headers["content-type"].startswith("application/x-www-form-urlencoded")
+        assert request.headers["authorization"].startswith("Basic ")
+        assert form == {"grant_type": ["refresh_token"], "refresh_token": [refresh_token]}
+        assert "client_id" not in form
+        assert "client_secret" not in form
+        return httpx.Response(
+            200,
+            json={
+                "token_type": "bearer",
+                "access_token": returned_access_token,
+                "refresh_token": returned_refresh_token,
+                "expires_in": 1800,
+            },
+        )
+
+    provider = HttpxYandexOAuthProvider(
+        config=config,
+        transport=httpx.MockTransport(handler),
+    )
+
+    tokens = provider.refresh_tokens(refresh_token=refresh_token)
+
+    assert len(requests) == 1
+    assert tokens.expires_in == 1800
+    assert "access_token=" not in repr(tokens)
+    assert "refresh_token=" not in repr(tokens)
+
+
 def _contains_any(value: str, markers: tuple[str, ...]) -> bool:
     return any(marker in value for marker in markers)
 

@@ -24,6 +24,11 @@ from app.modules.integrations.yandex.oauth import (
     YandexOAuthConfiguration,
     YandexOAuthIntegration,
 )
+from app.modules.integrations.yandex.provider import HttpxYandexOAuthProvider
+from app.modules.integrations.yandex.refresh import (
+    YandexConnectionLifecycle,
+    YandexConnectionLifecycleService,
+)
 from app.modules.integrations.yandex.repository import (
     PostgresExternalIdentityRepository,
     PostgresOAuthTransactionRepository,
@@ -65,6 +70,7 @@ class ApplicationDependencies:
     session_service: PostgresSessionService | None = None
     workspace_authorizer: PostgresWorkspaceAuthorizer | None = None
     yandex_oauth: YandexOAuthIntegration | None = None
+    yandex_connection_lifecycle: YandexConnectionLifecycle | None = None
     fake_auth_enabled: bool = False
 
 
@@ -101,14 +107,22 @@ def create_application_dependencies() -> ApplicationDependencies:
             DatabaseSettings.from_mapping({DATABASE_URL_ENV: database_url})
         )
         try:
-            credential_persister = (
-                PostgresYandexProviderConnectionRepository(
+            credential_persister = None
+            yandex_provider = None
+            connection_lifecycle = None
+            if oauth_config is not None:
+                connection_repository = PostgresYandexProviderConnectionRepository(
                     runtime.sessions,
                     vault=_configured_credential_vault(settings),
                 )
-                if oauth_config is not None
-                else None
-            )
+                credential_persister = connection_repository
+                yandex_provider = HttpxYandexOAuthProvider(
+                    config=oauth_config,
+                )
+                connection_lifecycle = YandexConnectionLifecycleService(
+                    repository=connection_repository,
+                    provider=yandex_provider,
+                )
             check_schema_compatibility(runtime)
         except Exception:
             runtime.close()
@@ -126,8 +140,10 @@ def create_application_dependencies() -> ApplicationDependencies:
                 transactions=PostgresOAuthTransactionRepository(runtime.sessions),
                 identities=PostgresExternalIdentityRepository(runtime.sessions),
                 config=oauth_config,
+                provider=yandex_provider,
                 credential_persister=credential_persister,
             ),
+            yandex_connection_lifecycle=connection_lifecycle,
             fake_auth_enabled=_fake_auth_is_enabled(app_env),
         )
     if app_env in {"production", "staging"}:
