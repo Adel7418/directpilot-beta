@@ -11,7 +11,7 @@ from app.modules.integrations.yandex.oauth import (
     YandexUserInfo,
 )
 
-_TOKEN_URL = "https://oauth.yandex.ru/token"
+_OAUTH_URL = "https://oauth.yandex.ru/token"
 _USERINFO_URL = "https://login.yandex.ru/info"
 _KNOWN_TOKEN_ERRORS = frozenset(
     {
@@ -56,7 +56,7 @@ class HttpxYandexOAuthProvider:
                 transport=self._transport,
             ) as client:
                 response = client.post(
-                    _TOKEN_URL,
+                    _OAUTH_URL,
                     data={
                         "grant_type": "authorization_code",
                         "code": code,
@@ -101,7 +101,7 @@ class HttpxYandexOAuthProvider:
                 transport=self._transport,
             ) as client:
                 response = client.post(
-                    _TOKEN_URL,
+                    _OAUTH_URL,
                     data={
                         "grant_type": "refresh_token",
                         "refresh_token": refresh_token,

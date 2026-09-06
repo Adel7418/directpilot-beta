@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 CREDENTIAL_SCHEMA_VERSION = 1
 YANDEX_PROVIDER = "yandex"
-_TOKEN_PAYLOAD_PURPOSE = "yandex-token-payload"
+_PAYLOAD_PURPOSE = "yandex-token-payload"
 _DEK_WRAP_PURPOSE = "yandex-dek-wrap"
 _PROVIDER_ACCOUNT_LOGIN_PURPOSE = "yandex-provider-account-login"
 _PROVIDER_ACCOUNT_LOGIN_WRAP_PURPOSE = "yandex-provider-account-login-dek-wrap"
@@ -59,7 +59,7 @@ class CredentialContext:
     connection_id: UUID
     schema_version: int = CREDENTIAL_SCHEMA_VERSION
     provider: str = YANDEX_PROVIDER
-    token_purpose: str = _TOKEN_PAYLOAD_PURPOSE
+    token_purpose: str = _PAYLOAD_PURPOSE
     wrap_purpose: str = _DEK_WRAP_PURPOSE
 
     @classmethod
