@@ -482,8 +482,12 @@ class YandexDirectClient:
         limit: int | None = None,
         offset: int | None = None,
     ) -> dict[str, Any]:
+        # Account-wide diagnostics need the minimal live-confirmed field set.
+        # Update/readback flows pass concrete ids and require the full top-level
+        # set shape so sitelinks.update can preserve provider-owned metadata.
+        field_names = ["Id", "Name", "Status", "Type"] if ids is not None else ["Id"]
         params: dict[str, Any] = {
-            "FieldNames": ["Id"],
+            "FieldNames": field_names,
             "SitelinkFieldNames": ["Title", "Href", "Description", "TurboPageId"],
         }
         if ids is not None:

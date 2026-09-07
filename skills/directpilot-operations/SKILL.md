@@ -334,7 +334,7 @@ UTM workflow for Yandex Direct campaigns:
    Do NOT apply without explicit user confirmation. `approved=true` is a technical
    flag, not agent self-approval.
 4. **Apply:** `POST /yandex/campaigns/{campaign_id}/utm-apply` with `approved=true`, `idempotency_key`, `DIRECTPILOT_MODE=live_write`, `dry_run=false`.
-5. **Readback:** response includes `readback` for ads and `sitelink_readback` for sitelinks with confirmed new URLs after successful apply.
+5. **Readback:** response includes `readback` for ads and `sitelink_readback` for sitelinks with confirmed new URLs after successful apply. For `include_sitelinks=true`, confirmation requires every changed `SitelinkSetId` plus the expected changed `Title`/`Href` pairs; provider errors, empty/partial readback, or URL mismatches are fail-closed and must not be reported as `applied=true`.
 
 **New campaigns (live-create) — UTM at birth:**
 
@@ -362,7 +362,7 @@ Safety:
 - `BusinessId`, `SitelinkSetId`, `VCardId`, `Title2` are preserved from readback.
 - `live_readonly` blocks writes with HTTP 409 before any network call.
 - Custom params supported but never override core five UTM params.
-- Sitelink apply uses `sitelinks.update` through DirectPilot gates; fail closed on provider errors and do not report success without readback.
+- Sitelink apply uses `sitelinks.update` through DirectPilot gates; fail closed on provider errors, empty/partial readback, or changed URL mismatches, and do not report success without confirmed `sitelink_readback`.
 
 ### Existing-campaign landing URL migration
 

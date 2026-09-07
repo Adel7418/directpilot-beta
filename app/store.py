@@ -1856,6 +1856,7 @@ class MockStore:
         # Build v5 ads.update payload.
         v5_ads: list[dict[str, Any]] = []
         target_ad_ids: list[int] = []
+        expected_ad_readback_hrefs: dict[int, str] = {}
         warnings: list[str] = []
         not_implemented: list[str] = []
         sitelink_items: list[UtmChangeItem] = []
@@ -1907,9 +1908,11 @@ class MockStore:
                 v5_ad["TextAd"]["Title2"] = ta["Title2"]
             v5_ads.append(v5_ad)
             target_ad_ids.append(ad_id)
+            expected_ad_readback_hrefs[ad_id] = new_url
 
         # Sitelinks: optional preview + optional apply when include_sitelinks=True.
         sitelink_payloads: list[dict[str, Any]] = []
+        expected_sitelink_readback: dict[int, list[dict[str, str]]] = {}
         if payload.include_sitelinks:
             sl_set_ids: set[int] = set()
             for a in ads_raw:
@@ -1980,9 +1983,28 @@ class MockStore:
                                 utm_status_before=audit["status"],
                             )
                         )
+                        expected_sitelink_readback.setdefault(sl_set_id, []).append(
+                            {
+                                "title": str(sl.get("Title", "")),
+                                "href": new_sl_url,
+                            }
+                        )
                         full_items.append(item)
                     if set_has_changes:
-                        sitelink_payloads.append({"Id": sl_set_id, "Sitelinks": full_items})
+                        missing_fields = [f for f in ("Name", "Status", "Type") if sl_set.get(f) is None]
+                        if missing_fields:
+                            if is_live:
+                                raise ValueError(
+                                    f"Cannot update sitelinks set {sl_set_id} for UTM: "
+                                    f"missing required fields {missing_fields!r} from Yandex API get response"
+                                )
+                            fallback_values = {"Name": "Primary sitelinks", "Status": "ACTIVE", "Type": "TEXT"}
+                            sl_set = dict(sl_set)
+                            for field in missing_fields:
+                                sl_set[field] = fallback_values[field]
+                        set_payload = dict(sl_set)
+                        set_payload["Sitelinks"] = full_items
+                        sitelink_payloads.append(set_payload)
 
         payload_preview = {
             "method": "ads.update",
@@ -2089,6 +2111,13 @@ class MockStore:
                         f"error_code={err.get('error_code')!r}"
                     )
                 rb_ads = (rb_resp.get("result") or {}).get("Ads") or []
+                rb_ad_map: dict[int, str] = {}
+                for a in rb_ads:
+                    if not isinstance(a, dict):
+                        continue
+                    rb_ad_id = a.get("Id")
+                    if isinstance(rb_ad_id, int):
+                        rb_ad_map[rb_ad_id] = (a.get("TextAd") or {}).get("Href", "")
                 readback = [
                     {
                         "Id": a.get("Id"),
@@ -2099,10 +2128,30 @@ class MockStore:
                 ]
                 if len(readback) < len(target_ad_ids):
                     raise YandexDirectError("Yandex Direct ads readback incomplete after UTM apply")
+                missing_ad_ids = [
+                    ad_id for ad_id in target_ad_ids if ad_id not in rb_ad_map
+                ]
+                if missing_ad_ids:
+                    raise YandexDirectError(
+                        "Yandex Direct ads readback incomplete after UTM apply: "
+                        f"missing_ad_ids={missing_ad_ids!r}"
+                    )
+                mismatched_ad_urls = [
+                    {
+                        "ad_id": ad_id,
+                        "expected_href": expected_href,
+                        "actual_href": rb_ad_map.get(ad_id, ""),
+                    }
+                    for ad_id, expected_href in expected_ad_readback_hrefs.items()
+                    if rb_ad_map.get(ad_id) != expected_href
+                ]
+                if mismatched_ad_urls:
+                    raise YandexDirectError(
+                        "Yandex Direct ads readback mismatch after UTM apply: "
+                        f"{mismatched_ad_urls!r}"
+                    )
             if payload.include_sitelinks and sitelink_payloads:
-                rb_sitelink_ids = sorted(
-                    [s_id for s_id in (s.get("Id") for s in sitelink_payloads) if isinstance(s_id, int)]
-                )
+                rb_sitelink_ids = sorted(expected_sitelink_readback.keys())
                 if rb_sitelink_ids:
                     rb_sl_resp = client.sitelinks_get(ids=rb_sitelink_ids)
                     if not rb_sl_resp.get("ok"):
@@ -2113,11 +2162,13 @@ class MockStore:
                         )
                     rb_sets = (rb_sl_resp.get("result") or {}).get("SitelinksSets") or []
                     returned_set_ids: set[int] = set()
+                    rb_set_map: dict[int, list[dict[str, Any]]] = {}
                     for rb_set in rb_sets:
                         if isinstance(rb_set, dict):
                             rb_set_id = rb_set.get("Id")
                             if isinstance(rb_set_id, int):
                                 returned_set_ids.add(rb_set_id)
+                                rb_set_map[rb_set_id] = []
                             for s in (rb_set.get("Sitelinks") or []):
                                 if isinstance(s, dict):
                                     sitelink_readback = sitelink_readback or []
@@ -2128,6 +2179,8 @@ class MockStore:
                                             "href": s.get("Href", ""),
                                         }
                                     )
+                                    if isinstance(rb_set_id, int):
+                                        rb_set_map[rb_set_id].append(s)
                     expected_set_ids = set(rb_sitelink_ids)
                     if returned_set_ids != expected_set_ids:
                         missing = sorted(expected_set_ids - returned_set_ids)
@@ -2135,6 +2188,31 @@ class MockStore:
                             f"Yandex Direct sitelink readback incomplete after UTM apply: "
                             f"missing_set_ids={missing!r}"
                         )
+                    for set_id, expected_links in expected_sitelink_readback.items():
+                        rb_links = rb_set_map.get(set_id, [])
+                        remaining: list[dict[str, Any]] = list(rb_links)
+                        missing_links: list[tuple[str, str]] = []
+                        for expected in expected_links:
+                            exp_title = expected["title"]
+                            exp_href = expected["href"]
+                            match_index = next(
+                                (
+                                    idx
+                                    for idx, rb_link in enumerate(remaining)
+                                    if str(rb_link.get("Title", "")) == exp_title
+                                    and str(rb_link.get("Href", "")) == exp_href
+                                ),
+                                None,
+                            )
+                            if match_index is None:
+                                missing_links.append((exp_title, exp_href))
+                            else:
+                                remaining.pop(match_index)
+                        if missing_links:
+                            raise YandexDirectError(
+                                "Yandex Direct sitelink readback mismatch after UTM apply: "
+                                f"set_id={set_id}, missing_links={missing_links!r}"
+                            )
                     if not sitelink_readback:
                         raise YandexDirectError("Yandex Direct sitelink readback empty after UTM apply")
 

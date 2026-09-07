@@ -44,7 +44,21 @@ def _sitelink_set(*, prices_href: str, reviews_href: str | None = None) -> dict[
     ]
     if reviews_href is not None:
         links.append({"Title": "Отзывы", "Href": reviews_href, "Description": "Отзывы клиентов"})
-    return {"Id": 5001, "Sitelinks": links}
+    return {
+        "Id": 5001,
+        "Name": "Primary sitelinks",
+        "Status": "ACTIVE",
+        "Type": "TEXT",
+        "Sitelinks": links,
+    }
+
+
+def _sitelink_set_with_meta(*, prices_href: str, name: str = "Primary sitelinks") -> dict[str, Any]:
+    payload = _sitelink_set(prices_href=prices_href)
+    payload["Name"] = name
+    payload["Status"] = "ACTIVE"
+    payload["Type"] = "TEXT"
+    return payload
 
 
 class TestUtmSitelinksPlan:
@@ -207,6 +221,7 @@ class TestUtmSitelinksApply:
     def test_apply_include_sitelinks_false_does_not_read_or_update_sitelinks(self):
         settings = _settings("live_write")
         paths: list[str] = []
+        calls: dict[str, int] = {"get": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content.decode())
@@ -214,7 +229,13 @@ class TestUtmSitelinksApply:
             assert not request.url.path.endswith("/sitelinks")
             if body.get("method") == "update":
                 return httpx.Response(200, json={"result": {}})
-            return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+            calls["get"] += 1
+            if calls["get"] == 1:
+                ad = _ad_with_sitelink_set()
+            else:
+                ad = _ad_with_sitelink_set()
+                ad["TextAd"]["Href"] = "https://example.ru/main?utm_source=yandex&utm_medium=cpc&utm_campaign=no-slug&utm_content=101"
+            return httpx.Response(200, json={"result": {"Ads": [ad]}})
 
         yandex = _make_client(settings, handler)
         client = TestClient(app)
@@ -308,14 +329,21 @@ class TestUtmSitelinksApply:
 
     def test_successful_apply_updates_sitelinks_and_returns_readback(self):
         settings = _settings("live_write")
-        state: dict[str, Any] = {"sitelinks_updated": False, "sitelinks_update_payload": None}
+        state: dict[str, Any] = {"sitelinks_updated": False, "sitelinks_update_payload": None, "ads_read_count": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content.decode())
             service = request.url.path.rsplit("/", 1)[-1]
             method = body.get("method")
             if service == "ads" and method == "get":
-                return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+                state["ads_read_count"] += 1
+                if state["ads_read_count"] == 1:
+                    return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+                ad = _ad_with_sitelink_set()
+                ad["TextAd"]["Href"] = (
+                    "https://example.ru/main?utm_source=yandex&utm_medium=cpc&utm_campaign=apply-slug&utm_content=101"
+                )
+                return httpx.Response(200, json={"result": {"Ads": [ad]}})
             if service == "ads" and method == "update":
                 return httpx.Response(200, json={"result": {}})
             if service == "sitelinks" and method == "get":
@@ -364,6 +392,144 @@ class TestUtmSitelinksApply:
             }
         ]
 
+    def test_apply_keeps_full_sitelinks_set_shape_on_update(self):
+        settings = _settings("live_write")
+        state: dict[str, Any] = {"sitelinks_updated": False, "sitelinks_update_payload": None, "ads_read_count": 0}
+
+        metadata_set = _sitelink_set_with_meta(prices_href="https://example.ru/#prices")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            service = request.url.path.rsplit("/", 1)[-1]
+            if service == "ads" and body.get("method") == "get":
+                state["ads_read_count"] += 1
+                if state["ads_read_count"] == 1:
+                    return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+                ad = _ad_with_sitelink_set()
+                ad["TextAd"]["Href"] = (
+                    "https://example.ru/main?utm_source=yandex&utm_medium=cpc&utm_campaign=meta-slug&utm_content=101"
+                )
+                return httpx.Response(200, json={"result": {"Ads": [ad]}})
+            if service == "ads" and body.get("method") == "update":
+                return httpx.Response(200, json={"result": {}})
+            if service == "sitelinks" and body.get("method") == "get":
+                rb_href = (
+                    "https://example.ru/?utm_source=yandex&utm_medium=cpc&utm_campaign=meta-slug#prices"
+                    if state["sitelinks_updated"]
+                    else "https://example.ru/#prices"
+                )
+                current = dict(metadata_set)
+                current["Sitelinks"] = [{"Title": "Цены", "Href": rb_href, "Description": "Прайс"}]
+                return httpx.Response(200, json={"result": {"SitelinksSets": [current]}})
+            if service == "sitelinks" and body.get("method") == "update":
+                state["sitelinks_updated"] = True
+                state["sitelinks_update_payload"] = body
+                return httpx.Response(200, json={"result": {}})
+            raise AssertionError(f"unexpected request {request.url} {body}")
+
+        yandex = _make_client(settings, handler)
+        client = TestClient(app)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: yandex
+        try:
+            resp = client.post(
+                "/yandex/campaigns/12345/utm-apply",
+                json={
+                    "approved": True,
+                    "idempotency_key": "utm-sl-meta-001",
+                    "dry_run": False,
+                    "campaign_slug": "meta-slug",
+                    "include_sitelinks": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200, resp.text
+        sent_set = state["sitelinks_update_payload"]["params"]["SitelinksSets"][0]
+        assert sent_set["Name"] == metadata_set["Name"]
+        assert sent_set["Status"] == metadata_set["Status"]
+        assert sent_set["Type"] == metadata_set["Type"]
+        assert "utm_campaign=meta-slug" in sent_set["Sitelinks"][0]["Href"]
+
+    def test_apply_fails_closed_when_sitelink_set_missing_required_fields(self):
+        settings = _settings("live_write")
+
+        missing = _sitelink_set(prices_href="https://example.ru/#prices")
+        missing.pop("Name", None)
+        missing.pop("Status", None)
+        missing.pop("Type", None)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            service = request.url.path.rsplit("/", 1)[-1]
+            if service == "ads" and body.get("method") == "get":
+                return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+            if service == "ads" and body.get("method") == "update":
+                # Should never be reached: sitelinks payload is incomplete.
+                return httpx.Response(200, json={"result": {}})
+            if service == "sitelinks" and body.get("method") == "get":
+                return httpx.Response(200, json={"result": {"SitelinksSets": [missing]}})
+            raise AssertionError(f"unexpected request {request.url} {body}")
+
+        yandex = _make_client(settings, handler)
+        client = TestClient(app)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: yandex
+        try:
+            resp = client.post(
+                "/yandex/campaigns/12345/utm-apply",
+                json={
+                    "approved": True,
+                    "idempotency_key": "utm-sl-missing-fields-001",
+                    "dry_run": False,
+                    "campaign_slug": "missing-meta-slug",
+                    "include_sitelinks": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 409
+        assert "missing required fields" in resp.text
+
+    def test_apply_fails_closed_when_ad_readback_mismatches_requested_href(self):
+        settings = _settings("live_write")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            service = request.url.path.rsplit("/", 1)[-1]
+            if service == "ads" and body.get("method") == "get":
+                return httpx.Response(
+                    200,
+                    json={"result": {"Ads": [{"Id": 101, "TextAd": {"Href": "https://example.ru/unchanged", "SitelinkSetId": 5001}}]}},
+                )
+            if service == "ads" and body.get("method") == "update":
+                return httpx.Response(200, json={"result": {}})
+            raise AssertionError(f"unexpected request {request.url} {body}")
+
+        yandex = _make_client(settings, handler)
+        client = TestClient(app)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: yandex
+        try:
+            resp = client.post(
+                "/yandex/campaigns/12345/utm-apply",
+                json={
+                    "approved": True,
+                    "idempotency_key": "utm-ad-rb-mismatch-001",
+                    "dry_run": False,
+                    "campaign_slug": "mismatch-ad",
+                    "include_sitelinks": False,
+                    "overwrite": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 502
+        assert "readback mismatch" in resp.text
+
     def test_sitelinks_api_error_fails_closed(self):
         settings = _settings("live_write")
 
@@ -402,14 +568,21 @@ class TestUtmSitelinksApply:
 
     def test_apply_sends_full_sitelink_set_and_preserves_unchanged_items(self):
         settings = _settings("live_write")
-        state: dict[str, Any] = {"sitelinks_updated": False, "sitelinks_update_payload": None}
+        state: dict[str, Any] = {"sitelinks_updated": False, "sitelinks_update_payload": None, "ads_read_count": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content.decode())
             service = request.url.path.rsplit("/", 1)[-1]
             method = body.get("method")
             if service == "ads" and method == "get":
-                return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+                state["ads_read_count"] += 1
+                if state["ads_read_count"] == 1:
+                    return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+                ad = _ad_with_sitelink_set()
+                ad["TextAd"]["Href"] = (
+                    "https://example.ru/main?utm_source=yandex&utm_medium=cpc&utm_campaign=partial-slug&utm_content=101"
+                )
+                return httpx.Response(200, json={"result": {"Ads": [ad]}})
             if service == "ads" and method == "update":
                 return httpx.Response(200, json={"result": {}})
             if service == "sitelinks" and method == "get":
@@ -480,6 +653,57 @@ class TestUtmSitelinksApply:
         assert "utm_campaign=partial-slug" in sent_links[0]["Href"]
         assert sent_links[1]["Href"] == "https://example.ru/reviews?utm_source=yandex&utm_medium=cpc&utm_campaign=old#reviews"
         assert sent_links[1]["Description"] == "Отзывы клиентов"
+
+    def test_apply_fails_closed_when_sitelink_readback_mismatches_requested_href(self):
+        settings = _settings("live_write")
+        state: dict[str, bool] = {"sitelinks_updated": False}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            service = request.url.path.rsplit("/", 1)[-1]
+            method = body.get("method")
+            if service == "ads" and method in {"get", "update"}:
+                return httpx.Response(200, json={"result": {"Ads": [_ad_with_sitelink_set()]}})
+            if service == "sitelinks" and method == "get":
+                if state["sitelinks_updated"]:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "result": {
+                                "SitelinksSets": [_sitelink_set(prices_href="https://example.ru/?utm_source=yandex&utm_medium=cpc&utm_campaign=wrong-slug#prices")]
+                            }
+                        },
+                    )
+                state["sitelinks_updated"] = True
+                return httpx.Response(
+                    200,
+                    json={"result": {"SitelinksSets": [_sitelink_set(prices_href="https://example.ru/#prices")]},},
+                )
+            if service == "sitelinks" and method == "update":
+                return httpx.Response(200, json={"result": {}})
+            raise AssertionError(f"unexpected request {request.url} {body}")
+
+        yandex = _make_client(settings, handler)
+        client = TestClient(app)
+        app.dependency_overrides[get_settings] = lambda: settings
+        app.dependency_overrides[get_yandex_client] = lambda: yandex
+        try:
+            resp = client.post(
+                "/yandex/campaigns/12345/utm-apply",
+                json={
+                    "approved": True,
+                    "idempotency_key": "utm-sl-rb-mismatch-001",
+                    "dry_run": False,
+                    "campaign_slug": "mismatch-slug",
+                    "include_sitelinks": True,
+                    "overwrite": True,
+                },
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 502
+        assert "readback mismatch" in resp.text
 
     def test_sitelinks_readback_failure_fails_closed(self):
         settings = _settings("live_write")
