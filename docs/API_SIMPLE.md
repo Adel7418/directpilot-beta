@@ -1714,6 +1714,14 @@ GET /wordstat/regions-tree
 
 Назначение: подбор и расширение семантики, динамика спроса и распределение по регионам без создания/удаления legacy v4 Wordstat-отчётов. Для `/wordstat/dynamics` даты должны соответствовать периоду API: `PERIOD_MONTHLY` начинается с первого дня месяца, `PERIOD_WEEKLY` — с понедельника и заканчивается воскресеньем.
 
+#### Yandex Search API v2 Web Search
+
+```text
+GET /search/web?query=ремонт&page=0&region=225&limit=10
+```
+
+Read-only Web Search возвращает нормализованные документы с `source="yandex_search_api"`, `live=true`; публичный параметр `limit` принимает значения только в диапазоне `1..20` (по умолчанию `10`). Raw XML/`rawData`, API key, folder ID и Authorization не входят в ответ. Для вызова серверу нужны `YANDEX_SEARCH_API_KEY` и `YANDEX_SEARCH_FOLDER_ID`; folder ID не принимается из query/body. Вызов не изменяет данные, но расходует квоту/биллинг провайдера; требуемая IAM-роль — `search-api.webSearch.user`. На старте нет автоматического upstream smoke-вызова.
+
 #### Расширения объявлений и ассеты
 
 ```text

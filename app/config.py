@@ -39,9 +39,9 @@ class Settings(BaseSettings):
     yandex_oauth_token: str | None = None
     yandex_redirect_uri: str = "https://oauth.yandex.ru/verification_code"
 
-    # Yandex AI Studio / Search API v2 — used by the modern Wordstat client.
-    # Optional folderId is the cloud folder that owns the service account
-    # backing the API key. Both values are NEVER returned in full by
+    # Yandex Search API v2 — used by Wordstat and read-only Web Search.
+    # The folder is optional for existing Wordstat calls but operationally
+    # required by /search/web. Both values are NEVER returned in full by
     # safe_status(); they are masked or omitted.
     yandex_search_api_key: str | None = None
     yandex_search_folder_id: str | None = None
@@ -61,9 +61,9 @@ class Settings(BaseSettings):
     def is_yandex_search_configured(self) -> bool:
         """True only when a Yandex Search API v2 key is configured.
 
-        The optional folderId does not block the key — endpoints that need
-        a folder can fall back to a per-call override. This is the v2 /
-        Yandex AI Studio / Search API v2 path used by the Wordstat client.
+        This reports key availability for the v2 Wordstat and Web Search
+        clients. /search/web separately fails closed when its required
+        configured folder is absent; it never accepts a caller override.
         """
         return bool(self.yandex_search_api_key)
 

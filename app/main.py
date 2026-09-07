@@ -77,6 +77,8 @@ from app.models import (
     YandexMetrikaResult,
     YandexRawResult,
     YandexSearchApiResult,
+    YandexWebSearchErrorResponse,
+    YandexWebSearchResponse,
     YandexSearchQueriesReport,
     YandexSearchQuery,
     YandexSitelinkItem,
@@ -142,6 +144,12 @@ from app.yandex_search_wordstat import (
     YandexSearchWordstatError,
     YandexSearchWordstatMissingKeyError,
 )
+from app.yandex_web_search import (
+    YandexWebSearchClient,
+    YandexWebSearchError,
+    YandexWebSearchMissingFolderError,
+    YandexWebSearchMissingKeyError,
+)
 
 
 def get_yandex_client(
@@ -174,6 +182,18 @@ YANDEX_DIRECT_ERROR_RESPONSES = {
 WORDSTAT_ERROR_RESPONSES = {
     502: {"model": ApiErrorResponse, "description": "Yandex Search API upstream error"},
     503: {"model": ApiErrorResponse, "description": "YANDEX_SEARCH_API_KEY is not configured"},
+}
+
+
+WEB_SEARCH_ERROR_RESPONSES = {
+    502: {
+        "model": YandexWebSearchErrorResponse,
+        "description": "Yandex Search API Web Search upstream error",
+    },
+    503: {
+        "model": YandexWebSearchErrorResponse,
+        "description": "Yandex Search API Web Search is not configured",
+    },
 }
 
 
@@ -2720,6 +2740,56 @@ def wordstat_regions_tree(
         method="getRegionsTree",
         data=result["data"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Yandex Search API v2 — Web Search (read-only)
+# ---------------------------------------------------------------------------
+
+
+def get_yandex_web_search_client(
+    settings: Settings = Depends(get_settings),
+) -> YandexWebSearchClient:
+    """Build the Web Search client; missing configuration fails inside it."""
+    return YandexWebSearchClient(settings=settings)
+
+
+def _raise_web_search_http_error(exc: YandexWebSearchError) -> None:
+    if isinstance(exc, (YandexWebSearchMissingKeyError, YandexWebSearchMissingFolderError)):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "yandex_search_web_not_configured",
+                "message": "Yandex Search API Web Search is not configured",
+            },
+        ) from exc
+    raise HTTPException(
+        status_code=502,
+        detail={
+            "code": "yandex_search_web_upstream_error",
+            "message": "Yandex Search API Web Search is unavailable",
+        },
+    ) from exc
+
+
+@app.get(
+    "/search/web",
+    response_model=YandexWebSearchResponse,
+    responses=WEB_SEARCH_ERROR_RESPONSES,
+)
+def yandex_web_search(
+    query: str = Query(..., min_length=1, max_length=400),
+    page: int = Query(default=0, ge=0),
+    region: str = Query(default="225", min_length=1, max_length=100),
+    limit: int = Query(default=10, ge=1, le=20),
+    client: YandexWebSearchClient = Depends(get_yandex_web_search_client),
+) -> YandexWebSearchResponse:
+    """Read-only Yandex Search API v2 Web Search; provider quota may apply."""
+    try:
+        result = client.search_web(query, page=page, region=region, limit=limit)
+    except YandexWebSearchError as exc:
+        _raise_web_search_http_error(exc)
+    return YandexWebSearchResponse(data=result)
 
 
 # ---------------------------------------------------------------------------

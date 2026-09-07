@@ -1044,6 +1044,46 @@ class YandexSearchApiResult(BaseModel):
     read_only: bool = True
 
 
+class YandexWebSearchItem(BaseModel):
+    """One normalized document from Yandex Search API v2 Web Search."""
+
+    title: str
+    url: str
+    domain: str | None = None
+    headline: str | None = None
+    passages: list[str] = Field(default_factory=list)
+
+
+class YandexWebSearchData(BaseModel):
+    """Safe normalized Web Search data with no provider raw XML envelope."""
+
+    query: str
+    found: int | None = None
+    results: list[YandexWebSearchItem] = Field(default_factory=list)
+
+
+class YandexWebSearchResponse(BaseModel):
+    """Read-only response envelope for ``GET /search/web``."""
+
+    ok: Literal[True] = True
+    source: Literal["yandex_search_api"] = "yandex_search_api"
+    live: Literal[True] = True
+    data: YandexWebSearchData
+
+
+class YandexWebSearchErrorDetail(BaseModel):
+    """Stable, redacted error detail for the Web Search endpoint."""
+
+    code: Literal[
+        "yandex_search_web_not_configured", "yandex_search_web_upstream_error"
+    ]
+    message: str
+
+
+class YandexWebSearchErrorResponse(BaseModel):
+    detail: YandexWebSearchErrorDetail
+
+
 class ApiErrorDetail(BaseModel):
     error_type: str
     message: str
